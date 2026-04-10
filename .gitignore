@@ -1,0 +1,36 @@
+# Environment files with secrets — never commit these
+.env
+.env.local
+.env.production
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Node
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.venv*/
+venv/
+
+# Uploads
+uploads/
+
+# Local dev artifacts
+runtime-logs/
+backups/
+sample_timesheets/
+*.bat
+
+# Claude Code IDE
+.claude/

@@ -1,0 +1,1636 @@
+import React, { useState } from 'react';
+import { format, startOfMonth, endOfMonth } from 'date-fns';
+import { PlusCircle, Pencil, Trash2, ShieldCheck, UserCircle, X, Clock, Settings, Paperclip } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+
+import { Loading, Error, OrganizationalChart, SearchInput } from '@/components';
+import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useAuth, useIsPlatformAdmin, useProjects, useNotifications, useTenantSettings, useUpdateTenantSettings, useUnlockUserTimesheet } from '@/hooks';
+import { timeentriesAPI, ingestionAPI } from '@/api';
+import { IngestionTimesheetSummary, Project, TimeEntry, User, UserRole } from '@/types';
+
+
+const extractErrorMessage = (err: unknown): string => {
+  if (typeof err !== 'object' || err === null || !('response' in err)) return 'An error occurred';
+  const detail = (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail) && detail.length > 0) {
+    const first = detail[0] as { msg?: string };
+    return first.msg ?? 'Validation error';
+  }
+  return 'An error occurred';
+};
+
+type UserMutationPayload = {
+  full_name: string;
+  email: string;
+  title?: string | null;
+  department?: string | null;
+  role: UserRole;
+  is_active: boolean;
+  can_review: boolean;
+  is_external: boolean;
+  manager_id?: number | null;
+  project_ids?: number[];
+};
+
+const TENANT_ROLES: UserRole[] = ['EMPLOYEE', 'MANAGER', 'SENIOR_MANAGER', 'CEO', 'ADMIN'];
+const ALL_ROLES: UserRole[] = [...TENANT_ROLES, 'PLATFORM_ADMIN'];
+
+const getAllowedSupervisorRoles = (role: UserRole): UserRole[] => {
+  if (role === 'EMPLOYEE') return ['MANAGER', 'SENIOR_MANAGER', 'CEO', 'ADMIN'];
+  if (role === 'MANAGER') return ['SENIOR_MANAGER', 'CEO'];
+  if (role === 'SENIOR_MANAGER') return ['CEO'];
+  if (role === 'ADMIN') return ['MANAGER', 'SENIOR_MANAGER'];
+  return [];
+};
+
+const normalizeDepartment = (value?: string | null): string => (value ?? '').trim().toLowerCase();
+
+const DEPARTMENT_FAMILY_MAP: Record<string, string> = {
+  'engineering': 'engineering',
+  'software engineering': 'engineering',
+  'operations': 'operations',
+  'infrastructure': 'operations',
+  'qa & testing': 'engineering',
+  'qa': 'engineering',
+  'administration': 'operations',
+  'product': 'product',
+  'product & innovation': 'product',
+  'devops': 'product',
+  'executive': 'executive',
+};
+
+const departmentFamily = (value?: string | null): string => {
+  const normalized = normalizeDepartment(value);
+  return DEPARTMENT_FAMILY_MAP[normalized] ?? normalized;
+};
+
+const isSupervisorCompatibleForRoleAndDepartment = (
+  userRole: UserRole,
+  userDepartment: string,
+  supervisor: User,
+): boolean => {
+  const allowedSupervisorRoles = getAllowedSupervisorRoles(userRole);
+  if (!allowedSupervisorRoles.includes(supervisor.role)) return false;
+  if (supervisor.role === 'CEO') return true;
+  if (!userDepartment) return true;
+  return departmentFamily(supervisor.department) === departmentFamily(userDepartment);
+};
+
+const roleBadge = (role: UserRole) => {
+  const styles: Record<UserRole, string> = {
+    EMPLOYEE: 'bg-[var(--bg-surface-3)] text-[var(--text-secondary)]',
+    MANAGER: 'bg-[var(--info-light)] text-[var(--info)]',
+    SENIOR_MANAGER: 'bg-[var(--info-light)] text-[var(--info)]',
+    CEO: 'bg-[var(--danger-light)] text-[var(--danger)]',
+    ADMIN: 'bg-[var(--accent-light)] text-[var(--accent-blue)]',
+    PLATFORM_ADMIN: 'bg-[var(--accent-light)] text-[var(--accent-blue)]',
+  };
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium ${styles[role]}`}>
+      {(role === 'ADMIN' || role === 'PLATFORM_ADMIN') && <ShieldCheck className="w-3 h-3" />}
+      {role === 'MANAGER' && <UserCircle className="w-3 h-3" />}
+      {role}
+    </span>
+  );
+};
+
+type FormState = {
+  full_name: string;
+  email: string;
+  username: string;
+  title: string;
+  department: string;
+  role: UserRole;
+  is_active: boolean;
+  can_review: boolean;
+  is_external: boolean;
+  manager_id: number | null;
+  project_ids: number[];
+};
+
+const emptyForm = (): FormState => ({
+  full_name: '',
+  email: '',
+  username: '',
+  title: '',
+  department: '',
+  role: 'EMPLOYEE',
+  is_active: true,
+  can_review: false,
+  is_external: false,
+  manager_id: null,
+  project_ids: [],
+});
+
+export const AdminPage: React.FC = () => {
+  const [searchParams] = useSearchParams();
+  const { user: currentUser, refreshUser } = useAuth();
+  const { data: users, isLoading, error, refetch: refetchUsers } = useUsers();
+  const { data: projects, isLoading: projectsLoading, error: projectsError } = useProjects({ limit: 500 });
+  const { data: notificationsSummary } = useNotifications();
+  const createUser = useCreateUser();
+  const updateUser = useUpdateUser();
+  const deleteUser = useDeleteUser();
+
+  const isPlatformAdmin = useIsPlatformAdmin();
+  const isAdminUser = currentUser?.role === 'ADMIN' || currentUser?.role === 'PLATFORM_ADMIN';
+  const roles = isPlatformAdmin ? ALL_ROLES : TENANT_ROLES;
+  const canManageEmployeeProjects =
+    currentUser?.role === 'ADMIN' || currentUser?.role === 'PLATFORM_ADMIN' ||
+    currentUser?.role === 'MANAGER' ||
+    currentUser?.role === 'SENIOR_MANAGER' ||
+    currentUser?.role === 'CEO';
+
+  React.useEffect(() => {
+    refreshUser();
+  }, [refreshUser]);
+
+  const [showModal, setShowModal] = useState(false);
+  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [selectedUserDetails, setSelectedUserDetails] = useState<User | null>(null);
+  const [form, setForm] = useState<FormState>(emptyForm());
+  const [formError, setFormError] = useState('');
+  const [search, setSearch] = useState(() => searchParams.get('search') ?? '');
+  const [roleFilter, setRoleFilter] = useState<'ALL' | UserRole>(() => {
+    const role = searchParams.get('role');
+    if (role === 'EMPLOYEE' || role === 'MANAGER' || role === 'SENIOR_MANAGER' || role === 'CEO' || role === 'ADMIN' || role === 'PLATFORM_ADMIN') {
+      return role as UserRole;
+    }
+    return 'ALL';
+  });
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>(() => {
+    const status = searchParams.get('status');
+    if (status === 'ACTIVE' || status === 'INACTIVE') {
+      return status;
+    }
+    return 'ALL';
+  });
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [showNoProjectModal, setShowNoProjectModal] = useState(false);
+  const [newUserCredentials, setNewUserCredentials] = useState<{ email: string; password: string } | null>(null);
+  const [credentialsCopied, setCredentialsCopied] = useState(false);
+  const userListSectionRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Team Timesheets tab state
+  const [activeTab, setActiveTab] = useState<'users' | 'timesheets' | 'settings'>('users');
+  const [tsEmployeeId, setTsEmployeeId] = useState<number | ''>('');
+  const [tsStartDate, setTsStartDate] = useState(format(startOfMonth(new Date()), 'yyyy-MM-dd'));
+  const [tsEndDate, setTsEndDate] = useState(format(endOfMonth(new Date()), 'yyyy-MM-dd'));
+  const [tsStatus, setTsStatus] = useState('');
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  const [sourceAttachmentId, setSourceAttachmentId] = useState<number | null>(null);
+  const [sourceAttachmentFilename, setSourceAttachmentFilename] = useState<string>('');
+  const [sourceAttachmentUrl, setSourceAttachmentUrl] = useState<string | null>(null);
+  const [sourceAttachmentLoading, setSourceAttachmentLoading] = useState(false);
+
+  // Settings tab state
+  const [settingsSaved, setSettingsSaved] = useState(false);
+  const [fetchScheduleSaved, setFetchScheduleSaved] = useState(false);
+
+  const { data: teamEntries = [], isFetching: tsLoading } = useQuery({
+    queryKey: ['team-timesheets', tsEmployeeId, tsStartDate, tsEndDate, tsStatus],
+    queryFn: () =>
+      timeentriesAPI.listAll({
+        user_id: tsEmployeeId !== '' ? tsEmployeeId : undefined,
+        start_date: tsStartDate || undefined,
+        end_date: tsEndDate || undefined,
+        status: tsStatus || undefined,
+        sort_by: 'entry_date',
+        sort_order: 'desc',
+        limit: 500,
+      }).then((r: { data: TimeEntry[] }) => r.data),
+    enabled: activeTab === 'timesheets',
+  });
+
+  // Approved ingestion timesheets with no line items (total-hours-only PDFs)
+  const { data: approvedIngestionTimesheets = [] } = useQuery({
+    queryKey: ['team-timesheets-ingestion-no-entries', tsEmployeeId, tsStartDate, tsEndDate],
+    queryFn: () =>
+      ingestionAPI.listTimesheets({
+        status_filter: 'approved',
+        employee_id: tsEmployeeId !== '' ? tsEmployeeId : undefined,
+        limit: 200,
+      }).then((r: { data: IngestionTimesheetSummary[] }) =>
+        r.data.filter((ts) => !ts.time_entries_created && ts.total_hours)
+      ),
+    enabled: activeTab === 'timesheets' && (!tsStatus || tsStatus === 'APPROVED'),
+  });
+
+  const { data: tenantSettings = {} } = useTenantSettings(activeTab === 'settings');
+  const updateSettings = useUpdateTenantSettings();
+  const unlockUser = useUnlockUserTimesheet();
+
+  // Reminder settings form state — initialized from tenantSettings
+  const [internalEnabled, setInternalEnabled] = useState(false);
+  const [internalDeadlineDay, setInternalDeadlineDay] = useState('friday');
+  const [internalDeadlineTime, setInternalDeadlineTime] = useState('17:00');
+  const [internalLockEnabled, setInternalLockEnabled] = useState(false);
+  const [internalRecipients, setInternalRecipients] = useState('all');
+  const [externalEnabled, setExternalEnabled] = useState(false);
+  const [externalDeadlineDayOffset, setExternalDeadlineDayOffset] = useState('-2');
+  const [externalDeadlineTime, setExternalDeadlineTime] = useState('17:00');
+  const [fetchEnabled, setFetchEnabled] = useState(false);
+  const [fetchInterval, setFetchInterval] = useState('60');
+  const [fetchDays, setFetchDays] = useState('mon,tue,wed,thu,fri');
+  const [fetchStartTime, setFetchStartTime] = useState('08:00');
+  const [fetchEndTime, setFetchEndTime] = useState('20:00');
+
+  React.useEffect(() => {
+    if (!tenantSettings || Object.keys(tenantSettings).length === 0) return;
+    if (tenantSettings.reminder_internal_enabled) setInternalEnabled(tenantSettings.reminder_internal_enabled === 'true');
+    if (tenantSettings.reminder_internal_deadline_day) setInternalDeadlineDay(tenantSettings.reminder_internal_deadline_day);
+    if (tenantSettings.reminder_internal_deadline_time) setInternalDeadlineTime(tenantSettings.reminder_internal_deadline_time);
+    if (tenantSettings.reminder_internal_lock_enabled) setInternalLockEnabled(tenantSettings.reminder_internal_lock_enabled === 'true');
+    if (tenantSettings.reminder_internal_recipients) setInternalRecipients(tenantSettings.reminder_internal_recipients);
+    if (tenantSettings.reminder_external_enabled) setExternalEnabled(tenantSettings.reminder_external_enabled === 'true');
+    if (tenantSettings.reminder_external_deadline_day_of_month) setExternalDeadlineDayOffset(tenantSettings.reminder_external_deadline_day_of_month);
+    if (tenantSettings.reminder_external_deadline_time) setExternalDeadlineTime(tenantSettings.reminder_external_deadline_time);
+    if (tenantSettings.fetch_emails_enabled) setFetchEnabled(tenantSettings.fetch_emails_enabled === 'true');
+    if (tenantSettings.fetch_emails_interval_minutes) setFetchInterval(tenantSettings.fetch_emails_interval_minutes);
+    if (tenantSettings.fetch_emails_days) setFetchDays(tenantSettings.fetch_emails_days);
+    if (tenantSettings.fetch_emails_start_time) setFetchStartTime(tenantSettings.fetch_emails_start_time);
+    if (tenantSettings.fetch_emails_end_time) setFetchEndTime(tenantSettings.fetch_emails_end_time);
+  }, [tenantSettings]);
+
+  React.useEffect(() => {
+    const nextSearch = searchParams.get('search') ?? '';
+    const nextRole = searchParams.get('role');
+    const nextStatus = searchParams.get('status');
+
+    setSearch(nextSearch);
+    setRoleFilter(nextRole === 'EMPLOYEE' || nextRole === 'MANAGER' || nextRole === 'SENIOR_MANAGER' || nextRole === 'CEO' || nextRole === 'ADMIN' || nextRole === 'PLATFORM_ADMIN' ? (nextRole as UserRole) : 'ALL');
+    setStatusFilter(nextStatus === 'ACTIVE' || nextStatus === 'INACTIVE' ? nextStatus : 'ALL');
+  }, [searchParams]);
+
+  React.useEffect(() => {
+    if (isLoading || projectsLoading || !users) return;
+
+    const userIdParam = searchParams.get('userId');
+    const parsedUserId = userIdParam ? Number(userIdParam) : NaN;
+    if (!Number.isFinite(parsedUserId)) {
+      return;
+    }
+
+    const matchedUser = users.find((candidate) => candidate.id === parsedUserId) ?? null;
+    setSelectedUserDetails(matchedUser);
+  }, [searchParams, isLoading, projectsLoading, users]);
+
+  React.useEffect(() => {
+    if (isLoading || projectsLoading) return;
+
+    const hasDashboardFilter =
+      searchParams.has('userId') ||
+      searchParams.has('role') ||
+      searchParams.has('status') ||
+      searchParams.has('search');
+
+    if (!hasDashboardFilter) return;
+
+    requestAnimationFrame(() => {
+      userListSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [searchParams, isLoading, projectsLoading]);
+
+  if (isLoading || projectsLoading) return <Loading />;
+  if (error || projectsError) return <Error message="Failed to load user management data" />;
+
+  const allowedSupervisorRoles = getAllowedSupervisorRoles(form.role);
+  const formDepartment = form.role === 'ADMIN' ? '' : normalizeDepartment(form.department);
+  const supervisors = (users ?? [])
+    .filter((u) => allowedSupervisorRoles.includes(u.role))
+    .filter((u) => u.id !== editingUser?.id)
+    .filter((u) => {
+      if (u.role === 'CEO') return true;
+      if (!formDepartment) return true;
+      return departmentFamily(u.department) === departmentFamily(formDepartment);
+    })
+    .sort((a, b) => a.full_name.localeCompare(b.full_name));
+  const usersByManager = (users ?? []).reduce<Record<number, User[]>>((acc, user) => {
+    if (!user.manager_id) return acc;
+    if (!acc[user.manager_id]) acc[user.manager_id] = [];
+    acc[user.manager_id].push(user);
+    return acc;
+  }, {});
+  Object.values(usersByManager).forEach((items) => items.sort((a, b) => a.full_name.localeCompare(b.full_name)));
+
+  const visibleUserIds = new Set((users ?? []).map((u) => u.id));
+  const topLevelUsers = (users ?? [])
+    .filter((u) => !u.manager_id || !visibleUserIds.has(u.manager_id))
+    .sort((a, b) => a.full_name.localeCompare(b.full_name));
+
+  const activeProjects = (projects ?? []).filter((project: Project) => project.is_active);
+  const normalizedSearch = search.trim().toLowerCase();
+
+  const searchSuggestions = Array.from(
+    new Set(
+      (users ?? []).flatMap((u: User) =>
+        [u.full_name, u.email, u.department].filter((v): v is string => Boolean(v))
+      )
+    )
+  ).sort();
+
+  const filtered = (users ?? []).filter((u) => {
+    const matchesSearch =
+      normalizedSearch.length === 0 ||
+      u.full_name.toLowerCase().includes(normalizedSearch) ||
+      u.email.toLowerCase().includes(normalizedSearch) ||
+      u.role.toLowerCase().includes(normalizedSearch) ||
+      (u.department ?? '').toLowerCase().includes(normalizedSearch);
+
+    const matchesRole = roleFilter === 'ALL' || u.role === roleFilter;
+    const matchesStatus =
+      statusFilter === 'ALL' ||
+      (statusFilter === 'ACTIVE' && u.is_active) ||
+      (statusFilter === 'INACTIVE' && !u.is_active);
+
+    return matchesSearch && matchesRole && matchesStatus;
+  });
+
+  const userManagementAlerts = (notificationsSummary?.items ?? []).filter(
+    (item) => item.route === '/admin' && !item.is_read
+  );
+  const employeesWithoutProjects = (users ?? []).filter(
+    (u) => u.role === 'EMPLOYEE' && u.is_active && (u.project_ids ?? []).length === 0
+  );
+  const usersById = (users ?? []).reduce<Record<number, User>>((acc, user) => {
+    acc[user.id] = user;
+    return acc;
+  }, {});
+
+  const getManagerDisplayName = (managerId?: number | null): string => {
+    if (!managerId) return 'Unassigned';
+    if (usersById[managerId]?.full_name) return usersById[managerId].full_name;
+    if (currentUser?.id === managerId) return currentUser.full_name;
+    return 'Unknown';
+  };
+
+  const getUserProjectDetails = (user: User): Project[] => {
+    const assignedIds = user.project_ids ?? [];
+    return (projects ?? []).filter((project: Project) => assignedIds.includes(project.id));
+  };
+
+  const openCreate = () => {
+    if (!isAdminUser) return;
+    setEditingUser(null);
+    setForm(emptyForm());
+    setFormError('');
+    setShowModal(true);
+  };
+
+  const openEdit = (u: User) => {
+    if (!isAdminUser && (!canManageEmployeeProjects || u.role === 'ADMIN' || u.role === 'PLATFORM_ADMIN')) {
+      return;
+    }
+
+    setEditingUser(u);
+    const normalizedDepartment = normalizeDepartment(u.department);
+    const normalizedManagerId = (() => {
+      if (!u.manager_id) return null;
+      const manager = (users ?? []).find((candidate) => candidate.id === u.manager_id);
+      if (!manager) return null;
+      if (!isSupervisorCompatibleForRoleAndDepartment(u.role, normalizedDepartment, manager)) return null;
+      return u.manager_id;
+    })();
+
+    setForm({
+      full_name: u.full_name,
+      email: u.email,
+      username: u.username ?? '',
+      title: u.title ?? '',
+      department: u.department ?? '',
+      role: u.role,
+      is_active: u.is_active,
+      can_review: u.can_review ?? false,
+      is_external: u.is_external ?? false,
+      manager_id: normalizedManagerId,
+      project_ids: u.project_ids ?? [],
+    });
+    setFormError('');
+    setShowModal(true);
+  };
+
+  const closeModal = () => {
+    setShowModal(false);
+    setEditingUser(null);
+    setFormError('');
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFormError('');
+
+    if (editingUser && isProjectOnlyEdit) {
+      try {
+        await updateUser.mutateAsync({
+          id: editingUser.id,
+          data: {
+            project_ids: form.project_ids,
+          },
+        });
+        await refetchUsers();
+        closeModal();
+      } catch (err: unknown) {
+        setFormError(extractErrorMessage(err));
+      }
+      return;
+    }
+
+    const normalizedFullName = form.full_name.trim();
+    const normalizedEmail = form.email.trim().toLowerCase();
+    const normalizedUsername = form.username.trim().toLowerCase();
+
+    if (!normalizedFullName || !normalizedEmail || !normalizedUsername) {
+      setFormError('Name, email, and username are required');
+      return;
+    }
+
+    if (normalizedUsername.length < 3) {
+      setFormError('Username must be at least 3 characters');
+      return;
+    }
+
+    const normalizedTitle = form.title.trim();
+    const normalizedDepartment = form.department.trim();
+
+    if ((form.role === 'EMPLOYEE' || form.role === 'MANAGER') && !normalizedTitle) {
+      setFormError(`${form.role === 'MANAGER' ? 'Manager' : 'Employee'} title is required`);
+      return;
+    }
+
+    if (form.role === 'MANAGER' && !normalizedDepartment) {
+      setFormError('Manager department is required');
+      return;
+    }
+
+    try {
+      if (editingUser) {
+        const payload: UserMutationPayload = {
+          full_name: normalizedFullName,
+          email: normalizedEmail,
+          title: normalizedTitle || null,
+          department: normalizedDepartment || null,
+          role: form.role,
+          is_active: form.is_active,
+          can_review: form.can_review,
+          is_external: form.is_external,
+          manager_id: form.manager_id,
+          project_ids: form.role === 'EMPLOYEE' ? form.project_ids : [],
+        };
+        await updateUser.mutateAsync({ id: editingUser.id, data: payload });
+      } else {
+        if (!isAdminUser) {
+          setFormError('Only admins can create users');
+          return;
+        }
+        const result = await createUser.mutateAsync({
+          ...form,
+          full_name: normalizedFullName,
+          email: normalizedEmail,
+          username: normalizedUsername,
+          title: normalizedTitle || null,
+          department: normalizedDepartment || null,
+          can_review: form.can_review,
+          is_external: form.is_external,
+          manager_id: form.manager_id,
+          project_ids: form.role === 'EMPLOYEE' ? form.project_ids : [],
+        });
+        // Show credentials dialog so admin can relay them to the new user
+        setNewUserCredentials({ email: normalizedEmail, password: result.temporary_password });
+        setCredentialsCopied(false);
+      }
+      await refetchUsers();
+      closeModal();
+    } catch (err: unknown) {
+      setFormError(extractErrorMessage(err));
+    }
+  };
+
+  const handleToggleActive = async (u: User) => {
+    if (!isAdminUser) return;
+    await updateUser.mutateAsync({ id: u.id, data: { is_active: !u.is_active } });
+  };
+
+  const handleDelete = async (id: number) => {
+    if (!isAdminUser) return;
+    await deleteUser.mutateAsync(id);
+    setConfirmDeleteId(null);
+  };
+
+  const canEditUser = (u: User) => {
+    if (isAdminUser) return true;
+    return canManageEmployeeProjects && u.role !== 'ADMIN' && u.role !== 'PLATFORM_ADMIN';
+  };
+
+  const isProjectOnlyEdit = Boolean(editingUser && !isAdminUser);
+
+  const handleProjectToggle = (projectId: number) => {
+    setForm((current) => ({
+      ...current,
+      project_ids: current.project_ids.includes(projectId)
+        ? current.project_ids.filter((id) => id !== projectId)
+        : [...current.project_ids, projectId],
+    }));
+  };
+
+  const scrollToUserList = () => {
+    requestAnimationFrame(() => {
+      userListSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  };
+
+  const applyUserListFilter = (nextRole: 'ALL' | UserRole, nextStatus: 'ALL' | 'ACTIVE' | 'INACTIVE') => {
+    setSearch('');
+    setRoleFilter(nextRole);
+    setStatusFilter(nextStatus);
+    scrollToUserList();
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h1 className="text-3xl font-bold">User Management</h1>
+            <p className="text-sm text-muted-foreground mt-1">{(users ?? []).length} total users</p>
+          </div>
+          {isAdminUser && activeTab === 'users' && (
+            <button
+              onClick={openCreate}
+              className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 shadow"
+            >
+              <PlusCircle className="w-4 h-4" />
+              New User
+            </button>
+          )}
+        </div>
+
+        {/* Tab switcher */}
+        <div className="flex gap-1 border-b mb-6">
+          <button
+            onClick={() => setActiveTab('users')}
+            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition ${
+              activeTab === 'users'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <UserCircle className="w-4 h-4" />Users
+          </button>
+          <button
+            onClick={() => setActiveTab('timesheets')}
+            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition ${
+              activeTab === 'timesheets'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <Clock className="w-4 h-4" />Team Timesheets
+          </button>
+          <button
+            onClick={() => setActiveTab('settings')}
+            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition ${
+              activeTab === 'settings'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <Settings className="w-4 h-4" />Settings
+          </button>
+        </div>
+
+        {/* Team Timesheets tab */}
+        {activeTab === 'timesheets' && (
+          <div>
+            {/* Filters */}
+            <div className="flex flex-wrap gap-3 mb-5">
+              <select
+                className="rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+                value={tsEmployeeId}
+                onChange={(e) => setTsEmployeeId(e.target.value === '' ? '' : Number(e.target.value))}
+              >
+                <option value="">All Employees</option>
+                {(users ?? [])
+                  .filter((u) => u.is_active && u.role === 'EMPLOYEE')
+                  .sort((a, b) => a.full_name.localeCompare(b.full_name))
+                  .map((u) => (
+                    <option key={u.id} value={u.id}>{u.full_name}</option>
+                  ))}
+              </select>
+
+              <input
+                type="date"
+                className="rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+                value={tsStartDate}
+                onChange={(e) => setTsStartDate(e.target.value)}
+              />
+              <input
+                type="date"
+                className="rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+                value={tsEndDate}
+                onChange={(e) => setTsEndDate(e.target.value)}
+              />
+
+              <select
+                className="rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+                value={tsStatus}
+                onChange={(e) => setTsStatus(e.target.value)}
+              >
+                <option value="">All Statuses</option>
+                <option value="DRAFT">Draft</option>
+                <option value="SUBMITTED">Submitted</option>
+                <option value="APPROVED">Approved</option>
+                <option value="REJECTED">Rejected</option>
+              </select>
+            </div>
+
+            {/* Entries table — grouped by employee + project, expandable */}
+            {(() => {
+              type AggRow = {
+                key: string;
+                employeeName: string;
+                projectName: string;
+                totalHours: number;
+                minDate: string;
+                maxDate: string;
+                statuses: Set<string>;
+                entries: TimeEntry[];
+                ingestionOnly?: boolean;
+                ingestionId?: number;
+                attachmentId?: number | null;
+                attachmentFilename?: string;
+              };
+              const map = new Map<string, AggRow>();
+              (teamEntries as TimeEntry[]).forEach((entry) => {
+                const k = `${entry.user_id}-${entry.project_id}`;
+                const existing = map.get(k);
+                if (existing) {
+                  existing.totalHours += Number(entry.hours);
+                  if (entry.entry_date < existing.minDate) existing.minDate = entry.entry_date;
+                  if (entry.entry_date > existing.maxDate) existing.maxDate = entry.entry_date;
+                  existing.statuses.add(entry.status);
+                  existing.entries.push(entry);
+                } else {
+                  map.set(k, {
+                    key: k,
+                    employeeName: entry.user?.full_name ?? '—',
+                    projectName: entry.project?.name ?? '—',
+                    totalHours: Number(entry.hours),
+                    minDate: entry.entry_date,
+                    maxDate: entry.entry_date,
+                    statuses: new Set([entry.status]),
+                    entries: [entry],
+                  });
+                }
+              });
+
+              // Merge approved ingestion timesheets that have no line entries (summary-only PDFs)
+              const dateInRange = (ts: IngestionTimesheetSummary) => {
+                const start = ts.period_start ?? ts.reviewed_at?.slice(0, 10) ?? null;
+                const end = ts.period_end ?? start;
+                if (!start) return true;
+                if (tsStartDate && end && end < tsStartDate) return false;
+                if (tsEndDate && start > tsEndDate) return false;
+                return true;
+              };
+              (approvedIngestionTimesheets as IngestionTimesheetSummary[])
+                .filter(dateInRange)
+                .forEach((ts) => {
+                  const k = `ingestion-${ts.id}`;
+                  const periodStart = ts.period_start ?? ts.reviewed_at?.slice(0, 10) ?? '';
+                  const periodEnd = ts.period_end ?? periodStart;
+                  map.set(k, {
+                    key: k,
+                    employeeName: ts.employee_name ?? ts.extracted_employee_name ?? '—',
+                    projectName: ts.client_name ?? '—',
+                    totalHours: Number(ts.total_hours ?? 0),
+                    minDate: periodStart,
+                    maxDate: periodEnd,
+                    statuses: new Set(['APPROVED']),
+                    entries: [],
+                    ingestionOnly: true,
+                    ingestionId: ts.id,
+                    attachmentId: ts.attachment_id,
+                    attachmentFilename: ts.subject ?? `Timesheet-${ts.id}`,
+                  });
+                });
+
+              const rows = Array.from(map.values());
+              const statusPriority = (s: Set<string>) => {
+                if (s.has('REJECTED')) return 'REJECTED';
+                if (s.has('DRAFT')) return 'DRAFT';
+                if (s.has('SUBMITTED')) return 'SUBMITTED';
+                return 'APPROVED';
+              };
+              const toggleRow = (key: string) => {
+                setExpandedRows((prev) => {
+                  const next = new Set(prev);
+                  next.has(key) ? next.delete(key) : next.add(key);
+                  return next;
+                });
+              };
+              return (
+                <div className="rounded-xl border bg-white shadow-sm overflow-hidden">
+                  {tsLoading ? (
+                    <p className="text-sm text-slate-400 p-6 text-center">Loading…</p>
+                  ) : rows.length === 0 ? (
+                    <p className="text-sm text-slate-400 p-6 text-center">No time entries found for the selected filters.</p>
+
+                  ) : (
+                    <table className="w-full text-sm">
+                      <thead className="bg-slate-50 border-b text-left">
+                        <tr>
+                          <th className="px-4 py-3 font-semibold text-slate-700 w-6"></th>
+                          <th className="px-4 py-3 font-semibold text-slate-700">Employee</th>
+                          <th className="px-4 py-3 font-semibold text-slate-700">Project</th>
+                          <th className="px-4 py-3 font-semibold text-slate-700">Date Range</th>
+                          <th className="px-4 py-3 font-semibold text-slate-700">Days</th>
+                          <th className="px-4 py-3 font-semibold text-slate-700">Total Hours</th>
+                          <th className="px-4 py-3 font-semibold text-slate-700">Status</th>
+                          <th className="px-4 py-3 font-semibold text-slate-700 w-10"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((row) => {
+                          const status = statusPriority(row.statuses);
+                          const isExpanded = expandedRows.has(row.key);
+                          const safeDate = (d: string) => d ? new Date(d + 'T00:00:00') : null;
+                          const minD = safeDate(row.minDate);
+                          const maxD = safeDate(row.maxDate);
+                          const dateRange = !minD ? '—'
+                            : !maxD || row.minDate === row.maxDate
+                              ? format(minD, 'MMM d, yyyy')
+                              : `${format(minD, 'MMM d')} – ${format(maxD, 'MMM d, yyyy')}`;
+                          const sortedEntries = [...row.entries].sort((a, b) => a.entry_date.localeCompare(b.entry_date));
+                          return (
+                            <>
+                              <tr
+                                key={row.key}
+                                className={`border-t border-slate-100 ${row.ingestionOnly ? 'bg-amber-50/40' : 'hover:bg-slate-50 cursor-pointer'}`}
+                                onClick={() => !row.ingestionOnly && toggleRow(row.key)}
+                              >
+                                <td className="px-4 py-2.5 text-slate-400 text-xs select-none">
+                                  {row.ingestionOnly ? '' : isExpanded ? '▼' : '▶'}
+                                </td>
+                                <td className="px-4 py-2.5 font-medium text-slate-900">{row.employeeName}</td>
+                                <td className="px-4 py-2.5 text-slate-600">{row.projectName}</td>
+                                <td className="px-4 py-2.5 text-slate-600">{dateRange}</td>
+                                <td className="px-4 py-2.5 text-slate-600">{row.ingestionOnly ? '—' : row.entries.length}</td>
+                                <td className="px-4 py-2.5 text-slate-900 font-medium">{row.totalHours}h</td>
+                                <td className="px-4 py-2.5">
+                                  {row.ingestionOnly ? (
+                                    <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">
+                                      APPROVED
+                                      <span className="ml-1 text-amber-600 font-normal">(no entries)</span>
+                                    </span>
+                                  ) : (
+                                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
+                                      status === 'APPROVED' ? 'bg-emerald-100 text-emerald-700' :
+                                      status === 'SUBMITTED' ? 'bg-blue-100 text-blue-700' :
+                                      status === 'REJECTED' ? 'bg-red-100 text-red-700' :
+                                      'bg-slate-100 text-slate-600'
+                                    }`}>{row.statuses.size > 1 ? 'MIXED' : status}</span>
+                                  )}
+                                </td>
+                                <td className="px-4 py-2.5">
+                                  {row.ingestionOnly && row.attachmentId && (
+                                    <button
+                                      title="View source timesheet file"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSourceAttachmentId(row.attachmentId!);
+                                        setSourceAttachmentFilename(row.attachmentFilename ?? '');
+                                        setSourceAttachmentUrl(null);
+                                        setSourceAttachmentLoading(true);
+                                        ingestionAPI.getAttachmentFile(row.attachmentId!)
+                                          .then((url) => { setSourceAttachmentUrl(url); setSourceAttachmentLoading(false); })
+                                          .catch(() => setSourceAttachmentLoading(false));
+                                      }}
+                                      className="inline-flex h-7 w-7 items-center justify-center rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition"
+                                    >
+                                      <Paperclip className="h-3.5 w-3.5" />
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                              {!row.ingestionOnly && isExpanded && sortedEntries.map((entry) => {
+                                const eStatus = entry.status;
+                                return (
+                                  <tr key={entry.id} className="bg-slate-50/70 border-t border-slate-100">
+                                    <td className="px-4 py-2"></td>
+                                    <td className="px-4 py-2 text-slate-400 text-xs">↳</td>
+                                    <td className="px-4 py-2 text-slate-500 text-xs">{entry.task?.name ?? '—'}</td>
+                                    <td className="px-4 py-2 text-slate-500 text-xs">{format(new Date(entry.entry_date + 'T00:00:00'), 'MMM d, yyyy')}</td>
+                                    <td></td>
+                                    <td className="px-4 py-2 text-slate-700 text-xs font-medium">{Number(entry.hours)}h</td>
+                                    <td className="px-4 py-2">
+                                      <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
+                                        eStatus === 'APPROVED' ? 'bg-emerald-100 text-emerald-700' :
+                                        eStatus === 'SUBMITTED' ? 'bg-blue-100 text-blue-700' :
+                                        eStatus === 'REJECTED' ? 'bg-red-100 text-red-700' :
+                                        'bg-slate-100 text-slate-600'
+                                      }`}>{eStatus}</span>
+                                    </td>
+                                    <td></td>
+                                  </tr>
+                                );
+                              })}
+                            </>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              );
+            })()}
+            <p className="text-xs text-slate-400 mt-2">{teamEntries.length} entries</p>
+          </div>
+        )}
+
+        {/* Source file slide-over */}
+        {sourceAttachmentId !== null && (
+          <div className="fixed inset-0 z-50 flex justify-end">
+            <div className="absolute inset-0 bg-black/30" onClick={() => { setSourceAttachmentId(null); if (sourceAttachmentUrl) URL.revokeObjectURL(sourceAttachmentUrl); setSourceAttachmentUrl(null); }} />
+            <div className="relative bg-white shadow-xl w-full max-w-2xl flex flex-col">
+              <div className="flex items-center justify-between px-5 py-4 border-b">
+                <div>
+                  <p className="text-xs text-slate-400 uppercase tracking-wide font-medium">Source File</p>
+                  <p className="font-semibold text-slate-900 truncate max-w-sm">{sourceAttachmentFilename}</p>
+                </div>
+                <button
+                  onClick={() => { setSourceAttachmentId(null); if (sourceAttachmentUrl) URL.revokeObjectURL(sourceAttachmentUrl); setSourceAttachmentUrl(null); }}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-auto p-4">
+                {sourceAttachmentLoading ? (
+                  <div className="flex items-center justify-center h-full text-sm text-slate-400">Loading…</div>
+                ) : sourceAttachmentUrl ? (
+                  <iframe src={sourceAttachmentUrl} className="h-full w-full border-0 min-h-[70vh]" title={sourceAttachmentFilename} />
+                ) : (
+                  <div className="flex items-center justify-center h-full text-sm text-slate-400">Failed to load file.</div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Settings tab */}
+        {activeTab === 'settings' && (
+          <div className="space-y-6">
+            {/* Internal Reminders */}
+            <div className="rounded-xl border bg-white shadow-sm p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-base font-semibold">Internal Employee Reminders</h3>
+                  <p className="text-sm text-slate-500 mt-0.5">Send weekly submission reminders to employees</p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input type="checkbox" className="sr-only peer" checked={internalEnabled} onChange={(e) => setInternalEnabled(e.target.checked)} />
+                  <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                </label>
+              </div>
+              {internalEnabled && (
+                <div className="space-y-4 pt-2 border-t">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Deadline Day</label>
+                      <select className="w-full rounded-lg border px-3 py-2 text-sm" value={internalDeadlineDay} onChange={(e) => setInternalDeadlineDay(e.target.value)}>
+                        {['monday','tuesday','wednesday','thursday','friday'].map(d => (
+                          <option key={d} value={d}>{d.charAt(0).toUpperCase() + d.slice(1)}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Deadline Time</label>
+                      <input type="time" className="w-full rounded-lg border px-3 py-2 text-sm" value={internalDeadlineTime} onChange={(e) => setInternalDeadlineTime(e.target.value)} />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input type="checkbox" className="sr-only peer" checked={internalLockEnabled} onChange={(e) => setInternalLockEnabled(e.target.checked)} />
+                      <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
+                    </label>
+                    <span className="text-sm text-slate-700">Lock timesheet if deadline is missed</span>
+                  </div>
+                </div>
+              )}
+              <div className="flex justify-end mt-4">
+                <button
+                  className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary/90 disabled:opacity-50"
+                  disabled={updateSettings.isPending}
+                  onClick={() => {
+                    updateSettings.mutate({
+                      reminder_internal_enabled: String(internalEnabled),
+                      reminder_internal_deadline_day: internalDeadlineDay,
+                      reminder_internal_deadline_time: internalDeadlineTime,
+                      reminder_internal_lock_enabled: String(internalLockEnabled),
+                      reminder_internal_recipients: internalRecipients,
+                    }, { onSuccess: () => { setSettingsSaved(true); setTimeout(() => setSettingsSaved(false), 2000); } });
+                  }}
+                >
+                  {settingsSaved ? 'Saved!' : 'Save'}
+                </button>
+              </div>
+            </div>
+
+            {/* External Contractor Reminders */}
+            <div className="rounded-xl border bg-white shadow-sm p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-base font-semibold">External Contractor Reminders</h3>
+                  <p className="text-sm text-slate-500 mt-0.5">Send monthly reminders to contractors with sender mappings</p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input type="checkbox" className="sr-only peer" checked={externalEnabled} onChange={(e) => setExternalEnabled(e.target.checked)} />
+                  <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                </label>
+              </div>
+              {externalEnabled && (
+                <div className="space-y-4 pt-2 border-t">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Days before month end</label>
+                      <input type="number" min="-28" max="-1" className="w-full rounded-lg border px-3 py-2 text-sm" value={externalDeadlineDayOffset} onChange={(e) => setExternalDeadlineDayOffset(e.target.value)} />
+                      <p className="text-xs text-slate-400 mt-1">e.g. -2 = 2 days before end of month</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Deadline Time</label>
+                      <input type="time" className="w-full rounded-lg border px-3 py-2 text-sm" value={externalDeadlineTime} onChange={(e) => setExternalDeadlineTime(e.target.value)} />
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div className="flex justify-end mt-4">
+                <button
+                  className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary/90 disabled:opacity-50"
+                  disabled={updateSettings.isPending}
+                  onClick={() => {
+                    updateSettings.mutate({
+                      reminder_external_enabled: String(externalEnabled),
+                      reminder_external_deadline_day_of_month: externalDeadlineDayOffset,
+                      reminder_external_deadline_time: externalDeadlineTime,
+                    }, { onSuccess: () => { setSettingsSaved(true); setTimeout(() => setSettingsSaved(false), 2000); } });
+                  }}
+                >
+                  {settingsSaved ? 'Saved!' : 'Save'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'users' && (<><div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
+          <SearchInput
+            value={search}
+            onChange={setSearch}
+            suggestions={searchSuggestions}
+            onSelect={(val) => {
+              const match = (users ?? []).find(
+                (u) => u.full_name === val || u.email === val
+              );
+              if (match) {
+                setSearch('');
+                setSelectedUserDetails(match);
+              }
+            }}
+            placeholder="Search by name, email, role, department..."
+            className="w-full px-3 py-2 border rounded-lg"
+          />
+          <select
+            value={roleFilter}
+            onChange={(e) => setRoleFilter(e.target.value as 'ALL' | UserRole)}
+            className="w-full px-3 py-2 border rounded-lg"
+          >
+            <option value="ALL">All roles</option>
+            {roles.map((role) => (
+              <option key={role} value={role}>{role}</option>
+            ))}
+          </select>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as 'ALL' | 'ACTIVE' | 'INACTIVE')}
+            className="w-full px-3 py-2 border rounded-lg"
+          >
+            <option value="ALL">All statuses</option>
+            <option value="ACTIVE">Active</option>
+            <option value="INACTIVE">Inactive</option>
+          </select>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          {roles.map((role) => {
+            const count = (users ?? []).filter((u) => u.role === role).length;
+            const isSelected = roleFilter === role && statusFilter === 'ALL';
+            return (
+              <button
+                key={role}
+                type="button"
+                onClick={() => applyUserListFilter(role, 'ALL')}
+                className={`bg-card border rounded-xl p-4 text-left hover:bg-muted/30 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 ${isSelected ? 'ring-2 ring-primary' : ''}`}
+              >
+                <p className="text-sm text-muted-foreground">{role}</p>
+                <p className="text-2xl font-bold mt-1">{count}</p>
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            onClick={() => applyUserListFilter('ALL', 'INACTIVE')}
+            className={`bg-card border rounded-xl p-4 text-left hover:bg-muted/30 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 ${roleFilter === 'ALL' && statusFilter === 'INACTIVE' ? 'ring-2 ring-primary' : ''}`}
+          >
+            <p className="text-sm text-muted-foreground">Inactive</p>
+            <p className="text-2xl font-bold mt-1">{(users ?? []).filter((u) => !u.is_active).length}</p>
+          </button>
+        </div>
+
+        {isAdminUser && (
+        <div className="bg-card border rounded-xl p-4 mb-6">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold">Active User Management Alerts</h2>
+            <span className="text-xs font-semibold rounded-full bg-red-100 text-red-700 px-2 py-0.5">
+              {notificationsSummary?.route_counts?.admin ?? 0}
+            </span>
+          </div>
+
+          {userManagementAlerts.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No active user management alerts.</p>
+          ) : (
+            <div className="space-y-2">
+              {userManagementAlerts.map((alert) => {
+                const isNoProjectAlert = alert.title.toLowerCase().includes('project access');
+                return (
+                  <div
+                    key={alert.id}
+                    className={`rounded-lg border p-3 bg-muted/20 ${isNoProjectAlert ? 'cursor-pointer hover:bg-muted/40 transition-colors' : ''}`}
+                    onClick={isNoProjectAlert ? () => setShowNoProjectModal(true) : undefined}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold">{alert.title}</p>
+                      <div className="flex items-center gap-2">
+                        {isNoProjectAlert && (
+                          <span className="text-xs text-primary font-medium">View employees →</span>
+                        )}
+                        <span className="text-[11px] font-semibold rounded-full bg-red-100 text-red-700 px-2 py-0.5">
+                          {alert.count > 99 ? '99+' : alert.count}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="text-sm text-muted-foreground mt-1">{alert.message}</p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        )}
+
+        {isAdminUser && (
+          <div className="bg-card border rounded-xl p-4 mb-6">
+            <h2 className="text-lg font-semibold mb-4">Org Chart</h2>
+            <OrganizationalChart
+              users={users ?? []}
+              usersByManager={usersByManager}
+              topLevelUsers={topLevelUsers}
+              currentUserId={currentUser?.id}
+            />
+          </div>
+        )}
+
+        <div ref={userListSectionRef} className="surface-card overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="border-b border-border">
+              <tr>
+                <th className="text-left px-4 py-3 font-semibold">Name</th>
+                <th className="text-left px-4 py-3 font-semibold">Email</th>
+                <th className="text-left px-4 py-3 font-semibold">Role</th>
+                <th className="text-left px-4 py-3 font-semibold">Title</th>
+                <th className="text-left px-4 py-3 font-semibold">Department</th>
+                <th className="text-left px-4 py-3 font-semibold">Status</th>
+                <th className="text-left px-4 py-3 font-semibold">Created</th>
+                <th className="text-right px-4 py-3 font-semibold">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="text-center py-10 text-muted-foreground">
+                    No users found
+                  </td>
+                </tr>
+              )}
+              {filtered.map((u) => (
+                <tr key={u.id} className={`h-11 hover:bg-muted transition-colors ${!u.is_active ? 'opacity-50' : ''}`}>
+                  <td className="px-4 py-3 font-medium">
+                    <button
+                      onClick={() => setSelectedUserDetails(u)}
+                      className="text-left underline underline-offset-2 hover:text-primary"
+                    >
+                      {u.full_name}
+                    </button>
+                    {u.id === currentUser?.id && (
+                      <span className="ml-2 text-[10px] text-muted-foreground border rounded-full px-1.5 py-0.5">you</span>
+                    )}
+                    {u.timesheet_locked && (
+                      <button
+                        className="ml-1 text-amber-500 hover:text-amber-700"
+                        title={u.timesheet_locked_reason ?? 'Timesheet locked — click to unlock'}
+                        onClick={(e) => { e.stopPropagation(); unlockUser.mutate(u.id); }}
+                      >
+                        🔒
+                      </button>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">{u.email}</td>
+                  <td className="px-4 py-3">{roleBadge(u.role)}</td>
+                  <td className="px-4 py-3 text-muted-foreground">{u.title || '—'}</td>
+                  <td className="px-4 py-3 text-muted-foreground">{u.department || '—'}</td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => handleToggleActive(u)}
+                      disabled={!isAdminUser || u.id === currentUser?.id}
+                      title={u.id === currentUser?.id ? "Can't deactivate yourself" : undefined}
+                      className={`inline-flex h-5 items-center rounded-full px-2 text-[11px] font-medium transition ${
+                        u.is_active
+                          ? 'bg-[var(--success-light)] text-[var(--success)]'
+                          : 'bg-[var(--bg-surface-3)] text-[var(--text-secondary)]'
+                      } disabled:cursor-not-allowed disabled:opacity-60`}
+                    >
+                      {u.is_active ? 'Active' : 'Inactive'}
+                    </button>
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">{format(new Date(u.created_at), 'MMM d, yyyy')}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex justify-end gap-2">
+                      {canEditUser(u) && (
+                        <button
+                          onClick={() => openEdit(u)}
+                          className="p-1.5 rounded hover:bg-muted"
+                          title="Edit"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                      )}
+                      {isAdminUser && u.id !== currentUser?.id && (
+                        <button
+                          onClick={() => setConfirmDeleteId(u.id)}
+                          className="p-1.5 rounded hover:bg-red-50 text-red-600"
+                          title="Delete"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div></>)}
+      </div>
+
+      {showModal && (
+        <div className="fixed inset-0 z-50 bg-[rgba(0,0,0,0.15)]">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-user-modal-title"
+            className="ml-auto flex h-full w-full max-w-[420px] flex-col bg-card shadow-[0_4px_16px_rgba(0,0,0,0.08)]"
+          >
+            <div className="flex shrink-0 items-center justify-between border-b border-border px-6 py-4">
+              <h2 id="edit-user-modal-title" className="text-lg font-bold">
+                {editingUser ? `Edit User · ${editingUser.full_name}` : 'New User'}
+              </h2>
+              <button onClick={closeModal} className="p-1.5 rounded hover:bg-muted">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 space-y-4 overflow-y-auto px-6 py-6">
+                {isProjectOnlyEdit ? (
+                  <div className="rounded bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                    Managers can only update project access for employees. Updating access for <span className="font-medium text-foreground">{editingUser?.full_name}</span>.
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Full Name</label>
+                      <input
+                        required
+                        value={form.full_name}
+                        onChange={(e) => setForm((f) => ({ ...f, full_name: e.target.value }))}
+                        className="w-full px-3 py-2 border rounded"
+                        placeholder="Jane Smith"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Email</label>
+                      <input
+                        required
+                        type="email"
+                        value={form.email}
+                        onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                        className="w-full px-3 py-2 border rounded"
+                        placeholder="jane@example.com"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Username</label>
+                      <input
+                        required
+                        type="text"
+                        value={form.username}
+                        onChange={(e) => setForm((f) => ({ ...f, username: e.target.value.toLowerCase() }))}
+                        className="w-full px-3 py-2 border rounded"
+                        placeholder="jane.smith"
+                        minLength={3}
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">Minimum 3 characters, lowercase letters and numbers</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Role</label>
+                      <select
+                        value={form.role}
+                        onChange={(e) => {
+                          const nextRole = e.target.value as UserRole;
+                          setForm((f) => {
+                            const nextAllowedSupervisorRoles = getAllowedSupervisorRoles(nextRole);
+                            const nextManagerId =
+                              f.manager_id &&
+                              (users ?? []).some(
+                                (candidate) =>
+                                  candidate.id === f.manager_id &&
+                                  candidate.id !== editingUser?.id &&
+                                  nextAllowedSupervisorRoles.includes(candidate.role)
+                              )
+                                ? f.manager_id
+                                : null;
+
+                            return {
+                              ...f,
+                              role: nextRole,
+                              manager_id: nextManagerId,
+                              project_ids: nextRole === 'EMPLOYEE' ? f.project_ids : [],
+                            };
+                          });
+                        }}
+                        className="w-full px-3 py-2 border rounded"
+                      >
+                        {roles.map((r) => (
+                          <option key={r} value={r}>{r}</option>
+                        ))}
+                      </select>
+                    </div>
+                    {(form.role === 'MANAGER' || form.role === 'EMPLOYEE') && (
+                      <>
+                        <div>
+                          <label className="block text-sm font-medium mb-1">Title</label>
+                          <input
+                            required
+                            value={form.title}
+                            onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+                            className="w-full px-3 py-2 border rounded"
+                            placeholder={form.role === 'MANAGER' ? 'Manager' : 'Senior Software Engineer'}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium mb-1">Department</label>
+                          <input
+                            required={form.role === 'MANAGER'}
+                            value={form.department}
+                            onChange={(e) => setForm((f) => ({ ...f, department: e.target.value }))}
+                            className="w-full px-3 py-2 border rounded"
+                            placeholder={form.role === 'MANAGER' ? 'Software Engineering' : 'Optional for employees'}
+                          />
+                        </div>
+                      </>
+                    )}
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Reports To</label>
+                      <select
+                        value={form.manager_id ?? ''}
+                        onChange={(e) => setForm((f) => ({ ...f, manager_id: e.target.value ? Number(e.target.value) : null }))}
+                        className="w-full px-3 py-2 border rounded"
+                      >
+                        <option value="">Unassigned</option>
+                        {supervisors
+                          .filter((supervisor) => supervisor.id !== editingUser?.id)
+                          .map((supervisor) => (
+                            <option key={supervisor.id} value={supervisor.id}>{supervisor.full_name}</option>
+                          ))}
+                      </select>
+                    </div>
+                  </>
+                )}
+                {(form.role === 'EMPLOYEE' || isProjectOnlyEdit) && (
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Project Access</label>
+                    <div className="max-h-44 overflow-y-auto rounded border p-3 space-y-2 bg-muted/10">
+                      {activeProjects.length === 0 && (
+                        <p className="text-sm text-muted-foreground">No active projects available.</p>
+                      )}
+                      {activeProjects.map((project: Project) => (
+                        <label key={project.id} className="flex items-start gap-3 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={form.project_ids.includes(project.id)}
+                            onChange={() => handleProjectToggle(project.id)}
+                            disabled={!canManageEmployeeProjects}
+                            className="mt-0.5 rounded"
+                          />
+                          <span>
+                            <span className="font-medium text-foreground">{project.name}</span>
+                            {project.client?.name && (
+                              <span className="block text-xs text-muted-foreground">{project.client.name}</span>
+                            )}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Selected projects control project visibility for this report.
+                    </p>
+                  </div>
+                )}
+                {!editingUser && isAdminUser && (
+                  <p className="text-xs text-muted-foreground rounded bg-muted/20 px-3 py-2">
+                    A secure temporary password will be generated automatically. A verification email will be sent to the user, and you will be shown the credentials to share manually.
+                  </p>
+                )}
+                {!isProjectOnlyEdit && (
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <label className="flex items-center gap-2">
+                      <input
+                        id="is_active"
+                        type="checkbox"
+                        checked={form.is_active}
+                        onChange={(e) => setForm((f) => ({ ...f, is_active: e.target.checked }))}
+                        className="rounded"
+                      />
+                      <span className="text-sm font-medium">Active account</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input
+                        id="can_review"
+                        type="checkbox"
+                        checked={form.can_review}
+                        onChange={(e) => setForm((f) => ({ ...f, can_review: e.target.checked }))}
+                        className="rounded"
+                      />
+                      <span className="text-sm font-medium">Reviewer access</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input
+                        id="is_external"
+                        type="checkbox"
+                        checked={form.is_external}
+                        onChange={(e) => setForm((f) => ({ ...f, is_external: e.target.checked }))}
+                        className="rounded"
+                      />
+                      <span className="text-sm font-medium">External user</span>
+                    </label>
+                  </div>
+                )}
+              </div>
+
+              <div className="shrink-0 border-t px-6 py-4">
+                {formError && (
+                  <p className="mb-3 rounded bg-red-50 px-3 py-2 text-sm text-red-600">{formError}</p>
+                )}
+
+                <div className="flex gap-3">
+                  <button
+                    type="submit"
+                    disabled={createUser.isPending || updateUser.isPending}
+                    className="flex-1 px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    {createUser.isPending || updateUser.isPending ? 'Saving...' : editingUser ? (isProjectOnlyEdit ? 'Save Project Access' : 'Save Changes') : 'Create User'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={closeModal}
+                    className="flex-1 px-4 py-2 bg-muted rounded hover:bg-muted/90"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {isAdminUser && confirmDeleteId !== null && (() => {
+        const userToDelete = (users ?? []).find((u) => u.id === confirmDeleteId);
+        return (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
+          <div className="bg-card rounded-xl shadow-2xl w-full max-w-sm p-6">
+            <h2 className="text-lg font-bold mb-2">Delete User</h2>
+            <p className="text-sm text-muted-foreground mb-1">
+              Are you sure you want to permanently delete:
+            </p>
+            <p className="font-semibold text-foreground mb-1">{userToDelete?.full_name}</p>
+            <p className="text-xs text-muted-foreground mb-5">{userToDelete?.email}</p>
+            <p className="text-xs text-red-600 mb-5">This action cannot be undone.</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => handleDelete(confirmDeleteId)}
+                disabled={deleteUser.isPending}
+                className="flex-1 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleteUser.isPending ? 'Deleting...' : 'Delete'}
+              </button>
+              <button
+                onClick={() => setConfirmDeleteId(null)}
+                className="flex-1 px-4 py-2 bg-muted rounded hover:bg-muted/90"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
+
+      {/* New user credentials dialog */}
+      {newUserCredentials && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
+          <div className="bg-card rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4">
+            <h2 className="text-lg font-semibold text-foreground">User created</h2>
+            <p className="text-sm text-muted-foreground">
+              Share these credentials with the user. They will receive a verification email and must set a new password before logging in.
+            </p>
+            <div className="rounded-lg border bg-muted/30 p-4 space-y-2 font-mono text-sm">
+              <div className="flex justify-between gap-2">
+                <span className="text-muted-foreground">Email</span>
+                <span className="font-medium select-all">{newUserCredentials.email}</span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span className="text-muted-foreground">Temp password</span>
+                <span className="font-medium select-all">{newUserCredentials.password}</span>
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <button
+                className="action-button flex-1"
+                onClick={() => {
+                  void navigator.clipboard.writeText(
+                    `Email: ${newUserCredentials.email}\nTemporary password: ${newUserCredentials.password}`
+                  );
+                  setCredentialsCopied(true);
+                }}
+              >
+                {credentialsCopied ? 'Copied!' : 'Copy credentials'}
+              </button>
+              <button
+                className="flex-1 rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted/50"
+                onClick={() => setNewUserCredentials(null)}
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showNoProjectModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
+          <div className="bg-card rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b">
+              <div>
+                <h2 className="text-lg font-bold">Employees Without Project Access</h2>
+                <p className="text-sm text-muted-foreground mt-0.5">{employeesWithoutProjects.length} active employees with no projects assigned</p>
+              </div>
+              <button onClick={() => setShowNoProjectModal(false)} className="p-1.5 rounded hover:bg-muted">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="overflow-y-auto flex-1">
+              {employeesWithoutProjects.length === 0 ? (
+                <p className="text-sm text-muted-foreground p-6">All employees have project access assigned.</p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/40 border-b sticky top-0">
+                    <tr>
+                      <th className="text-left px-4 py-3 font-semibold">Name</th>
+                      <th className="text-left px-4 py-3 font-semibold">Email</th>
+                      <th className="text-left px-4 py-3 font-semibold">Department</th>
+                      <th className="text-right px-4 py-3 font-semibold">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {employeesWithoutProjects.map((u) => (
+                      <tr key={u.id} className="hover:bg-muted/10">
+                        <td className="px-4 py-3 font-medium">{u.full_name}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{u.email}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{u.department || '—'}</td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            onClick={() => {
+                              setShowNoProjectModal(false);
+                              openEdit(u);
+                            }}
+                            className="flex items-center gap-1.5 ml-auto px-3 py-1.5 bg-primary text-primary-foreground rounded-lg text-xs hover:bg-primary/90"
+                          >
+                            <Pencil className="w-3 h-3" />
+                            Assign Projects
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedUserDetails && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
+          <div className="bg-card rounded-xl shadow-2xl w-full max-w-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b">
+              <h2 className="text-lg font-bold">User Details</h2>
+              <button onClick={() => setSelectedUserDetails(null)} className="p-1.5 rounded hover:bg-muted">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                <div>
+                  <p className="text-muted-foreground">Full Name</p>
+                  <p className="font-medium">{selectedUserDetails.full_name}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Email</p>
+                  <p className="font-medium">{selectedUserDetails.email}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Role</p>
+                  <div className="mt-1">{roleBadge(selectedUserDetails.role)}</div>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Status</p>
+                  <p className="font-medium">{selectedUserDetails.is_active ? 'Active' : 'Inactive'}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Title</p>
+                  <p className="font-medium">{selectedUserDetails.title || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Department</p>
+                  <p className="font-medium">{selectedUserDetails.department || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Reports To</p>
+                  <p className="font-medium">{getManagerDisplayName(selectedUserDetails.manager_id)}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Created</p>
+                  <p className="font-medium">{format(new Date(selectedUserDetails.created_at), 'MMM d, yyyy')}</p>
+                </div>
+              </div>
+
+              <div>
+                <h3 className="font-semibold mb-2">Project & Client Access</h3>
+                {getUserProjectDetails(selectedUserDetails).length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No project access assigned.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {getUserProjectDetails(selectedUserDetails).map((project: Project) => (
+                      <div key={project.id} className="rounded-lg border px-3 py-2 text-sm">
+                        <p className="font-medium">{project.name}</p>
+                        <p className="text-muted-foreground">Client: {project.client?.name || '—'}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {canEditUser(selectedUserDetails) && (
+              <div className="px-6 pb-6">
+                <button
+                  onClick={() => {
+                    const u = selectedUserDetails;
+                    setSelectedUserDetails(null);
+                    openEdit(u);
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90"
+                >
+                  <Pencil className="w-4 h-4" />
+                  Edit User
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
