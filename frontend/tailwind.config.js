@@ -16,7 +16,7 @@ export default {
     extend: {
       fontFamily: {
         sans: ['"Plus Jakarta Sans"', 'sans-serif'],
-        mono: ['"Fira Code"', 'monospace'],
+        mono: ['"JetBrains Mono"', '"Fira Code"', 'monospace'],
       },
       colors: {
         border: "hsl(var(--border))",
@@ -52,6 +52,12 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        /* Acufy brand colors */
+        sky: "#0EA5E9",
+        cyan: "#06B6D4",
+        teal: "#14B8A6",
+        mint: "#2DD4BF",
+        deep: "#0284C7",
       },
       borderRadius: {
         lg: "var(--radius)",

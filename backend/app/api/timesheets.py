@@ -18,8 +18,33 @@ from app.models.user import User, UserRole
 from app.models.time_entry import TimeEntryStatus
 from datetime import date
 from typing import Optional
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/timesheets", tags=["timesheets"])
+
+
+# ── Natural Language Parsing ────────────────────────────────────────
+
+class NaturalLanguageRequest(BaseModel):
+    text: str
+
+
+@router.post("/parse-natural")
+async def parse_natural_language(
+    body: NaturalLanguageRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Parse a natural language sentence into structured time entry data.
+    Returns parsed entries with project/task/hours/date resolved from
+    the user's assigned projects. Does NOT create entries — the frontend
+    uses the result to populate the form for user review.
+    """
+    from app.services.nl_time_entry import parse_natural_language_entry
+
+    result = await parse_natural_language_entry(db, current_user, body.text)
+    return result
 
 
 @router.get("/my", response_model=list[TimeEntryWithUser])

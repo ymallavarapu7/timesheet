@@ -29,8 +29,12 @@ uploads/
 # Local dev artifacts
 runtime-logs/
 backups/
-sample_timesheets/
 *.bat
+*.dump
 
-# Claude Code IDE
+# Local-only dev quick login
+frontend/src/pages/DevQuickLogin.tsx
+
+# Claude Code
 .claude/
+CLAUDE.md

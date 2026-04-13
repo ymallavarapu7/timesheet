@@ -362,6 +362,9 @@ export const MailboxesPage: React.FC = () => {
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Interval</label>
                 <select className="w-full rounded-lg border px-3 py-2 text-sm" value={fetchInterval} onChange={(e) => setFetchInterval(e.target.value)}>
+                  <option value="5">Every 5 minutes</option>
+                  <option value="10">Every 10 minutes</option>
+                  <option value="15">Every 15 minutes</option>
                   <option value="30">Every 30 minutes</option>
                   <option value="60">Every hour</option>
                   <option value="120">Every 2 hours</option>

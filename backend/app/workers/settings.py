@@ -45,17 +45,31 @@ def get_redis_settings() -> RedisSettings:
         return RedisSettings(host="localhost", port=6379)
 
 
+def _parse_cron_minutes() -> set[int]:
+    """Parse WORKER_CRON_MINUTES from settings into a set of ints."""
+    try:
+        return {int(m.strip()) for m in settings.worker_cron_minutes.split(",") if m.strip()}
+    except (ValueError, AttributeError) as exc:
+        logger.warning("Invalid WORKER_CRON_MINUTES '%s', falling back to {0,15,30,45}: %s", settings.worker_cron_minutes, exc)
+        return {0, 15, 30, 45}
+
+
+_cron_minutes = _parse_cron_minutes()
+logger.info("Worker cron schedule: minute=%s  job_timeout=%s  max_tries=%s",
+            _cron_minutes, settings.worker_job_timeout, settings.worker_max_tries)
+
+
 class WorkerSettings:
     """arq WorkerSettings discovered by the worker runtime."""
 
     functions = [fetch_emails_for_tenant, check_and_send_reminders, scheduled_fetch_emails]
     redis_settings = get_redis_settings()
-    job_timeout = 300
-    max_tries = 3
-    keep_result = 86400
+    job_timeout = settings.worker_job_timeout
+    max_tries = settings.worker_max_tries
+    keep_result = settings.worker_keep_result
     health_check_interval = 30
     log_results = True
     cron_jobs = [
-        cron(check_and_send_reminders, minute={0, 15, 30, 45}),
-        cron(scheduled_fetch_emails, minute={0, 15, 30, 45}),
+        cron(check_and_send_reminders, minute=_cron_minutes),
+        cron(scheduled_fetch_emails, minute=_cron_minutes),
     ]

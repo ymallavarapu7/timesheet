@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Navigate, Outlet, Route, Routes } from 'react-
 import { QueryClientProvider } from '@tanstack/react-query';
 
 import { AuthProvider } from '@/contexts/AuthContext';
+import { ThemeProvider } from '@/contexts/ThemeContext';
 import { AppLayout, Loading } from '@/components';
 import { useAuth, useCanReview, useIngestionEnabled } from '@/hooks';
 import {
@@ -149,13 +150,15 @@ function AppRoutes() {
 
 export function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <Router>
-        <AuthProvider>
-          <AppRoutes />
-        </AuthProvider>
-      </Router>
-    </QueryClientProvider>
+    <ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <Router>
+          <AuthProvider>
+            <AppRoutes />
+          </AuthProvider>
+        </Router>
+      </QueryClientProvider>
+    </ThemeProvider>
   );
 }
 

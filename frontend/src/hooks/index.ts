@@ -3,6 +3,7 @@ export { useAuth, useIsAuthenticated, useUserRole, useHasRole, useIsAdmin, useIs
 export {
   useTimeEntries,
   useTimeEntry,
+  useParseNaturalTimeEntry,
   useCreateTimeEntry,
   useUpdateTimeEntry,
   useDeleteTimeEntry,

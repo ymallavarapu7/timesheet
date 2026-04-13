@@ -3,11 +3,11 @@ import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Loading, Error, EmptyState, Modal, TimeEntryRow, DateRangePickerCalendar, SearchInput } from '@/components';
-import { useAuth, useTimeEntries, useCreateTimeEntry, useSubmitTimeEntries, useProjects, useTasks, useUpdateTimeEntry, useNotifications, useWeeklySubmitStatus, useCreateTask, useMarkNotificationRead } from '@/hooks';
+import { useAuth, useTimeEntries, useCreateTimeEntry, useParseNaturalTimeEntry, useSubmitTimeEntries, useProjects, useTasks, useUpdateTimeEntry, useNotifications, useWeeklySubmitStatus, useCreateTask, useMarkNotificationRead } from '@/hooks';
 import { timeentriesAPI } from '@/api/endpoints';
 import { Project, Task, TimeEntry, TimeEntryStatus } from '@/types';
 import { addDays, endOfWeek, format, parseISO, startOfWeek, startOfYear, subDays } from 'date-fns';
-import { ArrowDown, ArrowUp, Search, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, Search, Sparkles, X } from 'lucide-react';
 
 type EntryFormData = {
   project_id: number;
@@ -59,6 +59,27 @@ export const MyTimePage: React.FC = () => {
   const [newTaskName, setNewTaskName] = useState('');
   const [newTaskCode, setNewTaskCode] = useState('');
   const [newTaskDescription, setNewTaskDescription] = useState('');
+
+  // ── Natural Language entry ──
+  const [nlInput, setNlInput] = useState('');
+  const [nlResult, setNlResult] = useState<{
+    entries: Array<{
+      project_id: number | null;
+      project_name: string;
+      task_id: number | null;
+      task_name: string;
+      client_name: string;
+      client_id: number | null;
+      entry_date: string;
+      hours: number | null;
+      description: string;
+      is_billable: boolean;
+      error: string | null;
+      alternatives: Array<{ project_id: number; project_name: string; task_id: number; task_name: string }>;
+    }>;
+    error?: string;
+  } | null>(null);
+  const parseMutation = useParseNaturalTimeEntry();
 
   const queryParams = useMemo(
     () => ({
@@ -364,6 +385,77 @@ export const MyTimePage: React.FC = () => {
         };
       })
     );
+  };
+
+  // ── NL Parse handler ──
+  const handleNlParse = async () => {
+    if (!nlInput.trim()) return;
+    setNlResult(null);
+    try {
+      const result = await parseMutation.mutateAsync(nlInput.trim());
+      if (result.error) {
+        setNlResult({ entries: [], error: result.error });
+        return;
+      }
+      setNlResult(result);
+    } catch {
+      setNlResult({ entries: [], error: 'Failed to parse. Please try again.' });
+    }
+  };
+
+  const handleNlApplyEntry = (entry: NonNullable<typeof nlResult>['entries'][number]) => {
+    if (entry.error || !entry.project_id || !entry.hours) return;
+
+    // Find the date key for the grid
+    const dateKey = entry.entry_date;
+
+    // Navigate the grid to the week containing this entry date
+    const entryDate = parseISO(dateKey);
+    const entryWeekStart = startOfWeek(entryDate, { weekStartsOn: 0 });
+    const currentWeekStart = startOfWeek(weekAnchorDate, { weekStartsOn: 0 });
+    if (entryWeekStart.getTime() !== currentWeekStart.getTime()) {
+      setWeekAnchorDate(entryDate);
+    }
+
+    // Check if this project/task already has a row in the grid
+    const existingRowIdx = gridRows.findIndex(
+      (r) => r.projectId === entry.project_id && r.taskId === (entry.task_id || 0),
+    );
+
+    if (existingRowIdx >= 0) {
+      // Update existing row's hours for this date
+      setGridRows((rows) =>
+        rows.map((r, idx) =>
+          idx === existingRowIdx
+            ? { ...r, hours: { ...r.hours, [dateKey]: String(entry.hours) }, description: entry.description || r.description }
+            : r,
+        ),
+      );
+    } else {
+      // Add a new row
+      const newId = Math.max(...gridRows.map((r) => r.id), 0) + 1;
+      setGridRows((rows) => [
+        ...rows,
+        {
+          id: newId,
+          projectId: entry.project_id!,
+          taskId: entry.task_id || 0,
+          hours: { [dateKey]: String(entry.hours) },
+          description: entry.description || '',
+          isBillable: entry.is_billable,
+        },
+      ]);
+    }
+  };
+
+  const handleNlApplyAll = () => {
+    if (!nlResult) return;
+    const validEntries = nlResult.entries.filter((e) => !e.error && e.project_id && e.hours);
+    for (const entry of validEntries) {
+      handleNlApplyEntry(entry);
+    }
+    setNlInput('');
+    setNlResult(null);
   };
 
   const handleAddGridRow = () => {
@@ -696,6 +788,102 @@ export const MyTimePage: React.FC = () => {
             {submitMutation.isPending ? 'Submitting...' : 'Submit Weekly Entries'}
           </button>
         </div>
+
+        {/* ── Natural Language Input ── */}
+        <section className="mb-6 rounded-lg border bg-card">
+          <div className="border-b px-4 py-3 flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-primary" />
+            <h2 className="text-sm font-semibold text-muted-foreground">Quick Entry — Describe your work</h2>
+          </div>
+          <div className="p-4">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={nlInput}
+                onChange={(e) => setNlInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleNlParse(); } }}
+                placeholder='e.g. "Worked on API integration in Project Alpha from 9 AM to 3 PM yesterday"'
+                className="field-input flex-1"
+                disabled={parseMutation.isPending}
+              />
+              <button
+                type="button"
+                onClick={handleNlParse}
+                disabled={parseMutation.isPending || !nlInput.trim()}
+                className="action-button whitespace-nowrap"
+              >
+                {parseMutation.isPending ? 'Processing...' : 'Go'}
+              </button>
+            </div>
+
+            {/* Error message */}
+            {nlResult?.error && (
+              <div className="mt-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {nlResult.error}
+              </div>
+            )}
+
+            {/* Parsed entries */}
+            {nlResult && nlResult.entries.length > 0 && (
+              <div className="mt-3 space-y-2">
+                <p className="text-xs font-medium text-muted-foreground">Parsed entries — review and apply to your grid:</p>
+                {nlResult.entries.map((entry, idx) => (
+                  <div
+                    key={idx}
+                    className={`rounded-lg border p-3 text-sm ${entry.error ? 'border-destructive/30 bg-destructive/5' : 'border-primary/20 bg-primary/5'}`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 space-y-1">
+                        {entry.error ? (
+                          <p className="font-medium text-destructive">{entry.error}</p>
+                        ) : (
+                          <>
+                            <p className="font-medium text-foreground">
+                              {entry.client_name} → {entry.project_name} → {entry.task_name}
+                            </p>
+                            <p className="text-muted-foreground">
+                              {entry.entry_date} · {entry.hours}h · {entry.is_billable ? 'Billable' : 'Non-billable'}
+                            </p>
+                            {entry.description && (
+                              <p className="text-muted-foreground italic">"{entry.description}"</p>
+                            )}
+                          </>
+                        )}
+                        {entry.alternatives && entry.alternatives.length > 0 && (
+                          <div className="mt-1">
+                            <p className="text-xs text-muted-foreground">Did you mean:</p>
+                            {entry.alternatives.map((alt, ai) => (
+                              <span key={ai} className="mr-2 text-xs text-primary">{alt.project_name} → {alt.task_name}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      {!entry.error && entry.project_id && entry.hours && (
+                        <button
+                          type="button"
+                          onClick={() => handleNlApplyEntry(entry)}
+                          className="action-button-secondary text-xs px-2 py-1 h-auto"
+                        >
+                          Apply
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {nlResult.entries.some((e) => !e.error && e.project_id && e.hours) && (
+                  <div className="flex gap-2">
+                    <button type="button" onClick={handleNlApplyAll} className="action-button text-xs px-3 py-1.5 h-auto">
+                      Apply All Valid Entries
+                    </button>
+                    <button type="button" onClick={() => { setNlResult(null); setNlInput(''); }} className="action-button-secondary text-xs px-3 py-1.5 h-auto">
+                      Dismiss
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </section>
 
         <section ref={projectsSectionRef} className="mb-6 rounded-lg border bg-card">
           <div className="border-b px-4 py-3 flex items-center justify-between">

@@ -397,7 +397,10 @@ def _fetch_messages_sync(server: Any, last_fetched_at: datetime | None) -> list[
             cutoff = last_fetched_at - timedelta(minutes=5)
             uids = server.search(["SINCE", cutoff.strftime("%d-%b-%Y")])
         else:
-            uids = server.search(["ALL"])
+            # First fetch: limit to configured window instead of entire inbox
+            from app.core.config import settings as app_settings
+            cutoff = datetime.now(timezone.utc) - timedelta(days=app_settings.email_fetch_initial_days)
+            uids = server.search(["SINCE", cutoff.strftime("%d-%b-%Y")])
 
         if not uids:
             return []

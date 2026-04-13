@@ -236,6 +236,31 @@ export const timeentriesAPI = {
   weeklySubmitStatus: () =>
     apiClient.get<WeeklySubmissionStatus>('/timesheets/weekly-submit-status'),
 
+  parseNatural: (text: string) =>
+    apiClient.post<{
+      entries: Array<{
+        project_id: number | null;
+        project_name: string;
+        task_id: number | null;
+        task_name: string;
+        client_name: string;
+        client_id: number | null;
+        entry_date: string;
+        hours: number | null;
+        description: string;
+        is_billable: boolean;
+        error: string | null;
+        alternatives: Array<{
+          project_id: number;
+          project_name: string;
+          task_id: number;
+          task_name: string;
+        }>;
+      }>;
+      raw_input?: string;
+      error?: string;
+    }>('/timesheets/parse-natural', { text }),
+
   listAll: (params?: {
     user_id?: number;
     start_date?: string;
@@ -415,7 +440,6 @@ export const mappingsAPI = {
 
 export const ingestionAPI = {
   triggerFetch: () => apiClient.post<FetchJobResponse>('/api/ingestion/fetch-emails', {}),
-  simulateIngestion: () => apiClient.post('/api/ingestion/simulate-ingestion', {}),
   getFetchStatus: (jobId: string) => apiClient.get<FetchJobStatus>(`/api/ingestion/fetch-emails/status/${jobId}`),
   getSkippedEmails: (params?: { limit?: number }) => apiClient.get<SkippedEmailOverview>('/api/ingestion/skipped-emails', { params }),
   reprocessSkipped: () => apiClient.post<ReprocessSkippedResult>('/api/ingestion/fetch-emails/reprocess-skipped', {}),

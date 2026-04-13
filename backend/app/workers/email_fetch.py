@@ -447,72 +447,88 @@ async def _process_mailbox(
             result["success"] = True
             return result
 
-        # Phase 2: process each message with the caller's session.
+        # Phase 2: process messages concurrently (up to 5 in parallel).
+        # Each message gets its own DB session to avoid transaction conflicts.
+        import asyncio
+        from app.db import AsyncSessionLocal
+
         total_messages = len(messages)
-        for msg_index, raw_message in enumerate(messages):
-            if ctx and job_id and total_messages > 0:
-                msg_progress = base_progress + int(((msg_index) / total_messages) * progress_range)
-                await _write_job_status(
-                    ctx,
-                    job_id=job_id,
-                    tenant_id=tenant_id,
-                    mode="fetch",
-                    status="in_progress",
-                    progress=msg_progress,
-                    message=f"Processing email {msg_index + 1}/{total_messages} from {mailbox_label}...",
-                )
+        CONCURRENCY = 5
+        sem = asyncio.Semaphore(CONCURRENCY)
+        diagnostics_lock = asyncio.Lock()
 
-            try:
-                pipeline_result = await process_email(
-                    raw_message=raw_message,
-                    mailbox_id=mailbox.id,
-                    tenant_id=tenant_id,
-                    session=session,
-                )
+        async def _process_one(msg_index: int, raw_message: dict):
+            async with sem:
+                if ctx and job_id and total_messages > 0:
+                    msg_progress = base_progress + int(((msg_index) / total_messages) * progress_range)
+                    await _write_job_status(
+                        ctx,
+                        job_id=job_id,
+                        tenant_id=tenant_id,
+                        mode="fetch",
+                        status="in_progress",
+                        progress=msg_progress,
+                        message=f"Processing email {msg_index + 1}/{total_messages} from {mailbox_label}...",
+                    )
 
-                if pipeline_result.skipped:
-                    result["skipped"] += 1
-                    reason = pipeline_result.skip_reason or "unknown"
-                    result["skip_reasons"][reason] = result["skip_reasons"].get(reason, 0) + 1
-                else:
-                    result["new"] += 1
-                    result["timesheets_created"] += pipeline_result.timesheets_created
+                try:
+                    async with AsyncSessionLocal() as msg_session:
+                        pipeline_result = await process_email(
+                            raw_message=raw_message,
+                            mailbox_id=mailbox.id,
+                            tenant_id=tenant_id,
+                            session=msg_session,
+                        )
+                        await msg_session.commit()
 
-                result["message_diagnostics"].append(
-                    {
-                        "email_id": pipeline_result.email_id,
-                        "message_id": pipeline_result.message_id,
-                        "subject": pipeline_result.subject,
-                        "sender_email": pipeline_result.sender_email,
-                        "skipped": pipeline_result.skipped,
-                        "skip_reason": pipeline_result.skip_reason,
-                        "skip_detail": pipeline_result.skip_detail,
-                        "timesheets_created": pipeline_result.timesheets_created,
-                        "errors": pipeline_result.errors,
-                    }
-                )
+                    async with diagnostics_lock:
+                        if pipeline_result.skipped:
+                            result["skipped"] += 1
+                            reason = pipeline_result.skip_reason or "unknown"
+                            result["skip_reasons"][reason] = result["skip_reasons"].get(reason, 0) + 1
+                        else:
+                            result["new"] += 1
+                            result["timesheets_created"] += pipeline_result.timesheets_created
 
-            except Exception as exc:
-                logger.error(
-                    "Failed to process message in mailbox %s: %s",
-                    mailbox_id,
-                    exc,
-                )
-                result["skipped"] += 1
-                result["message_diagnostics"].append(
-                    {
-                        "email_id": None,
-                        "message_id": None,
-                        "subject": None,
-                        "sender_email": None,
-                        "skipped": True,
-                        "skip_reason": "message_processing_failed",
-                        "skip_detail": str(exc),
-                        "timesheets_created": 0,
-                        "errors": [str(exc)],
-                    }
-                )
-                continue
+                        result["message_diagnostics"].append(
+                            {
+                                "email_id": pipeline_result.email_id,
+                                "message_id": pipeline_result.message_id,
+                                "subject": pipeline_result.subject,
+                                "sender_email": pipeline_result.sender_email,
+                                "skipped": pipeline_result.skipped,
+                                "skip_reason": pipeline_result.skip_reason,
+                                "skip_detail": pipeline_result.skip_detail,
+                                "timesheets_created": pipeline_result.timesheets_created,
+                                "errors": pipeline_result.errors,
+                            }
+                        )
+
+                except Exception as exc:
+                    logger.error(
+                        "Failed to process message in mailbox %s: %s",
+                        mailbox_id,
+                        exc,
+                    )
+                    async with diagnostics_lock:
+                        result["skipped"] += 1
+                        result["message_diagnostics"].append(
+                            {
+                                "email_id": None,
+                                "message_id": None,
+                                "subject": None,
+                                "sender_email": None,
+                                "skipped": True,
+                                "skip_reason": "message_processing_failed",
+                                "skip_detail": str(exc),
+                                "timesheets_created": 0,
+                                "errors": [str(exc)],
+                            }
+                        )
+
+        await asyncio.gather(*[
+            _process_one(idx, msg) for idx, msg in enumerate(messages)
+        ])
 
         await update_last_fetched_at(mailbox, session)
         await session.commit()
@@ -641,13 +657,28 @@ async def scheduled_fetch_emails(ctx: dict) -> None:
 
 def _should_fetch_now(tenant_settings: dict, now: datetime) -> bool:
     """
-    Returns True if the current time falls within a 15-minute window
+    Returns True if the current time falls within a cron window
     that matches the tenant's fetch schedule.
+    Defaults are read from app settings (configurable via .env).
     """
-    interval = int(tenant_settings.get("fetch_emails_interval_minutes", "60"))
-    days_str = tenant_settings.get("fetch_emails_days", "mon,tue,wed,thu,fri")
-    start_time_str = tenant_settings.get("fetch_emails_start_time", "00:00")
-    end_time_str = tenant_settings.get("fetch_emails_end_time", "23:59")
+    from app.core.config import settings as app_settings
+
+    interval = int(tenant_settings.get(
+        "fetch_emails_interval_minutes",
+        str(app_settings.email_fetch_interval_minutes),
+    ))
+    days_str = tenant_settings.get(
+        "fetch_emails_days",
+        app_settings.email_fetch_days,
+    )
+    start_time_str = tenant_settings.get(
+        "fetch_emails_start_time",
+        app_settings.email_fetch_start_time,
+    )
+    end_time_str = tenant_settings.get(
+        "fetch_emails_end_time",
+        app_settings.email_fetch_end_time,
+    )
 
     day_names = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
     allowed_days = [d.strip().lower() for d in days_str.split(",")]
@@ -669,7 +700,22 @@ def _should_fetch_now(tenant_settings: dict, now: datetime) -> bool:
     minutes_since_start = current_minutes - start_total
     if minutes_since_start < 0:
         return False
-    return minutes_since_start % interval < 15
+    # Cron window width: derive from the cron schedule so we don't miss a
+    # tick.  Parse the configured minutes and use the smallest gap, capped
+    # at 15 as a sensible floor.
+    try:
+        cron_mins = sorted(
+            int(m.strip())
+            for m in app_settings.worker_cron_minutes.split(",")
+            if m.strip()
+        )
+        if len(cron_mins) >= 2:
+            cron_window = min(cron_mins[i + 1] - cron_mins[i] for i in range(len(cron_mins) - 1))
+        else:
+            cron_window = 15
+    except (ValueError, AttributeError):
+        cron_window = 15
+    return minutes_since_start % interval < cron_window
 
 
 async def get_job_status(job_id: str) -> dict:

@@ -2,7 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ═══════════════════════════════════════════════════════
+   ACUFY AI  —  Light Theme (default)
+   Brand palette: Sky #0EA5E9 · Cyan #06B6D4 · Teal #14B8A6 · Mint #2DD4BF
+   ═══════════════════════════════════════════════════════ */
 :root {
+  /* Legacy semantic vars */
   --bg-app: #f5f7fa;
   --bg-surface: #ffffff;
   --bg-surface-2: #f0f2f5;
@@ -11,39 +16,121 @@
   --text-secondary: #5c6474;
   --text-tertiary: #9ba3af;
   --text-inverse: #ffffff;
-  --accent-blue: #2563eb;
-  --accent-light: #eff6ff;
-  --accent-hover: #1d4ed8;
+
+  /* Acufy brand accent (replaces old blue) */
+  --accent-blue: #0EA5E9;
+  --accent-light: #f0f9ff;
+  --accent-hover: #0284C7;
+
+  /* Status */
   --success: #16a34a;
   --success-light: #f0fdf4;
   --warning: #d97706;
   --warning-light: #fffbeb;
   --danger: #dc2626;
   --danger-light: #fef2f2;
-  --info: #0284c7;
+  --info: #0EA5E9;
   --info-light: #f0f9ff;
+
+  /* Acufy brand tokens */
+  --acufy-sky: #0EA5E9;
+  --acufy-cyan: #06B6D4;
+  --acufy-teal: #14B8A6;
+  --acufy-mint: #2DD4BF;
+  --acufy-deep: #0284C7;
+
+  /* shadcn-style HSL tokens — Light */
   --background: 216 33% 97%;
-  --foreground: 225 22% 8%;
+  --foreground: 222 22% 8%;
   --card: 0 0% 100%;
-  --card-foreground: 225 22% 8%;
-  --primary: 221 83% 53%;
+  --card-foreground: 222 22% 8%;
+  --primary: 199 89% 48%;
   --primary-foreground: 0 0% 100%;
   --secondary: 220 24% 92%;
-  --secondary-foreground: 225 22% 8%;
+  --secondary-foreground: 222 22% 8%;
   --muted: 220 24% 94%;
   --muted-foreground: 220 14% 44%;
-  --accent: 221 83% 53%;
+  --accent: 199 89% 48%;
   --accent-foreground: 0 0% 100%;
   --destructive: 0 72% 51%;
   --destructive-foreground: 0 0% 100%;
   --border: 214 32% 91%;
   --input: 214 32% 91%;
-  --ring: 221 83% 53%;
+  --ring: 199 89% 48%;
   --popover: 0 0% 100%;
-  --popover-foreground: 225 22% 8%;
+  --popover-foreground: 222 22% 8%;
   --radius: 0.75rem;
+
+  /* Sidebar / nav specific */
+  --sidebar-bg: 0 0% 100%;
+  --sidebar-border: 214 32% 91%;
+  --topbar-bg: 0 0% 100%;
+  --topbar-border: 214 32% 91%;
+
+  /* Frosted glass */
+  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(14, 165, 233, 0.08);
 }
 
+/* ═══════════════════════════════════════════════════════
+   ACUFY AI  —  Dark Theme
+   Uses Acufy dark palette: 900 #0B1120 · 800 #0F172A · 700 #1E293B · 600 #334155
+   ═══════════════════════════════════════════════════════ */
+.dark {
+  --bg-app: #0B1120;
+  --bg-surface: #0F172A;
+  --bg-surface-2: #1E293B;
+  --bg-surface-3: #334155;
+  --text-primary: #F1F5F9;
+  --text-secondary: #94A3B8;
+  --text-tertiary: #64748B;
+  --text-inverse: #0B1120;
+
+  --accent-blue: #0EA5E9;
+  --accent-light: rgba(14, 165, 233, 0.12);
+  --accent-hover: #38BDF8;
+
+  --success: #22c55e;
+  --success-light: rgba(34, 197, 94, 0.12);
+  --warning: #f59e0b;
+  --warning-light: rgba(245, 158, 11, 0.12);
+  --danger: #ef4444;
+  --danger-light: rgba(239, 68, 68, 0.12);
+  --info: #0EA5E9;
+  --info-light: rgba(14, 165, 233, 0.12);
+
+  --background: 222 47% 9%;
+  --foreground: 213 31% 96%;
+  --card: 217 48% 11%;
+  --card-foreground: 213 31% 96%;
+  --primary: 199 89% 48%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 217 33% 17%;
+  --secondary-foreground: 213 31% 96%;
+  --muted: 217 33% 17%;
+  --muted-foreground: 215 20% 65%;
+  --accent: 199 89% 48%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 217 28% 22%;
+  --input: 217 28% 22%;
+  --ring: 199 89% 48%;
+  --popover: 217 48% 11%;
+  --popover-foreground: 213 31% 96%;
+
+  --sidebar-bg: 222 47% 7%;
+  --sidebar-border: 217 28% 18%;
+  --topbar-bg: 222 47% 7%;
+  --topbar-border: 217 28% 18%;
+
+  --glass-bg: rgba(11, 17, 32, 0.85);
+  --glass-border: rgba(14, 165, 233, 0.1);
+}
+
+/* ═══════════════════════════════════════════════════════
+   Base layer
+   ═══════════════════════════════════════════════════════ */
 html {
   scroll-behavior: smooth;
 }
@@ -55,7 +142,17 @@ html {
 
   body {
     @apply min-h-screen bg-background font-sans text-foreground antialiased;
-    background-image: radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 32%);
+  }
+
+  .light body {
+    background-image: radial-gradient(circle at top right, rgba(14, 165, 233, 0.06), transparent 40%);
+  }
+
+  .dark body {
+    background-image:
+      linear-gradient(rgba(14, 165, 233, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(14, 165, 233, 0.03) 1px, transparent 1px);
+    background-size: 60px 60px;
   }
 
   #root {
@@ -74,15 +171,27 @@ html {
     @apply outline-none ring-2 ring-ring/40;
   }
 
-  ::selection {
-    background: rgba(37, 99, 235, 0.2);
+  .light ::selection {
+    background: rgba(14, 165, 233, 0.2);
     color: #0f1117;
+  }
+
+  .dark ::selection {
+    background: rgba(14, 165, 233, 0.35);
+    color: #F1F5F9;
   }
 }
 
+/* ═══════════════════════════════════════════════════════
+   Component layer
+   ═══════════════════════════════════════════════════════ */
 @layer components {
   .surface-card {
     @apply rounded-xl bg-card shadow-[0_1px_2px_rgba(0,0,0,0.05),0_3px_12px_rgba(0,0,0,0.04)];
+  }
+
+  .dark .surface-card {
+    @apply shadow-[0_1px_2px_rgba(0,0,0,0.2),0_4px_16px_rgba(0,0,0,0.15)] border border-border;
   }
 
   .field-input {
@@ -93,15 +202,42 @@ html {
     @apply w-full rounded-md border border-transparent bg-muted px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground transition focus:border-primary focus:ring-2 focus:ring-primary/20;
   }
 
+  /* Primary button — Acufy sky→teal gradient */
   .action-button {
-    @apply inline-flex h-[34px] items-center justify-center rounded-md border border-transparent bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:opacity-60;
+    @apply inline-flex h-[34px] items-center justify-center rounded-lg border border-transparent px-4 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-60;
+    background: linear-gradient(135deg, var(--acufy-sky), var(--acufy-teal));
   }
 
+  .action-button:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 25px rgba(14, 165, 233, 0.3);
+  }
+
+  /* Secondary button */
   .action-button-secondary {
-    @apply inline-flex h-[34px] items-center justify-center rounded-md border border-transparent bg-muted px-4 text-sm font-medium text-foreground transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60;
+    @apply inline-flex h-[34px] items-center justify-center rounded-lg border border-border bg-card px-4 text-sm font-medium text-foreground transition hover:border-primary/30 hover:text-primary disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  /* Frosted glass utility */
+  .glass {
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-color: var(--glass-border);
+  }
+
+  /* Acufy gradient text */
+  .gradient-text {
+    background: linear-gradient(135deg, var(--acufy-sky), var(--acufy-cyan), var(--acufy-teal), var(--acufy-mint));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
   }
 }
 
+/* ═══════════════════════════════════════════════════════
+   Overrides for hardcoded Tailwind color classes
+   ═══════════════════════════════════════════════════════ */
 body {
   @apply bg-background text-foreground;
 }
@@ -110,32 +246,63 @@ body {
   background-color: hsl(var(--card)) !important;
 }
 
-.bg-slate-50,
-.bg-slate-100 {
-  background-color: #f8fafc !important;
+.dark .bg-slate-50,
+.dark .bg-slate-100 {
+  background-color: hsl(var(--muted)) !important;
 }
 
-.text-slate-900 {
+.dark .text-slate-900 {
   color: hsl(var(--foreground)) !important;
 }
 
-.text-slate-700,
-.text-slate-600 {
-  color: #475569 !important;
+.dark .text-slate-700,
+.dark .text-slate-600 {
+  color: hsl(var(--muted-foreground)) !important;
 }
 
-.text-slate-500,
-.text-slate-400 {
-  color: #64748b !important;
+.dark .text-slate-500,
+.dark .text-slate-400 {
+  color: var(--text-tertiary) !important;
 }
 
-.border-slate-50,
-.border-slate-100,
-.border-slate-200 {
+.dark .border-slate-50,
+.dark .border-slate-100,
+.dark .border-slate-200 {
   border-color: hsl(var(--border)) !important;
 }
 
-.hover\:bg-slate-50:hover,
-.hover\:bg-slate-100:hover {
+.dark .hover\:bg-slate-50:hover,
+.dark .hover\:bg-slate-100:hover,
+.dark .hover\:bg-slate-200:hover {
+  background-color: hsl(var(--muted)) !important;
+}
+
+.light .bg-slate-50,
+.light .bg-slate-100 {
+  background-color: #f8fafc !important;
+}
+
+.light .text-slate-900 {
+  color: hsl(var(--foreground)) !important;
+}
+
+.light .text-slate-700,
+.light .text-slate-600 {
+  color: #475569 !important;
+}
+
+.light .text-slate-500,
+.light .text-slate-400 {
+  color: #64748b !important;
+}
+
+.light .border-slate-50,
+.light .border-slate-100,
+.light .border-slate-200 {
+  border-color: hsl(var(--border)) !important;
+}
+
+.light .hover\:bg-slate-50:hover,
+.light .hover\:bg-slate-100:hover {
   background-color: #f1f5f9 !important;
 }

@@ -146,6 +146,28 @@ def _extract_spreadsheet(content: bytes, mime_type: str) -> ExtractionResult:
                 method="native_spreadsheet",
             )
 
+        # ── Helper: convert Excel date serial numbers to readable dates ──
+        from datetime import datetime as _dt, timedelta as _td
+
+        def _format_cell(cell_value):
+            """Convert a cell value to string, handling Excel date serials."""
+            if cell_value is None:
+                return ""
+            if isinstance(cell_value, _dt):
+                return cell_value.strftime("%Y-%m-%d")
+            if isinstance(cell_value, (int, float)):
+                # Excel date serial range: ~36526 (2000-01-01) to ~54789 (2050-01-01)
+                # Avoid converting regular numbers like hours (0-24), IDs, etc.
+                serial = float(cell_value)
+                if 36526 <= serial <= 54789 and serial == int(serial):
+                    try:
+                        # Excel epoch: Jan 0, 1900 (with Lotus 1-2-3 leap year bug)
+                        base = _dt(1899, 12, 30)
+                        return (base + _td(days=int(serial))).strftime("%Y-%m-%d")
+                    except (ValueError, OverflowError):
+                        pass
+            return str(cell_value)
+
         # Try openpyxl first (.xlsx), then fall back to xlrd (.xls)
         lines: list[str] = []
         try:
@@ -154,7 +176,7 @@ def _extract_spreadsheet(content: bytes, mime_type: str) -> ExtractionResult:
             for sheet in workbook.worksheets:
                 lines.append(f"=== Sheet: {sheet.title} ===")
                 for row in sheet.iter_rows(values_only=True):
-                    cells = [str(cell) if cell is not None else "" for cell in row]
+                    cells = [_format_cell(cell) for cell in row]
                     if any(cell.strip() for cell in cells):
                         lines.append("\t".join(cells))
         except Exception:
@@ -165,7 +187,20 @@ def _extract_spreadsheet(content: bytes, mime_type: str) -> ExtractionResult:
                 for sheet in workbook.sheets():
                     lines.append(f"=== Sheet: {sheet.name} ===")
                     for row_idx in range(sheet.nrows):
-                        cells = [str(sheet.cell_value(row_idx, col)) for col in range(sheet.ncols)]
+                        cells = []
+                        for col in range(sheet.ncols):
+                            cell_type = sheet.cell_type(row_idx, col)
+                            cell_value = sheet.cell_value(row_idx, col)
+                            # xlrd cell type 3 = XL_CELL_DATE
+                            if cell_type == 3:
+                                try:
+                                    date_tuple = xlrd.xldate_as_tuple(cell_value, workbook.datemode)
+                                    cells.append(_dt(*date_tuple[:3]).strftime("%Y-%m-%d") if date_tuple[0] else
+                                                 f"{date_tuple[3]:02d}:{date_tuple[4]:02d}")
+                                except Exception:
+                                    cells.append(_format_cell(cell_value))
+                            else:
+                                cells.append(_format_cell(cell_value))
                         if any(cell.strip() for cell in cells):
                             lines.append("\t".join(cells))
             except ImportError:

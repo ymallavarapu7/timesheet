@@ -1,18 +1,19 @@
 import React from 'react';
-import { Bell, Check, ChevronRight, LogOut, Menu, User as UserIcon } from 'lucide-react';
+import { Bell, Check, ChevronRight, LogOut, Menu, Moon, Sun, User as UserIcon } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { cn } from '@/lib/utils';
 import { useAuth, useMarkAllNotificationsRead, useMarkNotificationRead, useNotifications } from '@/hooks';
+import { useTheme } from '@/contexts/ThemeContext';
 
 interface TopBarProps {
-  collapsed: boolean;
   onOpenMobile: () => void;
 }
 
-export const TopBar: React.FC<TopBarProps> = ({ collapsed, onOpenMobile }) => {
+export const TopBar: React.FC<TopBarProps> = ({ onOpenMobile }) => {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const location = useLocation();
   const { data: notifications } = useNotifications();
   const markNotificationRead = useMarkNotificationRead();
@@ -34,6 +35,8 @@ export const TopBar: React.FC<TopBarProps> = ({ collapsed, onOpenMobile }) => {
       '/client-management': 'Clients',
       '/profile': 'Profile',
       '/platform/tenants': 'Tenants',
+      '/time-off': 'Time Off',
+      '/calendar': 'Calendar',
     };
     return map[location.pathname] ?? 'Workspace';
   }, [location.pathname]);
@@ -69,10 +72,10 @@ export const TopBar: React.FC<TopBarProps> = ({ collapsed, onOpenMobile }) => {
   }, []);
 
   const getSeverityClasses = (severity: string) => {
-    if (severity === 'error') return 'bg-red-100 text-red-700';
-    if (severity === 'warning') return 'bg-amber-100 text-amber-700';
-    if (severity === 'success') return 'bg-emerald-100 text-emerald-700';
-    return 'bg-sky-100 text-sky-700';
+    if (severity === 'error') return 'bg-red-500/15 text-red-500 dark:text-red-400';
+    if (severity === 'warning') return 'bg-amber-500/15 text-amber-600 dark:text-amber-400';
+    if (severity === 'success') return 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400';
+    return 'bg-sky-500/15 text-sky-600 dark:text-sky-400';
   };
 
   const getSeverityLabel = (severity: string) => {
@@ -114,13 +117,17 @@ export const TopBar: React.FC<TopBarProps> = ({ collapsed, onOpenMobile }) => {
   };
 
   return (
-    <header className={cn('sticky top-0 z-30 border-b border-border bg-card')}>
+    <header
+      className="sticky top-0 z-30 border-b bg-card/90 backdrop-blur-xl"
+      style={{ borderColor: 'var(--glass-border)' }}
+    >
       <div className="mx-auto flex h-[52px] max-w-[1800px] items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
+        {/* Left: hamburger + page title */}
         <div className="flex min-w-0 items-center gap-3">
           <button
             type="button"
             onClick={onOpenMobile}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-muted text-muted-foreground transition hover:text-foreground lg:hidden"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-muted text-muted-foreground transition hover:text-foreground lg:hidden"
             aria-label="Open navigation"
           >
             <Menu className="h-5 w-5" />
@@ -130,7 +137,20 @@ export const TopBar: React.FC<TopBarProps> = ({ collapsed, onOpenMobile }) => {
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        {/* Right: theme toggle + notifications + profile */}
+        <div className="flex items-center gap-2">
+          {/* Theme toggle */}
+          <button
+            type="button"
+            onClick={toggleTheme}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+            title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+          >
+            {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </button>
+
+          {/* Notifications */}
           <div ref={notificationsRef} className="relative">
             <button
               type="button"
@@ -138,19 +158,19 @@ export const TopBar: React.FC<TopBarProps> = ({ collapsed, onOpenMobile }) => {
                 setNotificationsOpen((open) => !open);
                 setProfileOpen(false);
               }}
-              className="relative inline-flex h-9 w-9 items-center justify-center rounded-md bg-muted text-muted-foreground transition hover:text-foreground"
+              className="relative inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
               aria-label="Open notifications"
               aria-expanded={notificationsOpen}
             >
               <Bell className="h-4 w-4" />
               {totalCount > 0 && (
-                <span className="absolute -right-1 -top-1 inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-white">
+                <span className="absolute -right-1 -top-1 inline-flex min-h-[18px] min-w-[18px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-white">
                   {totalCount > 99 ? '99+' : totalCount}
                 </span>
               )}
             </button>
             {notificationsOpen && (
-              <div className="absolute right-0 top-11 z-40 w-[360px] rounded-2xl border border-border bg-card p-2 shadow-[0_18px_40px_rgba(15,23,42,0.12)]">
+              <div className="absolute right-0 top-11 z-40 w-[360px] rounded-2xl border border-border bg-card p-2 shadow-[0_18px_40px_rgba(0,0,0,0.15)]">
                 <div className="flex items-center justify-between px-3 py-2">
                   <div>
                     <p className="text-sm font-semibold text-foreground">Notifications</p>
@@ -207,6 +227,8 @@ export const TopBar: React.FC<TopBarProps> = ({ collapsed, onOpenMobile }) => {
               </div>
             )}
           </div>
+
+          {/* Profile */}
           <div ref={profileRef} className="relative">
             <button
               type="button"
@@ -214,14 +236,15 @@ export const TopBar: React.FC<TopBarProps> = ({ collapsed, onOpenMobile }) => {
                 setProfileOpen((open) => !open);
                 setNotificationsOpen(false);
               }}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-[var(--accent-light)] text-[11px] font-semibold text-primary transition hover:opacity-85"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[11px] font-bold text-white transition hover:opacity-85"
+              style={{ background: 'linear-gradient(135deg, #0EA5E9, #14B8A6)' }}
               aria-label="Open profile menu"
               aria-expanded={profileOpen}
             >
               {initials || 'U'}
             </button>
             {profileOpen && (
-              <div className="absolute right-0 top-10 z-40 w-56 rounded-2xl border border-border bg-card p-2 shadow-[0_18px_40px_rgba(15,23,42,0.12)]">
+              <div className="absolute right-0 top-10 z-40 w-56 rounded-2xl border border-border bg-card p-2 shadow-[0_18px_40px_rgba(0,0,0,0.15)]">
                 <div className="border-b border-border px-3 py-2">
                   <p className="truncate text-sm font-semibold text-foreground">{user?.full_name || 'User'}</p>
                   <p className="truncate text-xs text-muted-foreground">{user?.email || ''}</p>
@@ -238,7 +261,7 @@ export const TopBar: React.FC<TopBarProps> = ({ collapsed, onOpenMobile }) => {
                   <button
                     type="button"
                     onClick={handleLogout}
-                    className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-foreground transition hover:bg-muted/50"
+                    className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-foreground transition hover:bg-destructive/10 hover:text-destructive"
                   >
                     <LogOut className="h-4 w-4" />
                     Sign out

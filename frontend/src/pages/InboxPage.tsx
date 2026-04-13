@@ -4,7 +4,6 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import axios from 'axios';
 
-import { ingestionAPI } from '@/api/endpoints';
 
 import { Badge, Loading } from '@/components';
 import {
@@ -269,7 +268,6 @@ export const InboxPage: React.FC = () => {
   const reprocessEmail = useReprocessIngestionEmail();
   const deleteEmail = useDeleteIngestedEmail();
   const reapplyMappings = useReapplyIngestionMappings();
-  const [simulateLoading, setSimulateLoading] = React.useState(false);
   const { data: fetchStatus } = useFetchJobStatus(activeJobId, Boolean(activeJobId));
 
   // When job completes, refresh the inbox and skipped lists
@@ -325,33 +323,16 @@ export const InboxPage: React.FC = () => {
     return <Loading message="Loading reviewer inbox..." />;
   }
 
+  const isFetchRunning = Boolean(
+    activeJobId && fetchStatus && (fetchStatus.status === 'queued' || fetchStatus.status === 'in_progress'),
+  );
   const isBusy =
     triggerFetch.isPending ||
+    isFetchRunning ||
     reprocessSkipped.isPending ||
     reprocessEmail.isPending ||
     deleteEmail.isPending ||
     reapplyMappings.isPending;
-
-  const handleSimulate = async () => {
-    setSimulateLoading(true);
-    setStatusTone('info');
-    setStatusMessage('Running ingestion simulation on sample_timesheets/ folder...');
-    try {
-      const response = await ingestionAPI.simulateIngestion();
-      const data = response.data as { files_processed: number; staged: number; skipped: number; total_timesheets_created: number };
-      setStatusTone('success');
-      setStatusMessage(
-        `Simulation complete: ${data.files_processed} files processed, ${data.staged} staged, ${data.skipped} skipped, ${data.total_timesheets_created} timesheets created.`,
-      );
-      queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
-      queryClient.invalidateQueries({ queryKey: ['ingestion', 'skipped-emails'] });
-    } catch (error) {
-      setStatusTone('danger');
-      setStatusMessage(getApiErrorMessage(error, 'Simulation failed.'));
-    } finally {
-      setSimulateLoading(false);
-    }
-  };
 
   const handleFetch = async () => {
     try {
@@ -511,17 +492,8 @@ export const InboxPage: React.FC = () => {
             className="action-button"
             disabled={isBusy}
           >
-            <RefreshCw className={`mr-2 h-4 w-4 ${triggerFetch.isPending ? 'animate-spin' : ''}`} />
-            {triggerFetch.isPending ? 'Starting Fetch...' : 'Fetch Emails'}
-          </button>
-          <button
-            type="button"
-            onClick={handleSimulate}
-            className="action-button-secondary"
-            disabled={isBusy || simulateLoading}
-          >
-            <ScanSearch className={`mr-2 h-4 w-4 ${simulateLoading ? 'animate-pulse' : ''}`} />
-            {simulateLoading ? 'Simulating...' : 'Simulate Ingestion'}
+            <RefreshCw className={`mr-2 h-4 w-4 ${(triggerFetch.isPending || isFetchRunning) ? 'animate-spin' : ''}`} />
+            {triggerFetch.isPending ? 'Starting Fetch...' : isFetchRunning ? 'Fetching Emails...' : 'Fetch Emails'}
           </button>
         </div>
       </div>
@@ -766,8 +738,8 @@ export const InboxPage: React.FC = () => {
                 <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
                   {!hasActiveFilters ? (
                     <button type="button" onClick={handleFetch} className="action-button" disabled={isBusy}>
-                      <RefreshCw className={`mr-2 h-4 w-4 ${triggerFetch.isPending ? 'animate-spin' : ''}`} />
-                      {triggerFetch.isPending ? 'Starting Fetch...' : 'Fetch Emails'}
+                      <RefreshCw className={`mr-2 h-4 w-4 ${(triggerFetch.isPending || isFetchRunning) ? 'animate-spin' : ''}`} />
+                      {triggerFetch.isPending ? 'Starting Fetch...' : isFetchRunning ? 'Fetching Emails...' : 'Fetch Emails'}
                     </button>
                   ) : null}
                   {hasActiveFilters ? (

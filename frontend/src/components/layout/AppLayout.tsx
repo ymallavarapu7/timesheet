@@ -1,28 +1,18 @@
 import React from 'react';
 import { Outlet } from 'react-router-dom';
 
-import { Sidebar } from '@/components/layout/Sidebar';
-import { TopBar } from '@/components/layout/TopBar';
-import { cn } from '@/lib/utils';
+import { TopNavBar } from '@/components/layout/TopNavBar';
 
 export const AppLayout: React.FC = () => {
-  const [mobileOpen, setMobileOpen] = React.useState(false);
-  const [collapsed, setCollapsed] = React.useState(false);
-
   return (
-    <div className="min-h-screen bg-background">
-      <Sidebar
-        isMobileOpen={mobileOpen}
-        onCloseMobile={() => setMobileOpen(false)}
-        collapsed={collapsed}
-        onToggleCollapsed={() => setCollapsed((value) => !value)}
-      />
-      <div className={cn('min-h-screen transition-[padding] duration-300', collapsed ? 'xl:pl-[88px]' : 'xl:pl-[220px]')}>
-        <TopBar collapsed={collapsed} onOpenMobile={() => setMobileOpen(true)} />
-        <main className="mx-auto max-w-[1800px] px-7 py-7 sm:px-7 lg:px-7">
-          <Outlet />
-        </main>
-      </div>
+    <div className="flex min-h-screen flex-col bg-background">
+      <TopNavBar />
+      <main className="mx-auto w-full max-w-[1800px] flex-1 px-5 py-6 sm:px-6 lg:px-8">
+        <Outlet />
+      </main>
+      <footer className="border-t border-border/50 py-5 text-center">
+        <p className="text-xs text-muted-foreground">&copy; 2026 Acufy AI. All rights reserved.</p>
+      </footer>
     </div>
   );
 };

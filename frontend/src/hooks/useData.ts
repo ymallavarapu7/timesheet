@@ -44,6 +44,12 @@ export const useTimeEntry = (id: number) => {
   });
 };
 
+export const useParseNaturalTimeEntry = () => {
+  return useMutation({
+    mutationFn: (text: string) => timeentriesAPI.parseNatural(text).then(res => res.data),
+  });
+};
+
 export const useCreateTimeEntry = () => {
   const queryClient = useQueryClient();
   return useMutation({

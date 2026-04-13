@@ -47,6 +47,16 @@ ENV_FIELD_MAP = {
     "smtp_from_name": "SMTP_FROM_NAME",
     "smtp_use_tls": "SMTP_USE_TLS",
     "frontend_base_url": "FRONTEND_BASE_URL",
+    # Worker / email fetch schedule
+    "worker_cron_minutes": "WORKER_CRON_MINUTES",
+    "worker_job_timeout": "WORKER_JOB_TIMEOUT",
+    "worker_max_tries": "WORKER_MAX_TRIES",
+    "worker_keep_result": "WORKER_KEEP_RESULT",
+    "email_fetch_interval_minutes": "EMAIL_FETCH_INTERVAL_MINUTES",
+    "email_fetch_days": "EMAIL_FETCH_DAYS",
+    "email_fetch_start_time": "EMAIL_FETCH_START_TIME",
+    "email_fetch_end_time": "EMAIL_FETCH_END_TIME",
+    "email_fetch_initial_days": "EMAIL_FETCH_INITIAL_DAYS",
 }
 
 
@@ -270,6 +280,44 @@ class Settings(BaseModel):
     frontend_base_url: str = Field(
         default="http://localhost:5174",
         description="Base URL of the frontend app, used to build email verification links."
+    )
+
+    # Worker / email fetch schedule
+    worker_cron_minutes: str = Field(
+        default="0,5,10,15,20,25,30,35,40,45,50,55",
+        description="Comma-separated minutes when arq cron tasks fire (e.g. '0,5,10,...,55' = every 5 min)."
+    )
+    worker_job_timeout: int = Field(
+        default=300,
+        description="Timeout in seconds for each arq background job."
+    )
+    worker_max_tries: int = Field(
+        default=3,
+        description="Maximum retry attempts for a failed arq job."
+    )
+    worker_keep_result: int = Field(
+        default=86400,
+        description="Seconds to keep job results in Redis (default 24 hours)."
+    )
+    email_fetch_interval_minutes: int = Field(
+        default=60,
+        description="Default interval (minutes) between auto email fetches per tenant."
+    )
+    email_fetch_days: str = Field(
+        default="mon,tue,wed,thu,fri",
+        description="Default days of the week for auto email fetch (comma-separated)."
+    )
+    email_fetch_start_time: str = Field(
+        default="00:00",
+        description="Default start time (HH:MM) for the auto fetch window."
+    )
+    email_fetch_end_time: str = Field(
+        default="23:59",
+        description="Default end time (HH:MM) for the auto fetch window."
+    )
+    email_fetch_initial_days: int = Field(
+        default=30,
+        description="On first fetch (no cursor), only fetch emails from this many days back."
     )
 
     @classmethod
