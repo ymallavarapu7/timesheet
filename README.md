@@ -38,7 +38,7 @@ A full-stack, multi-tenant timesheet management platform built for IT consulting
 | `ADMIN` | Full management within tenant |
 | `PLATFORM_ADMIN` | Cross-tenant superuser |
 
-## Quick Start
+## Getting Started
 
 ### Prerequisites
 
@@ -53,14 +53,8 @@ A full-stack, multi-tenant timesheet management platform built for IT consulting
 cd backend
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-
-# Database setup
-createuser -P timesheet_user   # password: timesheet_pass
-createdb -O timesheet_user timesheet_db
 alembic upgrade head
-python -m app.seed             # seed demo data
 
-# Run
 uvicorn app.main:app --reload  # http://localhost:8000
 ```
 
@@ -72,13 +66,13 @@ npm install
 npm run dev    # http://localhost:5174
 ```
 
-### Docker Compose (all services)
+### Docker Compose
 
 ```bash
 docker compose up --build
 ```
 
-This starts PostgreSQL, Redis, the API server, background worker, and frontend.
+Starts all services — PostgreSQL, Redis, API server, background worker, and frontend.
 
 | Service | Port |
 |---|---|
@@ -89,12 +83,10 @@ This starts PostgreSQL, Redis, the API server, background worker, and frontend.
 
 ## Environment Variables
 
-Copy and configure the `.env` files before running:
+Configure the `.env` files before running:
 
 - **`backend/.env`** — Database URL, JWT secrets, Redis URL, OpenAI API key, OAuth credentials, encryption key
 - **`frontend/.env`** — `VITE_API_BASE_URL` (defaults to `http://localhost:8000`)
-
-See [CLAUDE.md](CLAUDE.md) for the full list of environment variables.
 
 ## Project Structure
 
@@ -129,18 +121,7 @@ cd backend && pytest
 cd frontend && npm run test
 ```
 
-## Demo Credentials
-
-After seeding (`python -m app.seed`), use password `password` for all accounts:
-
-| Role | Email |
-|---|---|
-| Admin | admin@example.com |
-| CEO | ceo@example.com |
-| Manager | manager1@example.com |
-| Employee | emp1-1@example.com |
-
 ## Documentation
 
-- [User Guide](docs/USER_GUIDE.md) — End-user documentation with feature walkthroughs
+- [User Guide](docs/USER_GUIDE.md) — End-user documentation with role workflows and feature walkthroughs
 - [API Docs](http://localhost:8000/docs) — Swagger UI (available when backend is running)
