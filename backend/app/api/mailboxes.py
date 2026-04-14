@@ -9,6 +9,7 @@ from time import perf_counter, time
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel as PydanticBaseModel
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -459,6 +460,26 @@ async def delete_tenant_mailbox(
     if not mailbox:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mailbox not found")
     await delete_mailbox(session, mailbox)
+
+
+class BulkDeleteMailboxesRequest(PydanticBaseModel):
+    mailbox_ids: list[int]
+
+
+@router.post("/bulk-delete")
+async def bulk_delete_mailboxes(
+    body: BulkDeleteMailboxesRequest,
+    current_user=Depends(require_role("ADMIN")),
+    _: object = Depends(require_ingestion_enabled),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    deleted = 0
+    for mailbox_id in body.mailbox_ids:
+        mailbox = await get_mailbox(session, mailbox_id, current_user.tenant_id)
+        if mailbox:
+            await delete_mailbox(session, mailbox)
+            deleted += 1
+    return {"deleted": deleted}
 
 
 @router.post("/{mailbox_id}/reset-cursor", status_code=status.HTTP_204_NO_CONTENT)

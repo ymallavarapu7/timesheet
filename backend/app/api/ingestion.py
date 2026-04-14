@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 from sqlalchemy import select
@@ -808,6 +809,35 @@ async def delete_ingested_email(
             await delete_file(storage_key)
         except FileNotFoundError:
             continue
+
+
+class BulkDeleteEmailsRequest(BaseModel):
+    email_ids: list[int]
+
+
+@router.post("/emails/bulk-delete")
+async def bulk_delete_ingested_emails(
+    body: BulkDeleteEmailsRequest,
+    current_user=Depends(require_can_review),
+    _: object = Depends(require_ingestion_enabled),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    deleted = 0
+    all_storage_keys: list[str] = []
+    for email_id in body.email_ids:
+        email_record = await _load_ingested_email_for_delete(session, email_id, current_user.tenant_id)
+        if email_record is None:
+            continue
+        storage_keys = await _delete_ingested_email_tree(session, email_record)
+        all_storage_keys.extend(storage_keys)
+        deleted += 1
+    await session.commit()
+    for storage_key in all_storage_keys:
+        try:
+            await delete_file(storage_key)
+        except FileNotFoundError:
+            continue
+    return {"deleted": deleted}
 
 
 @router.get("/attachments/{attachment_id}/file")

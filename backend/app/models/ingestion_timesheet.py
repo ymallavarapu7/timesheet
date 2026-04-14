@@ -37,10 +37,10 @@ class IngestionTimesheet(Base, TimestampMixin):
         ForeignKey("email_attachments.id", ondelete="CASCADE"), nullable=True
     )
     employee_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id"), nullable=True
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     client_id: Mapped[int | None] = mapped_column(
-        ForeignKey("clients.id"), nullable=True
+        ForeignKey("clients.id", ondelete="SET NULL"), nullable=True
     )
     reviewer_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id"), nullable=True

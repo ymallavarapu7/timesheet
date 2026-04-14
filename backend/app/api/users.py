@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query
+from pydantic import BaseModel as PydanticBaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -267,6 +268,31 @@ async def update_tenant_settings(
         await db.execute(stmt)
     await db.commit()
     return body
+
+
+class BulkDeleteUsersRequest(PydanticBaseModel):
+    user_ids: list[int]
+
+
+@router.post("/bulk-delete")
+async def bulk_delete_users(
+    body: BulkDeleteUsersRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+) -> dict:
+    deleted = 0
+    for user_id in body.user_ids:
+        user = await get_user_by_id(db, user_id)
+        if not user:
+            continue
+        if user.tenant_id != current_user.tenant_id and current_user.role != UserRole.PLATFORM_ADMIN:
+            continue
+        if user.id == current_user.id:
+            continue
+        success = await delete_user(db, user_id)
+        if success:
+            deleted += 1
+    return {"deleted": deleted}
 
 
 @router.get("/{user_id}", response_model=UserResponse)

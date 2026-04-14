@@ -31,7 +31,7 @@ class EmailSenderMapping(Base):
         ForeignKey("clients.id"), nullable=False
     )
     employee_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id"), nullable=True
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

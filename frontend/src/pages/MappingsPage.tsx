@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Plus, Trash2, X } from 'lucide-react';
 
 import { Badge, EmptyState, Loading } from '@/components';
-import { useClients, useCreateMapping, useDeleteMapping, useMappings, useUpdateMapping, useUsers } from '@/hooks';
+import { BulkSelectBar } from '@/components/ui/BulkSelectBar';
+import { useBulkDeleteMappings, useClients, useCreateMapping, useDeleteMapping, useMappings, useUpdateMapping, useUsers } from '@/hooks';
 import type { Mapping, MappingPayload } from '@/types';
 
 type MappingFormState = {
@@ -33,11 +34,13 @@ export const MappingsPage: React.FC = () => {
   const createMapping = useCreateMapping();
   const updateMapping = useUpdateMapping();
   const deleteMapping = useDeleteMapping();
+  const bulkDeleteMappings = useBulkDeleteMappings();
 
   const [isPanelOpen, setIsPanelOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<Mapping | null>(null);
   const [form, setForm] = React.useState<MappingFormState>(emptyForm());
   const [message, setMessage] = React.useState<string | null>(null);
+  const [selectedMappingIds, setSelectedMappingIds] = useState<Set<number>>(new Set());
 
   if (isLoading) {
     return <Loading message="Loading sender mappings..." />;
@@ -96,6 +99,35 @@ export const MappingsPage: React.FC = () => {
     }
   };
 
+  const toggleMapping = (id: number) => {
+    setSelectedMappingIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAllMappings = () => {
+    setSelectedMappingIds(new Set(mappings.map((m) => m.id)));
+  };
+
+  const clearSelection = () => {
+    setSelectedMappingIds(new Set());
+  };
+
+  const handleBulkDelete = async () => {
+    const count = selectedMappingIds.size;
+    if (!window.confirm(`Delete ${count} selected mapping${count === 1 ? '' : 's'}?`)) return;
+    try {
+      await bulkDeleteMappings.mutateAsync(Array.from(selectedMappingIds));
+      setMessage(`Deleted ${count} mapping${count === 1 ? '' : 's'}.`);
+      setSelectedMappingIds(new Set());
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to delete mappings.');
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
@@ -125,10 +157,21 @@ export const MappingsPage: React.FC = () => {
       {mappings.length === 0 ? (
         <EmptyState message="No sender mappings yet. Add one to help the reviewer inbox pre-match incoming emails." />
       ) : (
+        <>
+        <BulkSelectBar
+          selectedCount={selectedMappingIds.size}
+          totalCount={mappings.length}
+          onSelectAll={selectAllMappings}
+          onClearSelection={clearSelection}
+          onDelete={handleBulkDelete}
+          isDeleting={bulkDeleteMappings.isPending}
+          itemLabel="mapping"
+        />
         <div className="surface-card overflow-hidden">
           <table className="min-w-full text-left text-sm">
             <thead className="border-b border-border">
               <tr className="text-[11px] uppercase tracking-[0.06em] text-muted-foreground">
+                <th className="w-10 px-4 py-3"><input type="checkbox" checked={selectedMappingIds.size === mappings.length && mappings.length > 0} onChange={selectedMappingIds.size === mappings.length ? clearSelection : selectAllMappings} /></th>
                 <th className="px-4 py-3 font-medium">Type</th>
                 <th className="px-4 py-3 font-medium">Value</th>
                 <th className="px-4 py-3 font-medium">Client</th>
@@ -139,6 +182,7 @@ export const MappingsPage: React.FC = () => {
             <tbody>
               {mappings.map((mapping) => (
                 <tr key={mapping.id} className="group h-11 hover:bg-muted">
+                  <td className="px-4 py-3"><input type="checkbox" checked={selectedMappingIds.has(mapping.id)} onChange={() => toggleMapping(mapping.id)} /></td>
                   <td className="px-4 py-3"><Badge tone={mapping.match_type === 'email' ? 'info' : 'warning'}>{String(mapping.match_type)}</Badge></td>
                   <td className="px-4 py-3 text-foreground">{mapping.match_value}</td>
                   <td className="px-4 py-3 text-foreground">{clientMap.get(mapping.client_id) ?? `Client #${mapping.client_id}`}</td>
@@ -154,6 +198,7 @@ export const MappingsPage: React.FC = () => {
             </tbody>
           </table>
         </div>
+        </>
       )}
 
       {isPanelOpen && (

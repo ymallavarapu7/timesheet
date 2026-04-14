@@ -190,6 +190,38 @@ export const useClients = () => {
   });
 };
 
+export const useUpdateClient = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: number; data: Partial<{ name: string; quickbooks_customer_id: string }> }) =>
+      clientsAPI.update(id, data).then(res => res.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['clients'] });
+    },
+  });
+};
+
+export const useDeleteClient = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => clientsAPI.delete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+};
+
+export const useDeleteProject = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => projectsAPI.delete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+};
+
 export const useCreateClient = () => {
   const queryClient = useQueryClient();
   return useMutation({
@@ -551,6 +583,17 @@ export const useDeleteUser = () => {
   });
 };
 
+export const useBulkDeleteUsers = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (userIds: number[]) => usersAPI.bulkDelete(userIds).then(res => res.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+    },
+  });
+};
+
 export const useTenants = (enabled: boolean = true) => {
   return useQuery({
     queryKey: ['tenants'],
@@ -661,6 +704,16 @@ export const useDeleteMapping = () => {
   });
 };
 
+export const useBulkDeleteMappings = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (mappingIds: number[]) => mappingsAPI.bulkDelete(mappingIds).then(res => res.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['mappings'] });
+    },
+  });
+};
+
 export const useTriggerFetchEmails = () => {
   const queryClient = useQueryClient();
   return useMutation({
@@ -705,6 +758,17 @@ export const useDeleteIngestedEmail = () => {
   return useMutation({
     mutationFn: ({ emailId, refetch = false }: { emailId: number; refetch?: boolean }) =>
       ingestionAPI.deleteEmail(emailId, refetch),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'skipped-emails'] });
+    },
+  });
+};
+
+export const useBulkDeleteIngestedEmails = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (emailIds: number[]) => ingestionAPI.bulkDeleteEmails(emailIds).then(res => res.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
       queryClient.invalidateQueries({ queryKey: ['ingestion', 'skipped-emails'] });
