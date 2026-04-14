@@ -352,7 +352,11 @@ export const MailboxesPage: React.FC = () => {
             <p className="text-sm text-slate-500 mt-0.5">Automatically fetch emails on a schedule</p>
           </div>
           <label className="relative inline-flex items-center cursor-pointer">
-            <input type="checkbox" className="sr-only peer" checked={fetchEnabled} onChange={(e) => setFetchEnabled(e.target.checked)} />
+            <input type="checkbox" className="sr-only peer" checked={fetchEnabled} onChange={(e) => {
+              const newValue = e.target.checked;
+              setFetchEnabled(newValue);
+              updateSettings.mutate({ fetch_emails_enabled: String(newValue) });
+            }} />
             <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
           </label>
         </div>

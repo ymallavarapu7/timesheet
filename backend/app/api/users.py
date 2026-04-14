@@ -226,6 +226,49 @@ async def change_my_password(
     return MessageResponse(message="Password updated successfully")
 
 
+# ── Tenant Settings ──────────────────────────────────────────────────────────
+
+@router.get("/tenant-settings", response_model=dict)
+async def get_tenant_settings(
+    current_user: User = Depends(require_role("ADMIN")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Get all settings for the current user's tenant."""
+    from app.models.tenant_settings import TenantSettings
+    result = await db.execute(
+        select(TenantSettings).where(TenantSettings.tenant_id == current_user.tenant_id)
+    )
+    rows = result.scalars().all()
+    return {row.key: row.value for row in rows}
+
+
+@router.patch("/tenant-settings", response_model=dict)
+async def update_tenant_settings(
+    body: dict,
+    current_user: User = Depends(require_role("ADMIN")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Upsert one or more settings for the current user's tenant."""
+    from app.models.tenant_settings import TenantSettings
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    now = datetime.now(timezone.utc)
+    for key, value in body.items():
+        str_value = str(value) if value is not None else None
+        stmt = pg_insert(TenantSettings).values(
+            tenant_id=current_user.tenant_id,
+            key=key,
+            value=str_value,
+            created_at=now,
+            updated_at=now,
+        ).on_conflict_do_update(
+            constraint="uq_tenant_settings_tenant_key",
+            set_={"value": str_value, "updated_at": now},
+        )
+        await db.execute(stmt)
+    await db.commit()
+    return body
+
+
 @router.get("/{user_id}", response_model=UserResponse)
 async def get_user(
     user_id: int,
@@ -651,49 +694,6 @@ async def delete_user_endpoint(
         metadata={"deleted_role": deleted_user_role, "deleted_email": deleted_user_email},
         severity="warning",
     )])
-
-
-# ── Tenant Settings ──────────────────────────────────────────────────────────
-
-@router.get("/tenant-settings", response_model=dict)
-async def get_tenant_settings(
-    current_user: User = Depends(require_role("ADMIN")),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    """Get all settings for the current user's tenant."""
-    from app.models.tenant_settings import TenantSettings
-    result = await db.execute(
-        select(TenantSettings).where(TenantSettings.tenant_id == current_user.tenant_id)
-    )
-    rows = result.scalars().all()
-    return {row.key: row.value for row in rows}
-
-
-@router.patch("/tenant-settings", response_model=dict)
-async def update_tenant_settings(
-    body: dict,
-    current_user: User = Depends(require_role("ADMIN")),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    """Upsert one or more settings for the current user's tenant."""
-    from app.models.tenant_settings import TenantSettings
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-    now = datetime.now(timezone.utc)
-    for key, value in body.items():
-        str_value = str(value) if value is not None else None
-        stmt = pg_insert(TenantSettings).values(
-            tenant_id=current_user.tenant_id,
-            key=key,
-            value=str_value,
-            created_at=now,
-            updated_at=now,
-        ).on_conflict_do_update(
-            constraint="uq_tenant_settings_tenant_key",
-            set_={"value": str_value, "updated_at": now},
-        )
-        await db.execute(stmt)
-    await db.commit()
-    return body
 
 
 @router.post("/users/{user_id}/unlock-timesheet", response_model=dict)

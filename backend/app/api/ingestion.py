@@ -1209,21 +1209,7 @@ async def approve_timesheet(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot approve: no employee assigned to this timesheet",
         )
-    system_user_result = await session.execute(
-        select(User).where(
-            (User.tenant_id == current_user.tenant_id) &
-            (User.username == f"system_ingestion_{current_user.tenant_id}")
-        )
-    )
-    system_user = system_user_result.scalar_one_or_none()
-    if not system_user:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=(
-                f"System service user not found for tenant {current_user.tenant_id}. "
-                "Run the seed script to provision it."
-            ),
-        )
+
 
     now = datetime.now(timezone.utc)
     created_entry_ids: list[int] = []
@@ -1271,7 +1257,7 @@ async def approve_timesheet(
             is_billable=True,
             status=TimeEntryStatus.APPROVED,
             submitted_at=now,
-            approved_by=system_user.id,
+            approved_by=current_user.id,
             approved_at=now,
             created_by=current_user.id,
             updated_by=current_user.id,

@@ -393,6 +393,7 @@ async def seed_database() -> None:
             username="admin",
             full_name="Bharat Mallavarapu",
             title="System Administrator",
+            department="IT",
             role=UserRole.ADMIN,
             tenant_id=tid,
         )
