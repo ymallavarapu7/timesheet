@@ -123,6 +123,8 @@ export const usersAPI = {
 
   delete: (id: number) =>
     apiClient.delete(`/users/${id}`),
+  bulkDelete: (userIds: number[]) =>
+    apiClient.post<{ deleted: number }>('/users/bulk-delete', { user_ids: userIds }),
 };
 
 // Clients endpoints
@@ -436,6 +438,8 @@ export const mappingsAPI = {
     apiClient.post<Mapping>('/api/mappings', data),
   update: (id: number, data: MappingPayload) => apiClient.patch<Mapping>(`/api/mappings/${id}`, data),
   delete: (id: number) => apiClient.delete(`/api/mappings/${id}`),
+  bulkDelete: (mappingIds: number[]) =>
+    apiClient.post<{ deleted: number }>('/api/mappings/bulk-delete', { mapping_ids: mappingIds }),
 };
 
 export const ingestionAPI = {
@@ -448,6 +452,8 @@ export const ingestionAPI = {
   getEmail: (emailId: number) => apiClient.get<StoredEmailDetail>(`/api/ingestion/emails/${emailId}`),
   deleteEmail: (emailId: number, refetch: boolean = false) =>
     apiClient.delete(`/api/ingestion/emails/${emailId}`, { params: refetch ? { refetch: true } : undefined }),
+  bulkDeleteEmails: (emailIds: number[]) =>
+    apiClient.post<{ deleted: number }>('/api/ingestion/emails/bulk-delete', { email_ids: emailIds }),
   reapplyMappings: () => apiClient.post<MappingReapplyResult>('/api/ingestion/timesheets/reapply-mappings', {}),
   getAttachmentFile: async (attachmentId: number) => {
     const response = await apiClient.get<Blob>(`/api/ingestion/attachments/${attachmentId}/file`, {

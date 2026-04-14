@@ -3,7 +3,7 @@ import { PlusCircle, Pencil, Trash2, X } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 
 import { Loading, Error, SearchInput } from '@/components';
-import { useClients, useCreateClient, useProjects, useCreateProject, useUpdateProject, useTasks, useCreateTask, useUpdateTask, useDeleteTask } from '@/hooks';
+import { useClients, useCreateClient, useUpdateClient, useDeleteClient, useProjects, useCreateProject, useUpdateProject, useDeleteProject, useTasks, useCreateTask, useUpdateTask, useDeleteTask } from '@/hooks';
 import { Client, Project, Task } from '@/types';
 
 type ClientFormState = {
@@ -76,6 +76,10 @@ export const ClientManagementPage: React.FC = () => {
   const updateTask = useUpdateTask();
   const deleteTask = useDeleteTask();
   const createClient = useCreateClient();
+  const updateClient = useUpdateClient();
+  const deleteClient = useDeleteClient();
+  const [editingClient, setEditingClient] = useState<Client | null>(null);
+  const deleteProject = useDeleteProject();
 
   const [showProjectModal, setShowProjectModal] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
@@ -207,13 +211,25 @@ export const ClientManagementPage: React.FC = () => {
   };
 
   const openCreateClient = () => {
+    setEditingClient(null);
     setClientForm(emptyClientForm());
+    setClientError('');
+    setShowClientModal(true);
+  };
+
+  const openEditClient = (client: Client) => {
+    setEditingClient(client);
+    setClientForm({
+      name: client.name,
+      quickbooks_customer_id: client.quickbooks_customer_id || '',
+    });
     setClientError('');
     setShowClientModal(true);
   };
 
   const closeClientModal = () => {
     setShowClientModal(false);
+    setEditingClient(null);
     setClientError('');
   };
 
@@ -332,10 +348,20 @@ export const ClientManagementPage: React.FC = () => {
     }
 
     try {
-      await createClient.mutateAsync({
-        name: clientForm.name.trim(),
-        quickbooks_customer_id: clientForm.quickbooks_customer_id.trim() || undefined,
-      });
+      if (editingClient) {
+        await updateClient.mutateAsync({
+          id: editingClient.id,
+          data: {
+            name: clientForm.name.trim(),
+            quickbooks_customer_id: clientForm.quickbooks_customer_id.trim() || undefined,
+          },
+        });
+      } else {
+        await createClient.mutateAsync({
+          name: clientForm.name.trim(),
+          quickbooks_customer_id: clientForm.quickbooks_customer_id.trim() || undefined,
+        });
+      }
       closeClientModal();
     } catch (err: unknown) {
       const message =
@@ -388,6 +414,28 @@ export const ClientManagementPage: React.FC = () => {
   const handleDeleteTask = async (taskId: number) => {
     await deleteTask.mutateAsync(taskId);
     setConfirmDeleteTaskId(null);
+  };
+
+  const handleDeleteClient = async (client: Client) => {
+    const projectCount = (projects ?? []).filter((p: Project) => p.client_id === client.id).length;
+    const msg = projectCount > 0
+      ? `Delete client "${client.name}" and its ${projectCount} project(s)? This cannot be undone.`
+      : `Delete client "${client.name}"? This cannot be undone.`;
+    if (!window.confirm(msg)) return;
+    try {
+      await deleteClient.mutateAsync(client.id);
+    } catch {
+      alert('Failed to delete client. It may have associated time entries.');
+    }
+  };
+
+  const handleDeleteProject = async (project: Project) => {
+    if (!window.confirm(`Delete project "${project.name}"? This will also delete its tasks and time entries.`)) return;
+    try {
+      await deleteProject.mutateAsync(project.id);
+    } catch {
+      alert('Failed to delete project. It may have associated time entries.');
+    }
   };
 
   return (
@@ -446,6 +494,7 @@ export const ClientManagementPage: React.FC = () => {
                     <th className="text-left px-4 py-3 font-semibold">Client Name</th>
                     <th className="text-left px-4 py-3 font-semibold">QuickBooks Customer ID</th>
                     <th className="text-right px-4 py-3 font-semibold">Projects</th>
+                    <th className="text-right px-4 py-3 w-16"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -468,6 +517,26 @@ export const ClientManagementPage: React.FC = () => {
                       <td className="px-4 py-3 text-muted-foreground">{client.quickbooks_customer_id || '—'}</td>
                       <td className="px-4 py-3 text-right text-muted-foreground">
                         {(projects ?? []).filter((project: Project) => project.client_id === client.id).length}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); openEditClient(client); }}
+                            className="inline-flex items-center rounded-md p-1.5 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                            title="Edit client"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleDeleteClient(client); }}
+                            className="inline-flex items-center rounded-md p-1.5 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                            title="Delete client"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -566,6 +635,16 @@ export const ClientManagementPage: React.FC = () => {
                         title="Edit Project"
                       >
                         <Pencil className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteProject(project);
+                        }}
+                        className="p-1.5 rounded hover:bg-destructive/10 hover:text-destructive transition-colors"
+                        title="Delete Project"
+                      >
+                        <Trash2 className="w-4 h-4" />
                       </button>
                       <div className="text-muted-foreground">
                         {expandedProjectId === project.id ? '▼' : '▶'}
@@ -804,7 +883,7 @@ export const ClientManagementPage: React.FC = () => {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
           <div className="bg-card rounded-xl shadow-2xl w-full max-w-lg">
             <div className="flex items-center justify-between px-6 py-4 border-b">
-              <h2 className="text-lg font-bold">New Client</h2>
+              <h2 className="text-lg font-bold">{editingClient ? 'Edit Client' : 'New Client'}</h2>
               <button onClick={closeClientModal} className="p-1.5 rounded hover:bg-muted">
                 <X className="w-5 h-5" />
               </button>
@@ -839,10 +918,10 @@ export const ClientManagementPage: React.FC = () => {
               <div className="flex gap-3 pt-2">
                 <button
                   type="submit"
-                  disabled={createClient.isPending}
+                  disabled={createClient.isPending || updateClient.isPending}
                   className="flex-1 px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 disabled:opacity-50"
                 >
-                  {createClient.isPending ? 'Creating...' : 'Create Client'}
+                  {(createClient.isPending || updateClient.isPending) ? 'Saving...' : editingClient ? 'Update Client' : 'Create Client'}
                 </button>
                 <button
                   type="button"

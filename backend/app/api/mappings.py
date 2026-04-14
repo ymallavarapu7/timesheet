@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -130,3 +131,30 @@ async def delete_mapping(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mapping not found")
     await session.delete(mapping)
     await session.commit()
+
+
+class BulkDeleteMappingsRequest(BaseModel):
+    mapping_ids: list[int]
+
+
+@router.post("/bulk-delete")
+async def bulk_delete_mappings(
+    body: BulkDeleteMappingsRequest,
+    current_user=Depends(require_role("ADMIN")),
+    _: object = Depends(require_ingestion_enabled),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    deleted = 0
+    for mapping_id in body.mapping_ids:
+        result = await session.execute(
+            select(EmailSenderMapping).where(
+                (EmailSenderMapping.id == mapping_id) &
+                (EmailSenderMapping.tenant_id == current_user.tenant_id)
+            )
+        )
+        mapping = result.scalar_one_or_none()
+        if mapping:
+            await session.delete(mapping)
+            deleted += 1
+    await session.commit()
+    return {"deleted": deleted}

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { ArrowRight, ChevronDown, ChevronRight, RefreshCw, ScanSearch, Search, Trash2 } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -6,8 +6,10 @@ import axios from 'axios';
 
 
 import { Badge, Loading } from '@/components';
+import { BulkSelectBar } from '@/components/ui/BulkSelectBar';
 import {
   useAuth,
+  useBulkDeleteIngestedEmails,
   useClients,
   useDeleteIngestedEmail,
   useFetchJobStatus,
@@ -261,6 +263,7 @@ export const InboxPage: React.FC = () => {
   const [showDiagnostics, setShowDiagnostics] = React.useState(false);
   const [showMoreActions, setShowMoreActions] = React.useState(false);
   const [showTechnicalDetails, setShowTechnicalDetails] = React.useState(false);
+  const [selectedEmailIds, setSelectedEmailIds] = useState<Set<number>>(new Set());
 
   const queryClient = useQueryClient();
   const triggerFetch = useTriggerFetchEmails();
@@ -268,6 +271,7 @@ export const InboxPage: React.FC = () => {
   const reprocessEmail = useReprocessIngestionEmail();
   const deleteEmail = useDeleteIngestedEmail();
   const reapplyMappings = useReapplyIngestionMappings();
+  const bulkDeleteEmails = useBulkDeleteIngestedEmails();
   const { data: fetchStatus } = useFetchJobStatus(activeJobId, Boolean(activeJobId));
 
   // When job completes, refresh the inbox and skipped lists
@@ -319,6 +323,17 @@ export const InboxPage: React.FC = () => {
     return rows.filter(isActionableSkippedEmail);
   }, [skippedOverview]);
 
+  // Clear bulk selection when the underlying data refreshes
+  React.useEffect(() => {
+    setSelectedEmailIds(new Set());
+  }, [timesheets]);
+
+  // Collect unique email_ids from currently visible groups
+  const allVisibleEmailIds = React.useMemo(
+    () => [...new Set(groups.map((group) => group.primary.email_id))],
+    [groups],
+  );
+
   if (isPageLoading) {
     return <Loading message="Loading reviewer inbox..." />;
   }
@@ -332,7 +347,8 @@ export const InboxPage: React.FC = () => {
     reprocessSkipped.isPending ||
     reprocessEmail.isPending ||
     deleteEmail.isPending ||
-    reapplyMappings.isPending;
+    reapplyMappings.isPending ||
+    bulkDeleteEmails.isPending;
 
   const handleFetch = async () => {
     try {
@@ -410,6 +426,43 @@ export const InboxPage: React.FC = () => {
     } catch (error) {
       setStatusTone('danger');
       setStatusMessage(getApiErrorMessage(error, 'Unable to re-apply mappings.'));
+    }
+  };
+
+  const toggleEmailId = (emailId: number) => {
+    setSelectedEmailIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(emailId)) {
+        next.delete(emailId);
+      } else {
+        next.add(emailId);
+      }
+      return next;
+    });
+  };
+
+  const selectAllVisible = () => {
+    setSelectedEmailIds(new Set(allVisibleEmailIds));
+  };
+
+  const clearSelection = () => {
+    setSelectedEmailIds(new Set());
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = [...selectedEmailIds];
+    if (ids.length === 0) return;
+    if (!window.confirm(`Delete ${ids.length} email(s) and all their staged timesheets from this application?`)) {
+      return;
+    }
+    try {
+      await bulkDeleteEmails.mutateAsync(ids);
+      setSelectedEmailIds(new Set());
+      setStatusTone('success');
+      setStatusMessage(`Deleted ${ids.length} email(s) and their staged records.`);
+    } catch (error) {
+      setStatusTone('danger');
+      setStatusMessage(getApiErrorMessage(error, 'Unable to bulk delete emails.'));
     }
   };
 
@@ -723,6 +776,20 @@ export const InboxPage: React.FC = () => {
           </div>
         ) : null}
 
+        {selectedEmailIds.size > 0 && (
+          <div className="border-b border-border/70 px-5 py-3">
+            <BulkSelectBar
+              selectedCount={selectedEmailIds.size}
+              totalCount={allVisibleEmailIds.length}
+              onSelectAll={selectAllVisible}
+              onClearSelection={clearSelection}
+              onDelete={handleBulkDelete}
+              isDeleting={bulkDeleteEmails.isPending}
+              itemLabel="email"
+            />
+          </div>
+        )}
+
         <div className="overflow-x-auto">
           {groups.length === 0 ? (
             <div className="px-6 py-12">
@@ -754,6 +821,20 @@ export const InboxPage: React.FC = () => {
             <table className="min-w-full text-left">
               <thead className="border-b border-border">
                 <tr className="text-[11px] uppercase tracking-[0.06em] text-muted-foreground">
+                  <th className="w-10 px-2 py-4">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-border accent-primary"
+                      checked={allVisibleEmailIds.length > 0 && allVisibleEmailIds.every((id) => selectedEmailIds.has(id))}
+                      onChange={(event) => {
+                        if (event.target.checked) {
+                          selectAllVisible();
+                        } else {
+                          clearSelection();
+                        }
+                      }}
+                    />
+                  </th>
                   <th className="px-4 py-4 font-medium">Sender</th>
                   <th className="px-4 py-4 font-medium">Subject</th>
                   <th className="px-4 py-4 font-medium">Client</th>
@@ -782,6 +863,15 @@ export const InboxPage: React.FC = () => {
                           navigate(`/ingestion/review/${rowTarget.id}`);
                         }}
                       >
+                        <td className="w-10 px-2 py-5 align-top">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded border-border accent-primary"
+                            checked={selectedEmailIds.has(rowTarget.email_id)}
+                            onClick={(event) => event.stopPropagation()}
+                            onChange={() => toggleEmailId(rowTarget.email_id)}
+                          />
+                        </td>
                         <td className="px-4 py-5 align-top">
                           <div className="flex min-w-[180px] items-start gap-3">
 

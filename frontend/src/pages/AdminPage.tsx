@@ -5,7 +5,8 @@ import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
 import { Loading, Error, OrganizationalChart, SearchInput } from '@/components';
-import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useAuth, useIsPlatformAdmin, useProjects, useNotifications, useTenantSettings, useUpdateTenantSettings, useUnlockUserTimesheet } from '@/hooks';
+import { BulkSelectBar } from '@/components/ui/BulkSelectBar';
+import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useBulkDeleteUsers, useAuth, useIsPlatformAdmin, useProjects, useNotifications, useTenantSettings, useUpdateTenantSettings, useUnlockUserTimesheet } from '@/hooks';
 import { timeentriesAPI, ingestionAPI } from '@/api';
 import { IngestionTimesheetSummary, Project, TimeEntry, User, UserRole } from '@/types';
 
@@ -133,6 +134,34 @@ export const AdminPage: React.FC = () => {
   const createUser = useCreateUser();
   const updateUser = useUpdateUser();
   const deleteUser = useDeleteUser();
+  const bulkDeleteUsers = useBulkDeleteUsers();
+  const [selectedUserIds, setSelectedUserIds] = useState<Set<number>>(new Set());
+
+  const toggleUserSelection = (userId: number) => {
+    setSelectedUserIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(userId)) next.delete(userId);
+      else next.add(userId);
+      return next;
+    });
+  };
+
+  const selectAllUsers = () => {
+    const ids = filtered
+      .filter((u) => u.id !== currentUser?.id)
+      .map((u) => u.id);
+    setSelectedUserIds(new Set(ids));
+  };
+
+  const clearSelection = () => setSelectedUserIds(new Set());
+
+  const handleBulkDelete = async () => {
+    if (selectedUserIds.size === 0) return;
+    const confirmed = window.confirm(`Are you sure you want to delete ${selectedUserIds.size} user(s)? This action cannot be undone.`);
+    if (!confirmed) return;
+    await bulkDeleteUsers.mutateAsync(Array.from(selectedUserIds));
+    setSelectedUserIds(new Set());
+  };
 
   const isPlatformAdmin = useIsPlatformAdmin();
   const isAdminUser = currentUser?.role === 'ADMIN' || currentUser?.role === 'PLATFORM_ADMIN';
@@ -1102,9 +1131,32 @@ export const AdminPage: React.FC = () => {
         )}
 
         <div ref={userListSectionRef} className="surface-card overflow-hidden">
+          {isAdminUser && (
+            <div className="px-4 pt-3">
+              <BulkSelectBar
+                selectedCount={selectedUserIds.size}
+                totalCount={filtered.filter((u) => u.id !== currentUser?.id).length}
+                onSelectAll={selectAllUsers}
+                onClearSelection={clearSelection}
+                onDelete={handleBulkDelete}
+                isDeleting={bulkDeleteUsers.isPending}
+                itemLabel="user"
+              />
+            </div>
+          )}
           <table className="w-full text-sm">
             <thead className="border-b border-border">
               <tr>
+                {isAdminUser && (
+                  <th className="w-10 px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={selectedUserIds.size > 0 && filtered.filter((u) => u.id !== currentUser?.id).every((u) => selectedUserIds.has(u.id))}
+                      onChange={(e) => e.target.checked ? selectAllUsers() : clearSelection()}
+                      className="rounded border-gray-300"
+                    />
+                  </th>
+                )}
                 <th className="text-left px-4 py-3 font-semibold">Name</th>
                 <th className="text-left px-4 py-3 font-semibold">Email</th>
                 <th className="text-left px-4 py-3 font-semibold">Role</th>
@@ -1118,13 +1170,27 @@ export const AdminPage: React.FC = () => {
             <tbody>
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="text-center py-10 text-muted-foreground">
+                  <td colSpan={isAdminUser ? 9 : 8} className="text-center py-10 text-muted-foreground">
                     No users found
                   </td>
                 </tr>
               )}
               {filtered.map((u) => (
-                <tr key={u.id} className={`h-11 hover:bg-muted transition-colors ${!u.is_active ? 'opacity-50' : ''}`}>
+                <tr key={u.id} className={`h-11 hover:bg-muted transition-colors ${!u.is_active ? 'opacity-50' : ''} ${selectedUserIds.has(u.id) ? 'bg-primary/5' : ''}`}>
+                  {isAdminUser && (
+                    <td className="w-10 px-4 py-3">
+                      {u.id !== currentUser?.id ? (
+                        <input
+                          type="checkbox"
+                          checked={selectedUserIds.has(u.id)}
+                          onChange={() => toggleUserSelection(u.id)}
+                          className="rounded border-gray-300"
+                        />
+                      ) : (
+                        <span />
+                      )}
+                    </td>
+                  )}
                   <td className="px-4 py-3 font-medium">
                     <button
                       onClick={() => setSelectedUserDetails(u)}
