@@ -1,6 +1,6 @@
 # TimesheetIQ — User Guide
 
-This guide covers every role and workflow in the platform.
+This guide outlines all roles and workflows within the platform. The instructions provided are intended for running the application on a local machine. For deployment, the setup should be adjusted based on your specific infrastructure.
 
 ---
 
@@ -45,12 +45,12 @@ This guide covers every role and workflow in the platform.
 | My Time | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | Time Off | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | Calendar | ✓ | ✓ | ✓ | ✓ | ✓ | — |
-| Approvals | — | ✓ | ✓ | ✓ | — | — |
+| Approvals | — | ✓ | ✓ | ✓ | ✓ | — |
 | User Management | — | ✓* | ✓* | ✓* | ✓ | — |
 | Client Management | — | — | — | — | ✓ | — |
 | Mailboxes | — | — | — | — | ✓ | — |
 | Mappings | — | — | — | — | ✓ | — |
-| Ingestion Inbox | — | — | — | — | ✓ | — |
+| Ingestion Inbox | — | ✓* | ✓* | ✓* | ✓ | — |
 | Platform / Tenants | — | — | — | — | — | ✓ |
 
 *Managers can view their team in User Management but cannot create/delete users.
