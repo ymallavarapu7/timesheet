@@ -1,4 +1,4 @@
-# Acufy AI — Timesheet Operations
+# Acufy AI - Timesheet Operations
 
 A full-stack, multi-tenant timesheet management platform built for IT consulting firms. Features AI-powered email ingestion, natural language time entry, role-based approval workflows, and comprehensive project/client management.
 
