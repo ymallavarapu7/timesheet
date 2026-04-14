@@ -526,29 +526,4 @@ The Profile page shows your manager hierarchy (who you report to, up the chain) 
 
 If you have forgotten your password, an ADMIN must reset it from User Management.
 
----
-
-## 15. Demo Credentials
-
-All accounts use password: `password`
-
-| Role | Email | Name |
-|---|---|---|
-| PLATFORM_ADMIN | platform@example.com | Platform Admin |
-| ADMIN | admin@example.com | Bharat Mallavarapu |
-| CEO | ceo@example.com | Casey CEO |
-| SENIOR_MANAGER | alexander@example.com | Alexander Chen (Engineering) |
-| SENIOR_MANAGER | margaret@example.com | Margaret Ross (Operations) |
-| MANAGER | manager1@example.com | John Doe |
-| MANAGER | manager2@example.com | Sarah Ops |
-| MANAGER | manager3@example.com | Nina Infra |
-| EMPLOYEE | emp1-1@example.com | Employee 1 |
-| EMPLOYEE | emp1-2@example.com | Employee 2 |
-| EMPLOYEE | emp1-3@example.com | Employee 3 |
-| EMPLOYEE | emp3-1@example.com | Employee 4 |
-| EMPLOYEE | emp3-2@example.com | Employee 5 |
-| EMPLOYEE | emp4-1@example.com | Employee 6 |
-
-All users belong to **Default Tenant** (slug: `default`).
-
 The system account `system_ingestion_1@system.internal` is used internally for ingestion-pushed time entries and should not be used for manual login.
