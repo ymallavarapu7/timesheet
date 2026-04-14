@@ -11,6 +11,7 @@ import {
   useClients,
   useDeleteIngestionLineItem,
   useDraftIngestionComment,
+  useFetchJobStatus,
   useHoldIngestionTimesheet,
   useIngestionEmail,
   useIngestionTimesheet,
@@ -98,6 +99,10 @@ export const ReviewPanelPage: React.FC = () => {
   const holdTimesheet = useHoldIngestionTimesheet();
   const draftComment = useDraftIngestionComment();
   const reprocessEmail = useReprocessIngestionEmail();
+  const [reprocessJobId, setReprocessJobId] = React.useState<string | null>(null);
+  const { data: reprocessStatus } = useFetchJobStatus(reprocessJobId, Boolean(reprocessJobId));
+  const isReprocessing = Boolean(reprocessJobId && reprocessStatus && (reprocessStatus.status === 'queued' || reprocessStatus.status === 'in_progress'));
+  const reprocessDone = Boolean(reprocessJobId && reprocessStatus && (reprocessStatus.status === 'complete' || reprocessStatus.status === 'failed'));
   const rejectLineItem = useRejectIngestionLineItem();
   const unrejectLineItem = useUnrejectIngestionLineItem();
   const revertTimesheetRejection = useRevertIngestionTimesheetRejection();
@@ -427,7 +432,7 @@ export const ReviewPanelPage: React.FC = () => {
   const handleReprocessEmail = async (attachmentIds?: number[]) => {
     if (!emailContext?.id) return;
     const response = await reprocessEmail.mutateAsync({ emailId: emailContext.id, attachmentIds });
-    navigate('/ingestion/inbox', { state: { banner: response.mode === 'reprocess_attachments' ? 'Queued attachment-only reprocessing.' : 'Queued full email reprocessing.' } });
+    setReprocessJobId(response.job_id);
   };
 
   return (
@@ -457,9 +462,28 @@ export const ReviewPanelPage: React.FC = () => {
             AI Confidence: {(Number(timesheet.extracted_data.extraction_confidence) * 100).toFixed(0)}%
           </span>
         )}
+        {isReprocessing && (
+          <div className="flex items-center gap-2">
+            <RefreshCw className="h-3.5 w-3.5 animate-spin text-primary" />
+            <span className="text-xs text-primary font-medium">
+              {reprocessStatus?.status === 'queued' ? 'Queued...' : `Reprocessing... ${Math.round(Number(reprocessStatus?.progress ?? 0))}%`}
+            </span>
+            <div className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
+              <div className="h-full rounded-full bg-primary/60 transition-all duration-300" style={{ width: `${Number(reprocessStatus?.progress ?? 0)}%` }} />
+            </div>
+          </div>
+        )}
+        {reprocessDone && (
+          <span className="flex items-center gap-2">
+            <span className={`text-xs font-medium ${reprocessStatus?.status === 'complete' ? 'text-emerald-600' : 'text-destructive'}`}>
+              {reprocessStatus?.status === 'complete' ? 'Reprocessing complete.' : 'Reprocessing failed.'}
+            </span>
+            <button type="button" onClick={() => setReprocessJobId(null)} className="text-xs text-muted-foreground hover:text-foreground">Dismiss</button>
+          </span>
+        )}
         <div className="flex shrink-0 gap-2">
-          <button type="button" onClick={() => handleReprocessEmail()} className="action-button-secondary" disabled={reprocessEmail.isPending}>
-            <RefreshCw className="mr-1.5 h-4 w-4" /> {reprocessEmail.isPending ? 'Queueing...' : 'Reprocess'}
+          <button type="button" onClick={() => handleReprocessEmail()} className="action-button-secondary" disabled={reprocessEmail.isPending || isReprocessing}>
+            <RefreshCw className={`mr-1.5 h-4 w-4 ${isReprocessing ? 'animate-spin' : ''}`} /> {reprocessEmail.isPending ? 'Queueing...' : isReprocessing ? 'Reprocessing...' : 'Reprocess'}
           </button>
           {timesheet?.status === 'rejected' && (
             <button type="button" onClick={handleRevertRejection} className="action-button-secondary" disabled={revertTimesheetRejection.isPending}>

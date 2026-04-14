@@ -686,6 +686,49 @@ async def reprocess_stored_email_route(
     }
 
 
+class BulkReprocessRequest(BaseModel):
+    email_ids: list[int]
+
+
+@router.post("/fetch-emails/bulk-reprocess")
+async def bulk_reprocess_emails(
+    body: BulkReprocessRequest,
+    current_user=Depends(require_can_review),
+    _: object = Depends(require_ingestion_enabled),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    # Validate all email IDs belong to this tenant
+    result = await session.execute(
+        select(IngestedEmail.id).where(
+            (IngestedEmail.tenant_id == current_user.tenant_id)
+            & (IngestedEmail.id.in_(body.email_ids))
+        )
+    )
+    valid_ids = [row.id for row in result]
+    if not valid_ids:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No valid emails found")
+
+    # Enqueue one job per email (they'll run concurrently via the worker)
+    job_ids = []
+    for email_id in valid_ids:
+        try:
+            job_id = await enqueue_fetch_job(
+                current_user.tenant_id,
+                mode="reprocess_email",
+                email_id=email_id,
+            )
+            job_ids.append(job_id)
+        except RuntimeError:
+            continue
+
+    return {
+        "queued": len(job_ids),
+        "total_requested": len(body.email_ids),
+        "status": "queued",
+        "message": f"Reprocessing {len(job_ids)} email(s).",
+    }
+
+
 @router.get("/emails/{email_id}", response_model=StoredEmailDetail)
 async def get_stored_email(
     email_id: int,

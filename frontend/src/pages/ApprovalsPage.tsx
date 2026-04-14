@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { format, parseISO, startOfWeek } from 'date-fns';
 import { ArrowDown, ArrowUp, CheckCircle, ChevronDown, ChevronRight, Clock, XCircle } from 'lucide-react';
 
@@ -86,6 +86,14 @@ export const ApprovalsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'timesheets' | 'time-off'>('timesheets');
   const [rejectingTimeOffId, setRejectingTimeOffId] = useState<number | null>(null);
   const [timeOffRejectReason, setTimeOffRejectReason] = useState('');
+  const [statusMessage, setStatusMessage] = useState('');
+  const [statusTone, setStatusTone] = useState<'success' | 'danger'>('success');
+
+  const showStatus = useCallback((message: string, tone: 'success' | 'danger') => {
+    setStatusMessage(message);
+    setStatusTone(tone);
+    setTimeout(() => setStatusMessage(''), 5000);
+  }, []);
 
   const params = useMemo(
     () => ({ search: search.trim() || undefined, sort_by: sortBy, sort_order: sortOrder, limit: 500 }),
@@ -170,8 +178,10 @@ export const ApprovalsPage: React.FC = () => {
   const handleApproveTimesheetWeek = async (entryIds: number[]) => {
     try {
       await approveBatchMutation.mutateAsync(entryIds);
+      showStatus(`Approved ${entryIds.length} entries.`, 'success');
     } catch (error) {
       console.error('Error approving timesheet week:', error);
+      showStatus('Some approvals failed. Please refresh and try again.', 'danger');
     }
   };
 
@@ -186,8 +196,10 @@ export const ApprovalsPage: React.FC = () => {
       await rejectBatchMutation.mutateAsync({ entryIds, reason });
       setShowRejectForm((current) => ({ ...current, [key]: false }));
       setRejectionReasons((current) => ({ ...current, [key]: '' }));
+      showStatus(`Rejected ${entryIds.length} entries.`, 'success');
     } catch (error) {
       console.error('Error rejecting timesheet week:', error);
+      showStatus('Some rejections failed. Please refresh and try again.', 'danger');
     }
   };
 
@@ -195,6 +207,16 @@ export const ApprovalsPage: React.FC = () => {
     <div>
       <div>
         <h1 className="text-3xl font-bold mb-6">Pending Approvals</h1>
+
+        {statusMessage && (
+          <div className={`mb-4 px-4 py-3 rounded text-sm font-medium ${
+            statusTone === 'success'
+              ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+              : 'bg-red-50 text-red-800 border border-red-200'
+          }`}>
+            {statusMessage}
+          </div>
+        )}
 
         {/* Tab switcher */}
         <div className="flex gap-1 mb-6 border-b">
@@ -391,9 +413,15 @@ export const ApprovalsPage: React.FC = () => {
                                     <button
                                       onClick={async () => {
                                         if (!entryRejectReason.trim()) return;
-                                        await rejectEntryMutation.mutateAsync({ id: entry.id, reason: entryRejectReason });
-                                        setRejectingEntryId(null);
-                                        setEntryRejectReason('');
+                                        try {
+                                          await rejectEntryMutation.mutateAsync({ id: entry.id, reason: entryRejectReason });
+                                          setRejectingEntryId(null);
+                                          setEntryRejectReason('');
+                                          showStatus('Time entry rejected.', 'success');
+                                        } catch (err) {
+                                          console.error('Error rejecting entry:', err);
+                                          showStatus('Rejection failed. Please try again.', 'danger');
+                                        }
                                       }}
                                       disabled={!entryRejectReason.trim() || rejectEntryMutation.isPending}
                                       className="px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
@@ -623,7 +651,10 @@ export const ApprovalsPage: React.FC = () => {
                           onClick={() => {
                             rejectTimeOffMutation.mutate(
                               { id: req.id, reason: timeOffRejectReason },
-                              { onSuccess: () => { setRejectingTimeOffId(null); setTimeOffRejectReason(''); } }
+                              {
+                                onSuccess: () => { setRejectingTimeOffId(null); setTimeOffRejectReason(''); showStatus('Time entry rejected.', 'success'); },
+                                onError: (err) => { console.error('Error rejecting time off:', err); showStatus('Rejection failed. Please try again.', 'danger'); },
+                              }
                             );
                           }}
                         >Confirm</button>
@@ -633,7 +664,10 @@ export const ApprovalsPage: React.FC = () => {
                       <div className="flex gap-2">
                         <button
                           className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm hover:bg-emerald-700"
-                          onClick={() => approveTimeOffMutation.mutate(req.id)}
+                          onClick={() => approveTimeOffMutation.mutate(req.id, {
+                            onSuccess: () => showStatus('Time entry approved.', 'success'),
+                            onError: (err) => { console.error('Error approving time off:', err); showStatus('Approval failed. Please try again.', 'danger'); },
+                          })}
                         >Approve</button>
                         <button
                           className="px-3 py-1.5 border border-red-300 text-red-600 rounded text-sm hover:bg-red-50"

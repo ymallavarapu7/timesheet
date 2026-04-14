@@ -117,6 +117,7 @@ export const MyTimePage: React.FC = () => {
   ]);
 
   const [editFormData, setEditFormData] = useState<EntryFormData | null>(null);
+  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const historySectionRef = useRef<HTMLDivElement | null>(null);
   const projectsSectionRef = useRef<HTMLElement | null>(null);
   const { data: editTasks } = useTasks({ project_id: editFormData?.project_id || 0, active_only: true, limit: 500 });
@@ -161,6 +162,11 @@ export const MyTimePage: React.FC = () => {
     window.addEventListener('keydown', handleEscape);
     return () => window.removeEventListener('keydown', handleEscape);
   }, [isPickerOpen]);
+
+  const showStatus = (type: 'success' | 'error', text: string) => {
+    setStatusMessage({ type, text });
+    setTimeout(() => setStatusMessage(null), 5000);
+  };
 
   const regularEntries = entries?.filter((entry: TimeEntry) => !TIME_OFF_PREFIX_REGEX.test(entry.description)) || [];
   const draftEntries = regularEntries.filter((e: TimeEntry) => e.status === 'DRAFT');
@@ -299,7 +305,7 @@ export const MyTimePage: React.FC = () => {
   const canCreateTasks = user?.role === 'ADMIN' || user?.role === 'PLATFORM_ADMIN';
 
   if (isLoading && !entries) return <Loading />;
-  if (error) return <Error message="Failed to load time entries" />;
+  if (error && !entries) return <Error message="Something went wrong loading your data. Please refresh." />;
 
   const getWeekDateKey = (day: Date) => format(day, 'yyyy-MM-dd');
 
@@ -348,7 +354,7 @@ export const MyTimePage: React.FC = () => {
       closePicker();
     } catch (err) {
       console.error('Error creating task:', err);
-      alert('Unable to create task right now.');
+      showStatus('error', 'Failed to create task. Please try again.');
     }
   };
 
@@ -607,6 +613,7 @@ export const MyTimePage: React.FC = () => {
         setGridDescription('');
         await queryClient.invalidateQueries({ queryKey: ['timeentries'] });
         await queryClient.invalidateQueries({ queryKey: ['notifications'] });
+        showStatus('success', 'Time entries saved.');
         return;
       }
 
@@ -617,14 +624,15 @@ export const MyTimePage: React.FC = () => {
         'response' in firstError &&
         typeof (firstError as { response?: { data?: { detail?: string } } }).response?.data?.detail === 'string'
           ? (firstError as { response?: { data?: { detail?: string } } }).response?.data?.detail
-          : 'Failed to create one or more entries.';
+          : `Failed to save ${failures.length} entr${failures.length === 1 ? 'y' : 'ies'}. Please try again.`;
 
+      const errorDetail = detail ?? `Failed to save ${failures.length} entr${failures.length === 1 ? 'y' : 'ies'}. Please try again.`;
       if (successes > 0) {
-        alert(`${successes} entr${successes === 1 ? 'y was' : 'ies were'} saved, but ${failures.length} failed. ${detail}`);
         await queryClient.invalidateQueries({ queryKey: ['timeentries'] });
         await queryClient.invalidateQueries({ queryKey: ['notifications'] });
+        showStatus('error', `${successes} entr${successes === 1 ? 'y was' : 'ies were'} saved, but ${failures.length} failed. ${errorDetail}`);
       } else {
-        alert(detail);
+        showStatus('error', errorDetail);
       }
     } catch (err) {
       console.error('Failed to save grid entries', err);
@@ -634,8 +642,8 @@ export const MyTimePage: React.FC = () => {
         'response' in err &&
         typeof (err as { response?: { data?: { detail?: string } } }).response?.data?.detail === 'string'
           ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
-          : 'Failed to create one or more entries.';
-      alert(detail);
+          : undefined;
+      showStatus('error', detail ?? 'Failed to save entries. Please try again.');
     }
   };
 
@@ -681,6 +689,7 @@ export const MyTimePage: React.FC = () => {
       setEditFormData(null);
     } catch (err) {
       console.error('Error updating entry:', err);
+      showStatus('error', 'Entry update failed. Please try again.');
     }
   };
 
@@ -688,6 +697,7 @@ export const MyTimePage: React.FC = () => {
   const handleSubmitEntry = async (ids: number[]) => {
     try {
       await submitMutation.mutateAsync(ids);
+      showStatus('success', 'Entries submitted for approval.');
     } catch (err) {
       const detail =
         typeof err === 'object' &&
@@ -696,7 +706,7 @@ export const MyTimePage: React.FC = () => {
         typeof (err as { response?: { data?: { detail?: string } } }).response?.data?.detail === 'string'
           ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
           : null;
-      alert(detail ?? 'Unable to submit entries.');
+      showStatus('error', detail ?? 'Unable to submit entries.');
     }
   };
 
@@ -751,6 +761,33 @@ export const MyTimePage: React.FC = () => {
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-3xl font-bold">My Time Entries</h1>
         </div>
+
+        {error && entries && (
+          <div role="alert" className="mb-4 rounded-lg px-4 py-3 text-sm font-medium bg-destructive/10 text-destructive border border-destructive/20">
+            Something went wrong loading your data. Please refresh.
+          </div>
+        )}
+
+        {statusMessage && (
+          <div
+            role="alert"
+            className={`mb-4 rounded-lg px-4 py-3 text-sm font-medium flex items-center justify-between ${
+              statusMessage.type === 'success'
+                ? 'bg-green-50 text-green-800 border border-green-200'
+                : 'bg-destructive/10 text-destructive border border-destructive/20'
+            }`}
+          >
+            <span>{statusMessage.text}</span>
+            <button
+              type="button"
+              onClick={() => setStatusMessage(null)}
+              className="ml-4 hover:opacity-70"
+              aria-label="Dismiss"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
 
         {myTimeNotifications.length > 0 && (
           <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-4">

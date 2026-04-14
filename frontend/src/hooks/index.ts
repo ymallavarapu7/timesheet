@@ -73,6 +73,7 @@ export {
   useReprocessSkippedEmails,
   useReprocessIngestionEmail,
   useDeleteIngestedEmail,
+  useBulkReprocessEmails,
   useBulkDeleteIngestedEmails,
   useReapplyIngestionMappings,
   useSkippedEmails,

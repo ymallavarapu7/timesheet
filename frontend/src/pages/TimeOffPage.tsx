@@ -49,6 +49,15 @@ export const TimeOffPage: React.FC = () => {
     leave_type: TimeOffType;
   } | null>(null);
 
+  const [statusMessage, setStatusMessage] = useState('');
+  const [statusTone, setStatusTone] = useState<'success' | 'danger'>('success');
+
+  const showStatus = (message: string, tone: 'success' | 'danger') => {
+    setStatusMessage(message);
+    setStatusTone(tone);
+    setTimeout(() => setStatusMessage(''), 5000);
+  };
+
   const queryParams = useMemo(
     () => ({
       status: statusFilter === 'ALL' ? undefined : statusFilter,
@@ -116,16 +125,20 @@ export const TimeOffPage: React.FC = () => {
         reason: '',
         leave_type: 'PTO',
       });
+      showStatus('Time off request created.', 'success');
     } catch (createError) {
       console.error('Failed to create time off request', createError);
+      showStatus('Unable to submit time off request. Please try again.', 'danger');
     }
   };
 
   const handleSubmitSingle = async (id: number) => {
     try {
       await submitMutation.mutateAsync([id]);
+      showStatus('Request sent for approval.', 'success');
     } catch (submitError) {
       console.error('Failed to submit time off request', submitError);
+      showStatus('Submission failed. Please try again.', 'danger');
     }
   };
 
@@ -147,8 +160,10 @@ export const TimeOffPage: React.FC = () => {
       await updateMutation.mutateAsync(editData);
       setEditingId(null);
       setEditData(null);
+      showStatus('Time off request updated.', 'success');
     } catch (updateError) {
       console.error('Failed to update request', updateError);
+      showStatus('Changes could not be saved. Please try again.', 'danger');
     }
   };
 
@@ -158,8 +173,10 @@ export const TimeOffPage: React.FC = () => {
       await deleteMutation.mutateAsync(id);
       setEditingId(null);
       setEditData(null);
+      showStatus('Time off request removed.', 'success');
     } catch (deleteError) {
       console.error('Failed to delete request', deleteError);
+      showStatus('Failed to delete request. Please try again.', 'danger');
     }
   };
 
@@ -217,6 +234,17 @@ export const TimeOffPage: React.FC = () => {
   return (
     <div>
       <div>
+        {statusMessage && (
+          <div
+            className={`mb-4 px-4 py-3 rounded text-sm font-medium ${
+              statusTone === 'success'
+                ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                : 'bg-red-100 text-red-800 border border-red-200'
+            }`}
+          >
+            {statusMessage}
+          </div>
+        )}
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-3xl font-bold">Time Off</h1>
           <button

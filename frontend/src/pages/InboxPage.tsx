@@ -9,6 +9,7 @@ import { Badge, Loading } from '@/components';
 import { BulkSelectBar } from '@/components/ui/BulkSelectBar';
 import {
   useAuth,
+  useBulkReprocessEmails,
   useBulkDeleteIngestedEmails,
   useClients,
   useDeleteIngestedEmail,
@@ -253,7 +254,12 @@ export const InboxPage: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
-  const [activeJobId, setActiveJobId] = React.useState<string | null>(null);
+  // Pick up job ID from navigation state (e.g., after reprocess from review panel)
+  const navJobId =
+    typeof location.state === 'object' && location.state !== null && 'jobId' in location.state && typeof location.state.jobId === 'string'
+      ? location.state.jobId
+      : null;
+  const [activeJobId, setActiveJobId] = React.useState<string | null>(navJobId);
   const [statusFilter, setStatusFilter] = React.useState('');
   const [clientId, setClientId] = React.useState('');
   const [search, setSearch] = React.useState('');
@@ -271,6 +277,7 @@ export const InboxPage: React.FC = () => {
   const reprocessEmail = useReprocessIngestionEmail();
   const deleteEmail = useDeleteIngestedEmail();
   const reapplyMappings = useReapplyIngestionMappings();
+  const bulkReprocessEmails = useBulkReprocessEmails();
   const bulkDeleteEmails = useBulkDeleteIngestedEmails();
   const { data: fetchStatus } = useFetchJobStatus(activeJobId, Boolean(activeJobId));
 
@@ -348,7 +355,23 @@ export const InboxPage: React.FC = () => {
     reprocessEmail.isPending ||
     deleteEmail.isPending ||
     reapplyMappings.isPending ||
+    bulkReprocessEmails.isPending ||
     bulkDeleteEmails.isPending;
+
+  const handleBulkReprocess = async () => {
+    const ids = [...selectedEmailIds];
+    if (ids.length === 0) return;
+    if (!window.confirm(`Reprocess ${ids.length} email(s)? This will re-run extraction and matching.`)) return;
+    try {
+      const result = await bulkReprocessEmails.mutateAsync(ids);
+      setSelectedEmailIds(new Set());
+      setStatusTone('success');
+      setStatusMessage(`Queued ${result.queued} email(s) for reprocessing.`);
+    } catch {
+      setStatusTone('danger');
+      setStatusMessage('Failed to queue bulk reprocess.');
+    }
+  };
 
   const handleFetch = async () => {
     try {
@@ -479,7 +502,7 @@ export const InboxPage: React.FC = () => {
   const hasAnyQueueItems = allGroups.length > 0;
   const hasActiveFilters = Boolean(statusFilter || clientId || search.trim());
   const showFilters = hasAnyQueueItems || hasActiveFilters;
-  const fetchStatusMessage = getFriendlySystemMessage(fetchStatus?.message, 'Waiting for worker status...');
+  const fetchStatusMessage = getFriendlySystemMessage(fetchStatus?.message, 'Starting up...');
   const rawFetchStatusMessage = fetchStatus?.message || '';
   const hasTechnicalDetails = Boolean(rawFetchStatusMessage) && rawFetchStatusMessage !== fetchStatusMessage;
   const showActivityStrip =
@@ -554,49 +577,24 @@ export const InboxPage: React.FC = () => {
       {showActivityStrip ? (
         <section className="surface-card px-5 py-3">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-            <div className="space-y-2">
-              <div>
-                <p className="text-sm font-semibold text-foreground">Recent activity</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">Background jobs and recent actions.</p>
-              </div>
+            <div className="flex-1 space-y-2">
 
               {activeJobId && fetchStatus && fetchStatus.status !== 'not_found' ? (
-                <div className="rounded-2xl border border-border/60 bg-muted/35 px-4 py-2.5">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <Badge tone={fetchStatusTone} className="normal-case tracking-normal">
-                      {fetchStatus.status}
-                    </Badge>
-                    {fetchStatus.mode ? (
-                      <span className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                        {fetchStatus.mode.replace(/_/g, ' ')}
-                      </span>
-                    ) : null}
-                    <span className="font-mono text-[11px] text-muted-foreground">{activeJobId}</span>
-                  </div>
-                  <p className="mt-2 text-sm text-foreground">{fetchStatusMessage}</p>
-                  {hasTechnicalDetails ? (
-                    <button
-                      type="button"
-                      onClick={() => setShowTechnicalDetails((current) => !current)}
-                      className="mt-2 text-xs font-medium text-muted-foreground transition hover:text-foreground"
-                    >
-                      {showTechnicalDetails ? 'Hide technical details' : 'Show technical details'}
-                    </button>
-                  ) : null}
-                  {hasTechnicalDetails && showTechnicalDetails ? (
-                    <p className="mt-2 rounded-xl bg-background px-3 py-2 font-mono text-xs text-muted-foreground">
-                      {rawFetchStatusMessage}
-                    </p>
-                  ) : null}
+                <div className="flex items-center gap-3">
+                  <Badge tone={fetchStatusTone} className="normal-case tracking-normal">
+                    {fetchStatus.status === 'queued' ? 'Queued' :
+                     fetchStatus.status === 'in_progress' ? 'Processing' :
+                     fetchStatus.status === 'complete' ? 'Complete' :
+                     fetchStatus.status === 'failed' ? 'Failed' :
+                     fetchStatus.status}
+                  </Badge>
+                  <span className="text-sm text-foreground">{fetchStatusMessage}</span>
                   {(fetchStatus.status === 'queued' || fetchStatus.status === 'in_progress') ? (
-                    <div className="mt-2 space-y-1.5">
-                      <div className="h-2 overflow-hidden rounded-full bg-background">
-                        <div className="h-full rounded-full bg-amber-300 transition-all duration-300" style={{ width: `${progress}%` }} />
+                    <div className="flex items-center gap-2 flex-1 max-w-xs">
+                      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-background">
+                        <div className="h-full rounded-full bg-primary/60 transition-all duration-300" style={{ width: `${progress}%` }} />
                       </div>
-                      <div className="flex items-center justify-between text-xs uppercase tracking-[0.16em] text-muted-foreground">
-                        <span>Worker progress</span>
-                        <span>{progress}%</span>
-                      </div>
+                      <span className="text-xs text-muted-foreground">{progress}%</span>
                     </div>
                   ) : null}
                 </div>
@@ -778,15 +776,41 @@ export const InboxPage: React.FC = () => {
 
         {selectedEmailIds.size > 0 && (
           <div className="border-b border-border/70 px-5 py-3">
-            <BulkSelectBar
-              selectedCount={selectedEmailIds.size}
-              totalCount={allVisibleEmailIds.length}
-              onSelectAll={selectAllVisible}
-              onClearSelection={clearSelection}
-              onDelete={handleBulkDelete}
-              isDeleting={bulkDeleteEmails.isPending}
-              itemLabel="email"
-            />
+            <div className="flex items-center justify-between gap-4 rounded-lg border border-primary/20 bg-primary/5 px-4 py-2.5">
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-medium text-foreground">
+                  {selectedEmailIds.size} email{selectedEmailIds.size !== 1 ? 's' : ''} selected
+                </span>
+                {selectedEmailIds.size < allVisibleEmailIds.length && (
+                  <button type="button" onClick={selectAllVisible} className="text-xs font-medium text-primary hover:text-primary/80 transition">
+                    Select all {allVisibleEmailIds.length}
+                  </button>
+                )}
+                <button type="button" onClick={clearSelection} className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground transition">
+                  Clear
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleBulkReprocess}
+                  disabled={isBusy}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary transition hover:bg-primary/20 disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${bulkReprocessEmails.isPending ? 'animate-spin' : ''}`} />
+                  {bulkReprocessEmails.isPending ? 'Queueing...' : `Reprocess ${selectedEmailIds.size}`}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleBulkDelete}
+                  disabled={isBusy}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-destructive/90 disabled:opacity-50"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  {bulkDeleteEmails.isPending ? 'Deleting...' : `Delete ${selectedEmailIds.size}`}
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -842,7 +866,6 @@ export const InboxPage: React.FC = () => {
                   <th className="px-4 py-4 font-medium">Week</th>
                   <th className="px-4 py-4 font-medium">Hours</th>
                   <th className="px-4 py-4 font-medium">Status</th>
-                  <th className="px-4 py-4 font-medium">Push</th>
                   <th className="px-4 py-4 font-medium">AI Flags</th>
                   <th className="px-4 py-4 font-medium">Received</th>
                   <th className="px-4 py-4 font-medium text-right">Actions</th>
@@ -924,11 +947,6 @@ export const InboxPage: React.FC = () => {
                         <td className="px-4 py-5 align-top">
                           <Badge tone={getStatusTone(group.status)} className="normal-case tracking-normal">
                             {statusLabel(group.status)}
-                          </Badge>
-                        </td>
-                        <td className="px-4 py-5 align-top">
-                          <Badge tone={getPushTone(rowTarget.push_status)} className="normal-case tracking-normal">
-                            {rowTarget.push_status || 'Not sent'}
                           </Badge>
                         </td>
                         <td className="px-4 py-5 align-top text-sm text-muted-foreground">

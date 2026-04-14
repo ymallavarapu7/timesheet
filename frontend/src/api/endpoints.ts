@@ -454,6 +454,8 @@ export const ingestionAPI = {
     apiClient.delete(`/api/ingestion/emails/${emailId}`, { params: refetch ? { refetch: true } : undefined }),
   bulkDeleteEmails: (emailIds: number[]) =>
     apiClient.post<{ deleted: number }>('/api/ingestion/emails/bulk-delete', { email_ids: emailIds }),
+  bulkReprocess: (emailIds: number[]) =>
+    apiClient.post<{ queued: number; message: string }>('/api/ingestion/fetch-emails/bulk-reprocess', { email_ids: emailIds }),
   reapplyMappings: () => apiClient.post<MappingReapplyResult>('/api/ingestion/timesheets/reapply-mappings', {}),
   getAttachmentFile: async (attachmentId: number) => {
     const response = await apiClient.get<Blob>(`/api/ingestion/attachments/${attachmentId}/file`, {

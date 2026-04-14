@@ -765,6 +765,17 @@ export const useDeleteIngestedEmail = () => {
   });
 };
 
+export const useBulkReprocessEmails = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (emailIds: number[]) => ingestionAPI.bulkReprocess(emailIds).then(res => res.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'skipped-emails'] });
+    },
+  });
+};
+
 export const useBulkDeleteIngestedEmails = () => {
   const queryClient = useQueryClient();
   return useMutation({

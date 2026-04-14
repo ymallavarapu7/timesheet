@@ -52,11 +52,7 @@ const ProtectedRoute: React.FC = () => {
 };
 
 const AnonymousOnlyRoute: React.FC = () => {
-  const { user, isLoading } = useAuth();
-
-  if (isLoading) {
-    return <Loading message="Checking your session..." />;
-  }
+  const { user } = useAuth();
 
   if (user) {
     return <Navigate to={getPostLoginRoute(user.role)} replace />;

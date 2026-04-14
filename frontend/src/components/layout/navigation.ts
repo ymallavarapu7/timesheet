@@ -56,7 +56,7 @@ export const buildNavigation = (user: User | null, ingestionEnabled: boolean): N
       ],
     },
     {
-      title: 'Ingestion',
+      title: 'Emails',
       items: [
         { label: 'Mailboxes', to: '/mailboxes', icon: Mail, visible: ingestionEnabled && isAdmin(user) },
         { label: 'Mappings', to: '/mappings', icon: FolderCog, visible: ingestionEnabled && isAdmin(user) },

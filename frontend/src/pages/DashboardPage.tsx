@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { addWeeks, differenceInCalendarWeeks, endOfWeek, format, isThisWeek, parseISO, startOfWeek } from 'date-fns';
 import { Calendar, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { Loading, ChangePasswordModal } from '@/components';
+import { Loading, Error, ChangePasswordModal } from '@/components';
 import {
   useAuth,
   useChangePassword,
@@ -270,8 +270,8 @@ export const DashboardPage: React.FC = () => {
   const { data: tenants = [], isLoading: tenantsLoading, error: tenantsError } = useTenants(isPlatformAdmin);
   const { data: clients = [], isLoading: clientsLoading, error: clientsError } = useClients();
   const { data: notificationsSummary, isLoading: notificationsLoading, error: notificationsError, isFetching: notificationsFetching, isError: notificationsIsError } = useNotifications();
-  const { data: recentActivity = [], isLoading: recentActivityLoading } = useDashboardRecentActivity({ limit: 6 }, showAdminStatsView);
-  const { data: analytics, isLoading: analyticsLoading } = useDashboardAnalytics({
+  const { data: recentActivity = [], isLoading: recentActivityLoading, error: recentActivityError } = useDashboardRecentActivity({ limit: 6 }, showAdminStatsView);
+  const { data: analytics, isLoading: analyticsLoading, error: analyticsError } = useDashboardAnalytics({
     start_date: weekRange.startDate,
     end_date: weekRange.endDate,
     project_id: showProjectClientWidgets ? selectedProjectId ?? undefined : undefined,
@@ -303,6 +303,10 @@ export const DashboardPage: React.FC = () => {
 
   if (!user || (!isPlatformAdmin && analyticsLoading) || (!isPlatformAdmin && projectsLoading) || ((isManagerView || isAdminView) && teamLoading) || (isManagerView && teamDailyLoading) || (isPlatformAdmin && tenantsLoading)) {
     return <Loading />;
+  }
+
+  if (analyticsError || recentActivityError || tenantsError || usersError || clientsError) {
+    return <Error message="Something went wrong loading your dashboard. Please refresh." />;
   }
 
   const projectOptions = projects as Project[];

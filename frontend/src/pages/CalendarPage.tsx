@@ -45,6 +45,7 @@ export const CalendarPage: React.FC = () => {
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedEntryKey, setSelectedEntryKey] = useState<string | null>(null);
   const [noteText, setNoteText] = useState('');
+  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const navigate = useNavigate();
 
   const { data: timeEntries, isLoading: isLoadingTimeEntries, error: timeEntriesError } = useTimeEntries({ limit: 500 });
@@ -97,7 +98,7 @@ export const CalendarPage: React.FC = () => {
   }, [normalizedEntries, calendarDays]);
 
   if ((isLoadingTimeEntries && !timeEntries) || (isLoadingTimeOff && !timeOffEntries)) return <Loading />;
-  if (timeEntriesError || timeOffError) return <Error message="Failed to load calendar entries" />;
+  if (timeEntriesError || timeOffError) return <Error message="Something went wrong loading calendar data. Please refresh." />;
 
   const selectedSummary = selectedDate
     ? dailySummaries.find((summary) => isSameDay(summary.date, selectedDate))
@@ -116,13 +117,13 @@ export const CalendarPage: React.FC = () => {
   const handleAddNote = async () => {
     if (!selectedEntry) return;
     if (selectedEntry.status !== 'DRAFT') {
-      alert('Only DRAFT entries can be updated with notes.');
+      setStatusMessage({ type: 'error', text: 'Only DRAFT entries can be updated with notes.' });
       return;
     }
 
     const trimmedNote = noteText.trim();
     if (!trimmedNote) {
-      alert('Please enter a note first.');
+      setStatusMessage({ type: 'error', text: 'Please enter a note first.' });
       return;
     }
 
@@ -141,10 +142,10 @@ export const CalendarPage: React.FC = () => {
         });
       }
       setNoteText('');
-      alert('Note added successfully.');
+      setStatusMessage({ type: 'success', text: 'Note added successfully.' });
     } catch (updateError) {
       console.error('Failed to add note', updateError);
-      alert('Failed to add note.');
+      setStatusMessage({ type: 'error', text: 'Failed to add note.' });
     }
   };
 
@@ -269,6 +270,12 @@ export const CalendarPage: React.FC = () => {
                       </span>
                     )}
                   </div>
+
+                  {statusMessage && (
+                    <p className={`text-sm mb-2 ${statusMessage.type === 'error' ? 'text-red-600' : 'text-emerald-600'}`}>
+                      {statusMessage.text}
+                    </p>
+                  )}
 
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Add note</label>

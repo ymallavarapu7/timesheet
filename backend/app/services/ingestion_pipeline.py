@@ -750,16 +750,7 @@ async def _process_timesheet_attachment(
         if not isinstance(extracted_data, dict):
             continue
 
-        # Entity matching
-        match_suggestions = await match_entities(
-            extracted_name=extracted_data.get("employee_name"),
-            extracted_client=(
-                extracted_data.get("client_name") or extracted_data.get("client")
-            ),
-            known_employees=employees,
-            known_clients=clients,
-        )
-
+        # Entity matching — try deterministic first, then LLM
         employee_id = (
             sender_employee_id
             if _sender_employee_mapping_matches_extracted_name(
@@ -771,10 +762,26 @@ async def _process_timesheet_attachment(
         )
         client_id = sender_client_id
 
+        # Deterministic fuzzy match on employee name before LLM
         if employee_id is None:
-            employee_id = _pick_suggested_id(match_suggestions.get("employee"))
-        if client_id is None:
-            client_id = _pick_suggested_id(match_suggestions.get("client"))
+            employee_id = _fuzzy_match_employee(
+                extracted_data.get("employee_name"), employees
+            )
+
+        # Only call LLM for matching if deterministic didn't resolve
+        if employee_id is None or client_id is None:
+            match_suggestions = await match_entities(
+                extracted_name=extracted_data.get("employee_name") if employee_id is None else None,
+                extracted_client=(
+                    extracted_data.get("client_name") or extracted_data.get("client")
+                ) if client_id is None else None,
+                known_employees=employees,
+                known_clients=clients,
+            )
+            if employee_id is None:
+                employee_id = _pick_suggested_id(match_suggestions.get("employee"))
+            if client_id is None:
+                client_id = _pick_suggested_id(match_suggestions.get("client"))
 
         # Normalize line items
         line_items_data = _normalize_line_items(
@@ -797,6 +804,7 @@ async def _process_timesheet_attachment(
         if employee_id is None:
             employee_id = await _resolve_or_create_extracted_employee_user(
                 extracted_employee_name=extracted_data.get("employee_name"),
+                sender_email=email_record.sender_email,
                 tenant_id=tenant_id,
                 session=session,
             )
@@ -900,6 +908,49 @@ async def _load_known_clients(session: AsyncSession, tenant_id: int) -> list[dic
         select(Client.id, Client.name).where(Client.tenant_id == tenant_id)
     )
     return [{"id": row.id, "name": row.name} for row in result]
+
+
+def _fuzzy_match_employee(
+    extracted_name: str | None,
+    known_employees: list[dict],
+) -> int | None:
+    """
+    Deterministic fuzzy match of extracted employee name against known employees.
+    Returns employee ID if a strong match is found (ratio >= 0.85), else None.
+    This runs before the LLM to avoid hallucinated matches.
+    """
+    import difflib
+
+    if not extracted_name:
+        return None
+
+    normalized = _normalize_person_name(extracted_name)
+    if not normalized:
+        return None
+
+    best_id = None
+    best_ratio = 0.0
+
+    for emp in known_employees:
+        emp_normalized = _normalize_person_name(emp.get("full_name"))
+        if not emp_normalized:
+            continue
+
+        # Exact match
+        if normalized == emp_normalized:
+            return emp["id"]
+
+        # Fuzzy ratio
+        ratio = difflib.SequenceMatcher(None, normalized, emp_normalized).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_id = emp["id"]
+
+    # Only accept high-confidence fuzzy matches
+    if best_ratio >= 0.85:
+        return best_id
+
+    return None
 
 
 def _pick_suggested_id(suggestion: dict | None) -> int | None:
@@ -1198,6 +1249,7 @@ def _slugify_identity(value: str) -> str:
 
 async def _resolve_or_create_extracted_employee_user(
     extracted_employee_name: str | None,
+    sender_email: str | None,
     tenant_id: int,
     session: AsyncSession,
 ) -> int | None:
@@ -1208,6 +1260,7 @@ async def _resolve_or_create_extracted_employee_user(
     if not normalized_extracted_name or not display_name:
         return None
 
+    # First, try to match by name against existing users
     existing_users_result = await session.execute(
         select(User).where(
             (User.tenant_id == tenant_id)
@@ -1218,17 +1271,43 @@ async def _resolve_or_create_extracted_employee_user(
         if _normalize_person_name(existing.full_name) == normalized_extracted_name:
             return existing.id
 
+    # Use sender email for the new user account, but do NOT match to an existing
+    # user by email alone — that would mis-assign timesheets when multiple employees'
+    # timesheets are sent from the same email address.
+    real_email = sender_email if sender_email and sender_email != "unknown@unknown.com" else None
+
+    # No name match found — create a new user with the sender's real email if available
+    use_email = real_email
     base_slug = _slugify_identity(display_name)
+
+    if use_email:
+        # Check if the real email is already taken by another user (different tenant, etc.)
+        email_taken = await session.execute(
+            select(User.id).where(User.email == use_email)
+        )
+        if email_taken.scalar_one_or_none() is not None:
+            use_email = None  # Fall back to generated email
+
+    if not use_email:
+        # Generate a placeholder email as fallback
+        suffix = 0
+        while True:
+            suffix_part = "" if suffix == 0 else f"_{suffix}"
+            use_email = f"{base_slug}.{tenant_id}{suffix_part}@ingestion.internal"
+            taken_result = await session.execute(
+                select(User.id).where(User.email == use_email)
+            )
+            if taken_result.scalar_one_or_none() is None:
+                break
+            suffix += 1
+
+    # Generate a unique username
     suffix = 0
     while True:
         suffix_part = "" if suffix == 0 else f"_{suffix}"
         candidate_username = f"{base_slug}_{tenant_id}{suffix_part}"
-        candidate_email = f"{base_slug}.{tenant_id}{suffix_part}@ingestion.internal"
-
         taken_result = await session.execute(
-            select(User.id).where(
-                (User.username == candidate_username) | (User.email == candidate_email)
-            )
+            select(User.id).where(User.username == candidate_username)
         )
         if taken_result.scalar_one_or_none() is None:
             break
@@ -1236,7 +1315,7 @@ async def _resolve_or_create_extracted_employee_user(
 
     created_user = User(
         tenant_id=tenant_id,
-        email=candidate_email,
+        email=use_email,
         username=candidate_username,
         full_name=display_name,
         hashed_password=get_password_hash("password"),
