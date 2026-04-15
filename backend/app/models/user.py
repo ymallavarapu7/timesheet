@@ -33,6 +33,8 @@ class User(Base, TimestampMixin):
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     department: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True)
+    timezone: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, default="UTC")
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     has_changed_password: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False)

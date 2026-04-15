@@ -123,6 +123,9 @@ export const ApprovalsPage: React.FC = () => {
 
   const approveBatchMutation = useApproveTimeEntryBatch();
   const rejectBatchMutation = useRejectTimeEntryBatch();
+  const [selectedGroupKeys, setSelectedGroupKeys] = useState<Set<string>>(new Set());
+  const [bulkRejectReason, setBulkRejectReason] = useState('');
+  const [showBulkRejectForm, setShowBulkRejectForm] = useState(false);
   const rejectEntryMutation = useRejectTimeEntry();
   const revertRejectionMutation = useRevertTimeEntryRejection();
 
@@ -165,6 +168,18 @@ export const ApprovalsPage: React.FC = () => {
     return groups;
   }, [historyGroups, selectedEmployeeId, search]);
 
+  const getGroupKey = (group: { employeeId: number; weekStart: string }) => `${group.employeeId}-${group.weekStart}`;
+
+  const selectedEntryIds = useMemo(() => {
+    const ids: number[] = [];
+    for (const group of displayTimesheetWeeklyGroups) {
+      if (selectedGroupKeys.has(getGroupKey(group))) {
+        for (const entry of group.items) ids.push(entry.id);
+      }
+    }
+    return ids;
+  }, [displayTimesheetWeeklyGroups, selectedGroupKeys]);
+
   if (timeLoading && !timeEntries) {
     return <Loading />;
   }
@@ -199,6 +214,49 @@ export const ApprovalsPage: React.FC = () => {
       showStatus(`Rejected ${entryIds.length} entries.`, 'success');
     } catch (error) {
       console.error('Error rejecting timesheet week:', error);
+      showStatus('Some rejections failed. Please refresh and try again.', 'danger');
+    }
+  };
+
+  // ── Bulk select + approve/reject across week groups ──
+  const toggleGroupSelection = (key: string) => {
+    setSelectedGroupKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const selectAllGroups = () => {
+    setSelectedGroupKeys(new Set(displayTimesheetWeeklyGroups.map(getGroupKey)));
+  };
+
+  const clearGroupSelection = () => {
+    setSelectedGroupKeys(new Set());
+    setShowBulkRejectForm(false);
+    setBulkRejectReason('');
+  };
+
+  const handleBulkApprove = async () => {
+    if (selectedEntryIds.length === 0) return;
+    if (!window.confirm(`Approve ${selectedEntryIds.length} time entries across ${selectedGroupKeys.size} employee-week groups?`)) return;
+    try {
+      await approveBatchMutation.mutateAsync(selectedEntryIds);
+      showStatus(`Approved ${selectedEntryIds.length} entries.`, 'success');
+      clearGroupSelection();
+    } catch {
+      showStatus('Some approvals failed. Please refresh and try again.', 'danger');
+    }
+  };
+
+  const handleBulkReject = async () => {
+    if (selectedEntryIds.length === 0 || !bulkRejectReason.trim()) return;
+    try {
+      await rejectBatchMutation.mutateAsync({ entryIds: selectedEntryIds, reason: bulkRejectReason.trim() });
+      showStatus(`Rejected ${selectedEntryIds.length} entries.`, 'success');
+      clearGroupSelection();
+    } catch {
       showStatus('Some rejections failed. Please refresh and try again.', 'danger');
     }
   };
@@ -350,15 +408,102 @@ export const ApprovalsPage: React.FC = () => {
 
         {displayTimesheetWeeklyGroups.length > 0 && (
           <div className="mb-8">
-            <h2 className="text-xl font-bold mb-4">Timesheet Approvals</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold">Timesheet Approvals</h2>
+              {displayTimesheetWeeklyGroups.length > 1 && (
+                <div className="flex items-center gap-2 text-sm">
+                  <button
+                    type="button"
+                    onClick={selectedGroupKeys.size === displayTimesheetWeeklyGroups.length ? clearGroupSelection : selectAllGroups}
+                    className="text-primary font-medium hover:text-primary/80"
+                  >
+                    {selectedGroupKeys.size === displayTimesheetWeeklyGroups.length ? 'Clear selection' : 'Select all'}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Bulk action bar */}
+            {selectedGroupKeys.size > 0 && (
+              <div className="mb-4 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <span className="text-sm font-medium text-foreground">
+                    {selectedGroupKeys.size} week group{selectedGroupKeys.size !== 1 ? 's' : ''} selected · {selectedEntryIds.length} entries
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleBulkApprove}
+                      disabled={approveBatchMutation.isPending}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary/90 disabled:opacity-50"
+                    >
+                      <CheckCircle className="h-3.5 w-3.5" />
+                      {approveBatchMutation.isPending ? 'Approving...' : `Approve all (${selectedEntryIds.length})`}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowBulkRejectForm((v) => !v)}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-1.5 text-xs font-semibold text-white hover:bg-destructive/90"
+                    >
+                      <XCircle className="h-3.5 w-3.5" />
+                      Reject all
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearGroupSelection}
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+                {showBulkRejectForm && (
+                  <div className="mt-3 space-y-2">
+                    <textarea
+                      value={bulkRejectReason}
+                      onChange={(e) => setBulkRejectReason(e.target.value)}
+                      placeholder="Rejection reason (applied to all selected entries)..."
+                      className="field-textarea"
+                      rows={2}
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={handleBulkReject}
+                        disabled={rejectBatchMutation.isPending || !bulkRejectReason.trim()}
+                        className="rounded-lg bg-destructive px-3 py-1.5 text-xs font-semibold text-white hover:bg-destructive/90 disabled:opacity-50"
+                      >
+                        {rejectBatchMutation.isPending ? 'Rejecting...' : 'Confirm reject'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setShowBulkRejectForm(false); setBulkRejectReason(''); }}
+                        className="rounded-lg bg-muted px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted/80"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="space-y-4">
               {displayTimesheetWeeklyGroups.map((group) => (
                 <section key={`timesheet-${group.employeeId}-${group.weekStart}`} className="border rounded-lg bg-card overflow-hidden">
-                  <div className="px-6 py-4 border-b bg-muted/30">
-                    <h3 className="text-lg font-semibold">{group.employeeName}</h3>
-                    <p className="text-sm text-muted-foreground">
-                      Week of {format(parseISO(group.weekStart), 'MMM d, yyyy')} - {format(parseISO(group.weekEnd), 'MMM d, yyyy')} • {group.items.length} submitted entr{group.items.length === 1 ? 'y' : 'ies'}
-                    </p>
+                  <div className="px-6 py-4 border-b bg-muted/30 flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={selectedGroupKeys.has(getGroupKey(group))}
+                      onChange={() => toggleGroupSelection(getGroupKey(group))}
+                      className="h-4 w-4 rounded border-border accent-primary"
+                    />
+                    <div className="flex-1">
+                      <h3 className="text-lg font-semibold">{group.employeeName}</h3>
+                      <p className="text-sm text-muted-foreground">
+                        Week of {format(parseISO(group.weekStart), 'MMM d, yyyy')} - {format(parseISO(group.weekEnd), 'MMM d, yyyy')} • {group.items.length} submitted entr{group.items.length === 1 ? 'y' : 'ies'}
+                      </p>
+                    </div>
                   </div>
 
                   <div className="p-4 space-y-4">

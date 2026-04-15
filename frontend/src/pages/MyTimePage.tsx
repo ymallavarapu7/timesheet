@@ -1009,8 +1009,11 @@ export const MyTimePage: React.FC = () => {
             </div>
           </div>
 
+          <div className="md:hidden px-4 pt-2 text-xs text-muted-foreground italic">
+            ← Swipe to see all days →
+          </div>
           <div className="p-4 overflow-x-auto overflow-y-visible pb-6">
-            <div className="w-full">
+            <div className="min-w-[900px]">
               <div className="grid grid-cols-[minmax(280px,2.2fr)_repeat(7,minmax(64px,0.8fr))_minmax(70px,0.7fr)_minmax(80px,0.9fr)] items-center gap-2 text-xs text-muted-foreground mb-3 px-2">
                 <div>Project / Task</div>
                 {weekDates.map((day, index) => (

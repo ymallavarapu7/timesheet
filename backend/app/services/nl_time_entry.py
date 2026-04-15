@@ -180,7 +180,14 @@ async def parse_natural_language_entry(
     if not context:
         return {"entries": [], "error": "You have no projects assigned. Contact your admin."}
 
-    today = date.today()
+    # Use the user's timezone to resolve "today" and "yesterday" correctly.
+    import zoneinfo
+    user_tz_name = getattr(user, "timezone", None) or "UTC"
+    try:
+        user_tz = zoneinfo.ZoneInfo(user_tz_name)
+    except Exception:
+        user_tz = zoneinfo.ZoneInfo("UTC")
+    today = datetime.now(user_tz).date()
     today_str = today.isoformat()
     yesterday_str = (today - timedelta(days=1)).isoformat()
     day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]

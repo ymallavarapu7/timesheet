@@ -541,7 +541,7 @@ export const useMyProfile = () => {
 export const useUpdateMyProfile = () => {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { full_name?: string; title?: string; department?: string }) =>
+    mutationFn: (data: { full_name?: string; title?: string; department?: string; timezone?: string }) =>
       usersAPI.updateMyProfile(data).then((res) => res.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users', 'me', 'profile'] });

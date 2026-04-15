@@ -48,6 +48,7 @@ class UserBase(BaseModel):
     full_name: str
     title: Optional[str] = None
     department: Optional[str] = None
+    timezone: Optional[str] = "UTC"
     role: UserRole = UserRole.EMPLOYEE
     is_active: bool = True
     manager_id: Optional[int] = None
@@ -67,6 +68,7 @@ class UserSelfUpdate(BaseModel):
     full_name: Optional[str] = None
     title: Optional[str] = None
     department: Optional[str] = None
+    timezone: Optional[str] = None
 
 
 class UserUpdate(BaseModel):
@@ -74,6 +76,7 @@ class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     title: Optional[str] = None
     department: Optional[str] = None
+    timezone: Optional[str] = None
     role: Optional[UserRole] = None
     is_active: Optional[bool] = None
     can_review: Optional[bool] = None
