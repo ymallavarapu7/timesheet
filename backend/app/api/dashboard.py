@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.deps import get_current_user
+from app.core.deps import get_current_user, require_role
 from app.db import get_db
 from app.models.assignments import EmployeeManagerAssignment
 from app.models.activity_log import ActivityLog
@@ -595,6 +595,51 @@ async def get_recent_activity(
     else:
         return []
 
+    result = await db.execute(query)
+    items = list(result.scalars().all())
+    return [
+        DashboardRecentActivityItem(
+            id=item.id,
+            activity_type=item.activity_type,
+            entity_type=item.entity_type,
+            entity_id=item.entity_id,
+            actor_name=item.actor_name,
+            summary=item.summary,
+            route=item.route,
+            route_params=item.route_params,
+            metadata=item.metadata_json,
+            severity=item.severity,
+            created_at=item.created_at,
+        )
+        for item in items
+    ]
+
+
+@router.get("/audit-trail", response_model=list[DashboardRecentActivityItem])
+async def get_audit_trail(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    activity_type: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+) -> list[DashboardRecentActivityItem]:
+    """Full audit trail for admins. Supports pagination, filtering by type, and text search."""
+    if current_user.role == UserRole.PLATFORM_ADMIN:
+        query = select(ActivityLog).where(ActivityLog.visibility_scope == "PLATFORM_ADMIN")
+    else:
+        query = (
+            select(ActivityLog)
+            .where(ActivityLog.visibility_scope == "TENANT_ADMIN")
+            .where(ActivityLog.tenant_id == current_user.tenant_id)
+        )
+
+    if activity_type:
+        query = query.where(ActivityLog.activity_type == activity_type)
+    if search:
+        query = query.where(ActivityLog.summary.ilike(f"%{search}%"))
+
+    query = query.order_by(ActivityLog.created_at.desc(), ActivityLog.id.desc()).offset(offset).limit(limit)
     result = await db.execute(query)
     items = list(result.scalars().all())
     return [

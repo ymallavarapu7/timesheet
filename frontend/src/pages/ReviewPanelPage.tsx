@@ -682,6 +682,14 @@ export const ReviewPanelPage: React.FC = () => {
                     )}
                   </div>
                 </div>
+
+                {/* Supervisor */}
+                {timesheet?.extracted_supervisor_name && (
+                  <div className="mt-3">
+                    <label className="mb-1.5 block text-sm font-medium text-foreground">Supervisor</label>
+                    <p className="text-sm text-muted-foreground">{timesheet.extracted_supervisor_name}</p>
+                  </div>
+                )}
               </div>
 
               {/* Week & Hours */}

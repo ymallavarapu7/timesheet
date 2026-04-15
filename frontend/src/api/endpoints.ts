@@ -77,6 +77,9 @@ export const authAPI = {
   changePassword: (data: ChangePasswordRequest) =>
     apiClient.post<MessageResponse>('/auth/change-password', data),
 
+  refresh: (refreshToken: string) =>
+    apiClient.post<TokenResponse>('/auth/refresh', { refresh_token: refreshToken }),
+
   logout: (refreshToken: string) =>
     apiClient.post('/auth/logout', { refresh_token: refreshToken }),
 
@@ -125,6 +128,8 @@ export const usersAPI = {
     apiClient.delete(`/users/${id}`),
   bulkDelete: (userIds: number[]) =>
     apiClient.post<{ deleted: number }>('/users/bulk-delete', { user_ids: userIds }),
+  resetPassword: (id: number, newPassword: string) =>
+    apiClient.post<{ message: string }>(`/users/${id}/reset-password`, { new_password: newPassword }),
 };
 
 // Clients endpoints
@@ -382,6 +387,8 @@ export const dashboardAPI = {
   }) => apiClient.get<DashboardAnalytics>('/dashboard/analytics', { params }),
   recentActivity: (params?: { limit?: number }) =>
     apiClient.get<DashboardRecentActivityItem[]>('/dashboard/recent-activity', { params }),
+  auditTrail: (params?: { limit?: number; offset?: number; activity_type?: string; search?: string }) =>
+    apiClient.get<DashboardRecentActivityItem[]>('/dashboard/audit-trail', { params }),
 };
 
 export const notificationsAPI = {

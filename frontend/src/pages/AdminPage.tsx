@@ -6,7 +6,8 @@ import { useQuery } from '@tanstack/react-query';
 
 import { Loading, Error, OrganizationalChart, SearchInput } from '@/components';
 import { BulkSelectBar } from '@/components/ui/BulkSelectBar';
-import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useBulkDeleteUsers, useAuth, useIsPlatformAdmin, useProjects, useNotifications, useTenantSettings, useUpdateTenantSettings, useUnlockUserTimesheet } from '@/hooks';
+import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useResetUserPassword, useBulkDeleteUsers, useAuth, useIsPlatformAdmin, useProjects, useNotifications, useTenantSettings, useUpdateTenantSettings, useUnlockUserTimesheet } from '@/hooks';
+import { KeyRound } from 'lucide-react';
 import { timeentriesAPI, ingestionAPI } from '@/api';
 import { IngestionTimesheetSummary, Project, TimeEntry, User, UserRole } from '@/types';
 
@@ -134,8 +135,12 @@ export const AdminPage: React.FC = () => {
   const createUser = useCreateUser();
   const updateUser = useUpdateUser();
   const deleteUser = useDeleteUser();
+  const resetPassword = useResetUserPassword();
   const bulkDeleteUsers = useBulkDeleteUsers();
   const [selectedUserIds, setSelectedUserIds] = useState<Set<number>>(new Set());
+  const [resetPasswordUserId, setResetPasswordUserId] = useState<number | null>(null);
+  const [resetPasswordValue, setResetPasswordValue] = useState('');
+  const [resetPasswordError, setResetPasswordError] = useState('');
 
   const toggleUserSelection = (userId: number) => {
     setSelectedUserIds((prev) => {
@@ -545,6 +550,22 @@ export const AdminPage: React.FC = () => {
     if (!isAdminUser) return;
     await deleteUser.mutateAsync(id);
     setConfirmDeleteId(null);
+  };
+
+  const handleResetPassword = async () => {
+    if (!resetPasswordUserId || !resetPasswordValue.trim()) return;
+    setResetPasswordError('');
+    if (resetPasswordValue.length < 8) {
+      setResetPasswordError('Password must be at least 8 characters.');
+      return;
+    }
+    try {
+      await resetPassword.mutateAsync({ id: resetPasswordUserId, newPassword: resetPasswordValue });
+      setResetPasswordUserId(null);
+      setResetPasswordValue('');
+    } catch (err: unknown) {
+      setResetPasswordError(extractErrorMessage(err));
+    }
   };
 
   const canEditUser = (u: User) => {
@@ -1243,6 +1264,15 @@ export const AdminPage: React.FC = () => {
                       )}
                       {isAdminUser && u.id !== currentUser?.id && (
                         <button
+                          onClick={() => { setResetPasswordUserId(u.id); setResetPasswordValue(''); setResetPasswordError(''); }}
+                          className="p-1.5 rounded hover:bg-muted"
+                          title="Reset Password"
+                        >
+                          <KeyRound className="w-4 h-4" />
+                        </button>
+                      )}
+                      {isAdminUser && u.id !== currentUser?.id && (
+                        <button
                           onClick={() => setConfirmDeleteId(u.id)}
                           className="p-1.5 rounded hover:bg-red-50 text-red-600"
                           title="Delete"
@@ -1519,6 +1549,51 @@ export const AdminPage: React.FC = () => {
             </div>
           </div>
         </div>
+        );
+      })()}
+
+      {/* Reset password modal */}
+      {resetPasswordUserId !== null && (() => {
+        const targetUser = (users ?? []).find((u) => u.id === resetPasswordUserId);
+        return (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
+            <div className="bg-card rounded-xl shadow-2xl w-full max-w-sm p-6">
+              <h2 className="text-lg font-bold mb-2">Reset Password</h2>
+              <p className="text-sm text-muted-foreground mb-1">
+                Set a new password for:
+              </p>
+              <p className="font-semibold text-foreground mb-1">{targetUser?.full_name}</p>
+              <p className="text-xs text-muted-foreground mb-4">{targetUser?.email}</p>
+              <input
+                type="password"
+                value={resetPasswordValue}
+                onChange={(e) => setResetPasswordValue(e.target.value)}
+                placeholder="New password (min 8 characters)"
+                className="field-input mb-2"
+                autoFocus
+                onKeyDown={(e) => { if (e.key === 'Enter') handleResetPassword(); }}
+              />
+              <p className="text-xs text-muted-foreground mb-3">User will be prompted to change it on next login.</p>
+              {resetPasswordError && (
+                <p className="text-xs text-destructive mb-3">{resetPasswordError}</p>
+              )}
+              <div className="flex gap-3">
+                <button
+                  onClick={handleResetPassword}
+                  disabled={resetPassword.isPending || !resetPasswordValue.trim()}
+                  className="flex-1 px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {resetPassword.isPending ? 'Resetting...' : 'Reset Password'}
+                </button>
+                <button
+                  onClick={() => { setResetPasswordUserId(null); setResetPasswordValue(''); setResetPasswordError(''); }}
+                  className="flex-1 px-4 py-2 bg-muted rounded hover:bg-muted/90"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
         );
       })()}
 

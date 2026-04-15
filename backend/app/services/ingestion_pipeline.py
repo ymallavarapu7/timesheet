@@ -768,20 +768,29 @@ async def _process_timesheet_attachment(
                 extracted_data.get("employee_name"), employees
             )
 
-        # Only call LLM for matching if deterministic didn't resolve
-        if employee_id is None or client_id is None:
+        # Only call LLM for client matching. Employee matching uses deterministic
+        # fuzzy match only — LLM tends to hallucinate employee matches when the
+        # name doesn't closely match any known user.
+        if client_id is None:
             match_suggestions = await match_entities(
-                extracted_name=extracted_data.get("employee_name") if employee_id is None else None,
+                extracted_name=None,
                 extracted_client=(
                     extracted_data.get("client_name") or extracted_data.get("client")
-                ) if client_id is None else None,
+                ),
                 known_employees=employees,
                 known_clients=clients,
             )
-            if employee_id is None:
-                employee_id = _pick_suggested_id(match_suggestions.get("employee"))
-            if client_id is None:
-                client_id = _pick_suggested_id(match_suggestions.get("client"))
+            client_id = _pick_suggested_id(match_suggestions.get("client"))
+
+        # Auto-create client if extracted but not matched
+        if client_id is None:
+            extracted_client_name = (
+                extracted_data.get("client_name") or extracted_data.get("client") or ""
+            ).strip()
+            if extracted_client_name:
+                client_id = await _auto_create_client(
+                    extracted_client_name, tenant_id, session
+                )
 
         # Normalize line items
         line_items_data = _normalize_line_items(
@@ -846,6 +855,7 @@ async def _process_timesheet_attachment(
             total_hours=_resolve_total_hours(extracted_data, line_items_data),
             status=IngestionTimesheetStatus.pending,
             extracted_data=extracted_data,
+            extracted_supervisor_name=(extracted_data.get("supervisor_name") or "").strip() or None,
             llm_anomalies=anomalies,
             llm_match_suggestions=match_suggestions,
             submitted_at=email_record.received_at,
@@ -908,6 +918,45 @@ async def _load_known_clients(session: AsyncSession, tenant_id: int) -> list[dic
         select(Client.id, Client.name).where(Client.tenant_id == tenant_id)
     )
     return [{"id": row.id, "name": row.name} for row in result]
+
+
+async def _auto_create_client(
+    extracted_client_name: str,
+    tenant_id: int,
+    session: AsyncSession,
+) -> int | None:
+    """
+    Auto-create a client from an extracted name if it doesn't already exist.
+    Uses fuzzy matching first to avoid duplicates from slight name variations.
+    """
+    import difflib
+
+    if not extracted_client_name:
+        return None
+
+    normalized = extracted_client_name.strip().lower()
+
+    # Check existing clients for fuzzy match
+    result = await session.execute(
+        select(Client).where(Client.tenant_id == tenant_id)
+    )
+    existing_clients = result.scalars().all()
+    for client in existing_clients:
+        if client.name.strip().lower() == normalized:
+            return client.id
+        ratio = difflib.SequenceMatcher(None, normalized, client.name.strip().lower()).ratio()
+        if ratio >= 0.85:
+            return client.id
+
+    # No match — create new client
+    new_client = Client(
+        tenant_id=tenant_id,
+        name=extracted_client_name.strip(),
+    )
+    session.add(new_client)
+    await session.flush()
+    logger.info("Auto-created client '%s' (id=%s) for tenant %s", new_client.name, new_client.id, tenant_id)
+    return new_client.id
 
 
 def _fuzzy_match_employee(
@@ -1196,6 +1245,9 @@ async def _resolve_or_create_external_user(
     if normalized_extracted_name and normalized_sender_name and normalized_extracted_name != normalized_sender_name:
         return None
 
+    # If we have an extracted name, check if there's already a user with that
+    # email whose name matches. If the names don't match, this email belongs
+    # to a different person (e.g., shared sender email for multiple employees).
     result = await session.execute(
         select(User).where(
             (User.tenant_id == tenant_id) & (User.email == sender_email)
@@ -1206,8 +1258,13 @@ async def _resolve_or_create_external_user(
         if normalized_extracted_name:
             existing_name = _normalize_person_name(existing.full_name)
             if existing_name and existing_name != normalized_extracted_name:
-                return None
-        return existing.id
+                # Name mismatch — this is a different person sent from the same email.
+                # Don't match to this user. Fall through to create a new user instead.
+                pass
+            else:
+                return existing.id
+        else:
+            return existing.id
 
     base_username = sender_email.split("@", 1)[0].lower().replace(".", "_")
     username = base_username

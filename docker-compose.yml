@@ -39,6 +39,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://timesheet_user:${POSTGRES_PASSWORD:-timesheet_pass}@db:5432/timesheet_db
       REDIS_URL: redis://redis:6379
+      TZ: ${TZ:-America/Chicago}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
@@ -62,6 +63,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://timesheet_user:${POSTGRES_PASSWORD:-timesheet_pass}@db:5432/timesheet_db
       REDIS_URL: redis://redis:6379
+      TZ: ${TZ:-America/Chicago}
     volumes:
       - uploads:/app/uploads
     depends_on:

@@ -637,7 +637,15 @@ async def scheduled_fetch_emails(ctx: dict) -> None:
         )
         tenants = result.scalars().all()
 
-        now = datetime.now(timezone.utc)
+        # Use configured timezone for fetch window checks.
+        # Reads TZ env var (e.g. "America/Chicago") or falls back to UTC.
+        # TODO: Add per-tenant timezone support.
+        import os, zoneinfo
+        try:
+            tz = zoneinfo.ZoneInfo(os.environ.get("TZ", "UTC"))
+        except Exception:
+            tz = timezone.utc
+        now = datetime.now(tz)
 
         for tenant in tenants:
             try:

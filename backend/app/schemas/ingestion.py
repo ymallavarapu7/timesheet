@@ -203,6 +203,7 @@ class IngestionTimesheetSummary(BaseModel):
     employee_id: int | None
     employee_name: str | None
     extracted_employee_name: str | None = None
+    extracted_supervisor_name: str | None = None
     client_id: int | None
     client_name: str | None
     period_start: date | None
@@ -296,6 +297,8 @@ class IngestionTimesheetDetail(BaseModel):
     created_at: datetime
     updated_at: datetime
     time_entries_created: bool
+    extracted_employee_name: str | None = None
+    extracted_supervisor_name: str | None = None
     email: EmailContextRead | None
     line_items: list[LineItemRead]
     audit_log: list[dict[str, Any]]

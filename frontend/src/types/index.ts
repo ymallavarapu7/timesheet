@@ -520,6 +520,7 @@ export interface IngestionTimesheetSummary {
   employee_id: number | null;
   employee_name: string | null;
   extracted_employee_name: string | null;
+  extracted_supervisor_name: string | null;
   client_id: number | null;
   client_name: string | null;
   period_start: string | null;
@@ -562,6 +563,7 @@ export interface IngestionTimesheetDetail {
   updated_at: string;
   time_entries_created: boolean;
   extracted_employee_name: string | null;
+  extracted_supervisor_name: string | null;
   email: IngestionEmailContext | null;
   line_items: IngestionLineItem[];
   audit_log: IngestionAuditLog[];

@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
-from app.schemas import UserResponse, UserCreate, UserUpdate, UserSelfUpdate, UserProfileResponse, ChangePasswordRequest, MessageResponse, UserCreateResponse
+from app.schemas import UserResponse, UserCreate, UserUpdate, UserSelfUpdate, UserProfileResponse, ChangePasswordRequest, MessageResponse, UserCreateResponse, AdminPasswordResetRequest
 from app.crud.user import get_user_by_id, create_user, update_user, delete_user, list_users
 from app.core.deps import get_current_user, require_role, require_same_tenant
 from app.models.user import User
@@ -293,6 +293,32 @@ async def bulk_delete_users(
         if success:
             deleted += 1
     return {"deleted": deleted}
+
+
+@router.post("/{user_id}/reset-password", response_model=MessageResponse)
+async def reset_user_password(
+    user_id: int,
+    payload: AdminPasswordResetRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+) -> MessageResponse:
+    """Admin resets a user's password. User will be prompted to change it on next login."""
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if user.tenant_id != current_user.tenant_id and current_user.role != UserRole.PLATFORM_ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    if user.id == current_user.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Use the change password page to update your own password")
+
+    _validate_new_password(payload.new_password)
+
+    user.hashed_password = get_password_hash(payload.new_password)
+    user.has_changed_password = False
+    db.add(user)
+    await db.commit()
+
+    return MessageResponse(message="Password reset successfully. User will be prompted to change it on next login.")
 
 
 @router.get("/{user_id}", response_model=UserResponse)

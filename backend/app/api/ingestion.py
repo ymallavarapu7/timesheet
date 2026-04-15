@@ -86,6 +86,7 @@ def _timesheet_to_summary(timesheet: IngestionTimesheet, rejected_sender_set: se
         "employee_id": timesheet.employee_id,
         "employee_name": timesheet.employee.full_name if timesheet.employee else None,
         "extracted_employee_name": (timesheet.extracted_data or {}).get("employee_name"),
+        "extracted_supervisor_name": timesheet.extracted_supervisor_name,
         "client_id": timesheet.client_id,
         "client_name": timesheet.client.name if timesheet.client else None,
         "period_start": timesheet.period_start,
@@ -258,6 +259,7 @@ def _timesheet_to_detail(timesheet: IngestionTimesheet) -> dict:
         "updated_at": timesheet.updated_at,
         "time_entries_created": timesheet.time_entries_created,
         "extracted_employee_name": (timesheet.extracted_data or {}).get("employee_name"),
+        "extracted_supervisor_name": timesheet.extracted_supervisor_name,
         "email": {
             "id": email.id,
             "subject": email.subject,

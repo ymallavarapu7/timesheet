@@ -9,6 +9,7 @@ import { useAuth, useCanReview, useIngestionEnabled } from '@/hooks';
 import {
   AdminPage,
   ApprovalsPage,
+  AuditTrailPage,
   CalendarPage,
   ClientManagementPage,
   DashboardPage,
@@ -112,6 +113,7 @@ function AppRoutes() {
           </Route>
           <Route element={<TenantAdminGuard />}>
             <Route path="/client-management" element={<ClientManagementPage />} />
+            <Route path="/audit-trail" element={<AuditTrailPage />} />
           </Route>
 
           <Route element={<ManagerGuard />}>

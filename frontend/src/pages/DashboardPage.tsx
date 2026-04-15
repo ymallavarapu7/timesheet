@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { addWeeks, differenceInCalendarWeeks, endOfWeek, format, isThisWeek, parseISO, startOfWeek } from 'date-fns';
-import { Calendar, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Calendar, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Loading, Error, ChangePasswordModal } from '@/components';
 import {
@@ -15,6 +15,9 @@ import {
   useTeamEmployees,
   useTenants,
   useUsers,
+  useIngestionTimesheets,
+  useCanReview,
+  useIngestionEnabled,
 } from '@/hooks';
 import type { DashboardActivity, DashboardBarEntryDetail, DashboardDayBreakdown, DashboardProjectBreakdown, DashboardRecentActivityItem, NotificationItem, Project, TeamDailyOverview, Tenant, User } from '@/types';
 
@@ -50,7 +53,7 @@ type SelectedBarSegment = {
   entries: DashboardBarEntryDetail[];
 };
 
-type AdminStatsTileKey = 'active-users' | 'employees' | 'managers' | 'admins' | 'clients' | 'active-projects' | 'notifications';
+type AdminStatsTileKey = 'active-users' | 'employees' | 'managers' | 'admins' | 'clients' | 'active-projects' | 'notifications' | 'pending-reviews';
 
 const getAdminTileActionLabel = (tileKey: AdminStatsTileKey) => {
   if (tileKey === 'active-users') return 'Opens User Management filtered to Active users.';
@@ -59,6 +62,7 @@ const getAdminTileActionLabel = (tileKey: AdminStatsTileKey) => {
   if (tileKey === 'admins') return 'Opens User Management filtered to Admins.';
   if (tileKey === 'clients') return 'Opens Client Management.';
   if (tileKey === 'active-projects') return 'Opens Client Management in Projects view filtered to Active projects.';
+  if (tileKey === 'pending-reviews') return 'Opens Email Inbox to review pending timesheets.';
   return 'Opens notifications dialog.';
 };
 
@@ -225,6 +229,7 @@ export const DashboardPage: React.FC = () => {
   const [isNotificationsModalOpen, setIsNotificationsModalOpen] = useState(false);
   const [isPasswordChangeModalOpen, setIsPasswordChangeModalOpen] = useState(false);
   const [showWeekPicker, setShowWeekPicker] = useState(false);
+  const [showRecentActivity, setShowRecentActivity] = useState(false);
   const [pickerMonth, setPickerMonth] = useState<Date>(() => startOfWeek(new Date(), { weekStartsOn: 0 }));
   const submittedSectionRef = useRef<HTMLDivElement | null>(null);
   const draftSectionRef = useRef<HTMLDivElement | null>(null);
@@ -270,7 +275,14 @@ export const DashboardPage: React.FC = () => {
   const { data: tenants = [], isLoading: tenantsLoading, error: tenantsError } = useTenants(isPlatformAdmin);
   const { data: clients = [], isLoading: clientsLoading, error: clientsError } = useClients();
   const { data: notificationsSummary, isLoading: notificationsLoading, error: notificationsError, isFetching: notificationsFetching, isError: notificationsIsError } = useNotifications();
-  const { data: recentActivity = [], isLoading: recentActivityLoading, error: recentActivityError } = useDashboardRecentActivity({ limit: 6 }, showAdminStatsView);
+  const canReview = useCanReview();
+  const ingestionEnabled = useIngestionEnabled();
+  const { data: pendingTimesheets = [] } = useIngestionTimesheets(
+    { status_filter: 'pending', limit: 200 },
+    canReview && ingestionEnabled,
+  );
+  const pendingReviewCount = pendingTimesheets.length;
+  const { data: recentActivity = [], isLoading: recentActivityLoading, error: recentActivityError } = useDashboardRecentActivity({ limit: 12 }, showAdminStatsView);
   const { data: analytics, isLoading: analyticsLoading, error: analyticsError } = useDashboardAnalytics({
     start_date: weekRange.startDate,
     end_date: weekRange.endDate,
@@ -338,6 +350,7 @@ export const DashboardPage: React.FC = () => {
     { key: 'clients', label: 'Clients', value: allClients.length },
     { key: 'active-projects', label: 'Active Projects', value: activeProjectCount },
     { key: 'notifications', label: 'Notifications', value: totalNotifications },
+    ...(canReview && ingestionEnabled ? [{ key: 'pending-reviews' as AdminStatsTileKey, label: 'Pending Reviews', value: pendingReviewCount }] : []),
   ];
 
   const platformStatsTiles = [
@@ -370,6 +383,10 @@ export const DashboardPage: React.FC = () => {
     }
     if (tileKey === 'active-projects') {
       navigate('/client-management?view=projects&status=ACTIVE');
+      return;
+    }
+    if (tileKey === 'pending-reviews') {
+      navigate('/ingestion/inbox');
       return;
     }
     setIsNotificationsModalOpen(true);
@@ -603,7 +620,7 @@ export const DashboardPage: React.FC = () => {
                 ))}
               </div>
             ) : (
-              <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3 mb-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3 mb-4">
                 {adminStatsTiles.map((tile) => (
                   <button
                     key={tile.key}
@@ -645,39 +662,50 @@ export const DashboardPage: React.FC = () => {
             </div>
 
             <div className="rounded-lg bg-card p-5 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
-              <div className="flex items-center justify-between gap-3 mb-4">
+              <button
+                type="button"
+                onClick={() => setShowRecentActivity((v) => !v)}
+                className="flex w-full items-center justify-between gap-3"
+              >
                 <h2 className="text-lg font-semibold">
                   {isPlatformAdmin ? 'Recent Platform Activity' : 'Recent Org Activity'}
                 </h2>
-                <p className="text-xs text-muted-foreground">Latest {recentActivity.length || 0} items</p>
-              </div>
+                <div className="flex items-center gap-2">
+                  <p className="text-xs text-muted-foreground">{recentActivity.length || 0} items</p>
+                  <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${showRecentActivity ? 'rotate-180' : ''}`} />
+                </div>
+              </button>
 
-              {recentActivityLoading ? (
-                <p className="text-sm text-muted-foreground">Loading recent activity…</p>
-              ) : recentActivity.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No recent activity yet.</p>
-              ) : (
-                <div className="space-y-3">
-                  {recentActivity.map((item: DashboardRecentActivityItem) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => navigate(buildRouteWithParams(item.route, item.route_params))}
-                      className="w-full rounded-md border px-4 py-3 text-left transition-colors hover:bg-muted/30"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-foreground">{item.summary}</p>
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            {format(parseISO(item.created_at), 'MMM d, yyyy • h:mm a')}
-                          </p>
-                        </div>
-                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${getActivitySeverityClasses(item.severity)}`}>
-                          {getActivitySeverityLabel(item.severity)}
-                        </span>
-                      </div>
-                    </button>
-                  ))}
+              {showRecentActivity && (
+                <div className="mt-4">
+                  {recentActivityLoading ? (
+                    <p className="text-sm text-muted-foreground">Loading recent activity…</p>
+                  ) : recentActivity.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No recent activity yet.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {recentActivity.map((item: DashboardRecentActivityItem) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => navigate(buildRouteWithParams(item.route, item.route_params))}
+                          className="w-full rounded-md border px-4 py-3 text-left transition-colors hover:bg-muted/30"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium text-foreground">{item.summary}</p>
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {format(parseISO(item.created_at), 'MMM d, yyyy • h:mm a')}
+                              </p>
+                            </div>
+                            <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${getActivitySeverityClasses(item.severity)}`}>
+                              {getActivitySeverityLabel(item.severity)}
+                            </span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

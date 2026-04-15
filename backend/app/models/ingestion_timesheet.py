@@ -63,6 +63,7 @@ class IngestionTimesheet(Base, TimestampMixin):
     )
     llm_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extracted_supervisor_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     internal_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     submitted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

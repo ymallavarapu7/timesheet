@@ -429,12 +429,20 @@ export const InboxPage: React.FC = () => {
     }
     try {
       await deleteEmail.mutateAsync({ emailId, refetch });
-      setStatusTone('success');
-      setStatusMessage(
-        refetch
-          ? 'Removed stored email. Click "Fetch Emails" to re-ingest it from the mailbox.'
-          : 'Removed stored email and derived staged records from this app.',
-      );
+      if (refetch) {
+        setStatusTone('info');
+        setStatusMessage('Email removed. Fetching fresh copy from mailbox...');
+        try {
+          const response = await triggerFetch.mutateAsync();
+          setActiveJobId(response.job_id);
+        } catch {
+          setStatusTone('success');
+          setStatusMessage('Email removed. Auto-fetch failed — click "Fetch Emails" to re-ingest manually.');
+        }
+      } else {
+        setStatusTone('success');
+        setStatusMessage('Removed stored email and derived staged records.');
+      }
     } catch (error) {
       setStatusTone('danger');
       setStatusMessage(getApiErrorMessage(error, 'Unable to delete stored email.'));

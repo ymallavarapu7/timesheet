@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.deps import get_current_user, require_role
+from app.services.notification_emails import notify_timesheet_approved, notify_timesheet_rejected
 from app.services.activity import (
     TENANT_ADMIN_ACTIVITY_SCOPE,
     build_activity_event,
@@ -440,6 +441,18 @@ async def approve_entry(
             metadata={"hours": float(approved_entry.hours), "employee_id": entry.user_id, "entry_date": str(approved_entry.entry_date)},
         )])
 
+        # Email notification to employee
+        if entry.user and entry.user.email:
+            await notify_timesheet_approved(
+                employee_email=entry.user.email,
+                employee_name=entry.user.full_name,
+                approver_name=current_user.full_name,
+                week_start=str(approved_entry.entry_date),
+                week_end=str(approved_entry.entry_date),
+                hours=float(approved_entry.hours),
+                db=db,
+            )
+
         return approved_entry
     except ValueError as e:
         raise HTTPException(
@@ -492,6 +505,18 @@ async def reject_entry(
             route="/approvals",
             metadata={"hours": float(rejected_entry.hours), "employee_id": entry.user_id, "reason": reject_request.rejection_reason},
         )])
+
+        # Email notification to employee
+        if entry.user and entry.user.email:
+            await notify_timesheet_rejected(
+                employee_email=entry.user.email,
+                employee_name=entry.user.full_name,
+                rejector_name=current_user.full_name,
+                week_start=str(rejected_entry.entry_date),
+                week_end=str(rejected_entry.entry_date),
+                reason=reject_request.rejection_reason,
+                db=db,
+            )
 
         return rejected_entry
     except ValueError as e:

@@ -1,4 +1,7 @@
+import csv
+import io
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
@@ -156,6 +159,79 @@ async def get_all_timesheets(
         sort_order=sort_order,
         skip=skip,
         limit=limit,
+    )
+
+
+@router.get("/export")
+async def export_time_entries(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    status_filter: Optional[TimeEntryStatus] = Query(None, alias="status"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Export time entries as CSV. Admins/Managers get all tenant entries; employees get their own."""
+    from app.models.time_entry import TimeEntry
+    from app.models.project import Project
+    from sqlalchemy.orm import selectinload
+
+    query = (
+        sa_select(TimeEntry)
+        .options(
+            selectinload(TimeEntry.user),
+            selectinload(TimeEntry.project).selectinload(Project.client),
+            selectinload(TimeEntry.task),
+        )
+    )
+
+    if current_user.role in (UserRole.ADMIN, UserRole.PLATFORM_ADMIN):
+        if current_user.tenant_id:
+            query = query.where(TimeEntry.tenant_id == current_user.tenant_id)
+    elif current_user.role in (UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO):
+        if current_user.tenant_id:
+            query = query.where(TimeEntry.tenant_id == current_user.tenant_id)
+    else:
+        query = query.where(TimeEntry.user_id == current_user.id)
+
+    if start_date:
+        query = query.where(TimeEntry.entry_date >= start_date)
+    if end_date:
+        query = query.where(TimeEntry.entry_date <= end_date)
+    if status_filter:
+        query = query.where(TimeEntry.status == status_filter)
+
+    query = query.order_by(TimeEntry.entry_date.asc(), TimeEntry.user_id)
+    result = await db.execute(query)
+    entries = result.scalars().all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Employee", "Email", "Client", "Project", "Task",
+        "Date", "Day", "Hours", "Billable", "Status", "Description",
+    ])
+    day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    for entry in entries:
+        writer.writerow([
+            entry.user.full_name if entry.user else "",
+            entry.user.email if entry.user else "",
+            entry.project.client.name if entry.project and entry.project.client else "",
+            entry.project.name if entry.project else "",
+            entry.task.name if entry.task else "",
+            str(entry.entry_date),
+            day_names[entry.entry_date.weekday()] if entry.entry_date else "",
+            float(entry.hours),
+            "Yes" if entry.is_billable else "No",
+            entry.status.value if hasattr(entry.status, 'value') else str(entry.status),
+            entry.description or "",
+        ])
+
+    output.seek(0)
+    filename = f"timesheet_export_{start_date or 'all'}_{end_date or 'all'}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -359,3 +435,5 @@ async def submit_timesheets(
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+

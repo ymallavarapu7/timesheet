@@ -405,6 +405,14 @@ export const useDashboardRecentActivity = (params?: { limit?: number }, enabled:
     placeholderData: keepPreviousData,
   });
 };
+export const useAuditTrail = (params?: { limit?: number; offset?: number; activity_type?: string; search?: string }) => {
+  return useQuery({
+    queryKey: ['dashboard', 'audit-trail', params],
+    queryFn: () => dashboardAPI.auditTrail(params).then((res) => res.data),
+    placeholderData: keepPreviousData,
+  });
+};
+
 export const useTimeOffRequests = (params?: TimeOffListParams) => {
   return useQuery({
     queryKey: ['timeoff', params],
@@ -580,6 +588,13 @@ export const useDeleteUser = () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
       queryClient.invalidateQueries({ queryKey: ['notifications'] });
     },
+  });
+};
+
+export const useResetUserPassword = () => {
+  return useMutation({
+    mutationFn: ({ id, newPassword }: { id: number; newPassword: string }) =>
+      usersAPI.resetPassword(id, newPassword).then(res => res.data),
   });
 };
 

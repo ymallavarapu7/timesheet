@@ -118,6 +118,25 @@ export const MyTimePage: React.FC = () => {
 
   const [editFormData, setEditFormData] = useState<EntryFormData | null>(null);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // ── Unsaved changes guard ──
+  const hasUnsavedChanges = useMemo(() => {
+    return gridRows.some((row) =>
+      row.projectId > 0 && Object.values(row.hours).some((h) => h && parseFloat(h) > 0),
+    );
+  }, [gridRows]);
+
+  // Block browser close/refresh
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [hasUnsavedChanges]);
+
   const historySectionRef = useRef<HTMLDivElement | null>(null);
   const projectsSectionRef = useRef<HTMLElement | null>(null);
   const { data: editTasks } = useTasks({ project_id: editFormData?.project_id || 0, active_only: true, limit: 500 });
@@ -209,6 +228,14 @@ export const MyTimePage: React.FC = () => {
   );
 
   const { data: weeklyGridEntries } = useTimeEntries(weeklyGridQueryParams);
+
+  // Previous week entries (for Copy Last Week)
+  const prevWeekStart = format(addDays(weekStart, -7), 'yyyy-MM-dd');
+  const prevWeekEnd = format(addDays(weekEnd, -7), 'yyyy-MM-dd');
+  const { data: prevWeekEntries } = useTimeEntries({
+    sort_by: 'entry_date', sort_order: 'asc',
+    start_date: prevWeekStart, end_date: prevWeekEnd, limit: 1000,
+  });
   const regularWeeklyGridEntries = useMemo(
     () => (weeklyGridEntries ?? []).filter((entry: TimeEntry) => !TIME_OFF_PREFIX_REGEX.test(entry.description)),
     [weeklyGridEntries]
@@ -462,6 +489,44 @@ export const MyTimePage: React.FC = () => {
     }
     setNlInput('');
     setNlResult(null);
+  };
+
+  const handleCopyLastWeek = (copyHours: boolean) => {
+    const prev = (prevWeekEntries ?? []).filter((e: TimeEntry) => !TIME_OFF_PREFIX_REGEX.test(e.description));
+    if (prev.length === 0) {
+      showStatus('error', 'No entries found in the previous week to copy.');
+      return;
+    }
+
+    // Group previous week entries by project/task
+    const rowMap = new Map<string, GridRow>();
+    let nextId = Math.max(...gridRows.map((r) => r.id), 0) + 1;
+    for (const entry of prev) {
+      const rowKey = `${entry.project_id}|${entry.task_id || 0}|${entry.is_billable ? '1' : '0'}`;
+      if (!rowMap.has(rowKey)) {
+        rowMap.set(rowKey, {
+          id: nextId++,
+          projectId: entry.project_id,
+          taskId: entry.task_id || 0,
+          hours: {},
+          description: '',
+          isBillable: entry.is_billable ?? true,
+        });
+      }
+      if (copyHours) {
+        const row = rowMap.get(rowKey)!;
+        // Shift dates forward by 7 days to map onto current week
+        const prevDate = parseISO(entry.entry_date);
+        const newDate = format(addDays(prevDate, 7), 'yyyy-MM-dd');
+        const h = typeof entry.hours === 'string' ? parseFloat(entry.hours) : entry.hours;
+        const existing = parseFloat(row.hours[newDate] || '0') || 0;
+        row.hours[newDate] = (existing + (h || 0)).toString();
+      }
+    }
+
+    const newRows = Array.from(rowMap.values());
+    setGridRows(newRows);
+    showStatus('success', `Copied ${newRows.length} project/task row${newRows.length !== 1 ? 's' : ''} from last week${copyHours ? ' with hours' : ''}.`);
   };
 
   const handleAddGridRow = () => {
@@ -1075,13 +1140,31 @@ export const MyTimePage: React.FC = () => {
               </div>
 
               <div className="mt-4 flex flex-col gap-3">
-                <button
-                  type="button"
-                  onClick={handleAddGridRow}
-                  className="px-3 py-2 border rounded hover:bg-muted text-sm w-full"
-                >
-                  Add another project/task
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleAddGridRow}
+                    className="flex-1 px-3 py-2 border rounded hover:bg-muted text-sm"
+                  >
+                    Add another project/task
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyLastWeek(false)}
+                    className="flex-1 px-3 py-2 border rounded hover:bg-muted text-sm"
+                    title="Copy project/task rows from the previous week"
+                  >
+                    Copy last week
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyLastWeek(true)}
+                    className="flex-1 px-3 py-2 border rounded hover:bg-muted text-sm"
+                    title="Copy project/task rows and hours from the previous week"
+                  >
+                    Copy last week with hours
+                  </button>
+                </div>
 
                 <textarea
                   value={gridDescription}
@@ -1105,8 +1188,36 @@ export const MyTimePage: React.FC = () => {
         </section>
 
         <section aria-label="Time entry history" className="mb-2">
-          <h2 className="text-xl font-bold mb-3">Time Entry History</h2>
-          <p className="text-sm text-muted-foreground mb-4">Use the filters and date range below to view your history entries.</p>
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h2 className="text-xl font-bold">Time Entry History</h2>
+              <p className="text-sm text-muted-foreground mt-1">Use the filters and date range below to view your history entries.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const params = new URLSearchParams();
+                if (startDate) params.set('start_date', startDate);
+                if (endDate) params.set('end_date', endDate);
+                if (statusFilter !== 'ALL') params.set('status', statusFilter);
+                const url = `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/timesheets/export?${params.toString()}`;
+                const token = sessionStorage.getItem('accessToken');
+                fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+                  .then((res) => res.blob())
+                  .then((blob) => {
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = `timesheet_export.csv`;
+                    a.click();
+                    URL.revokeObjectURL(a.href);
+                  })
+                  .catch(() => showStatus('error', 'Export failed. Please try again.'));
+              }}
+              className="action-button-secondary text-sm"
+            >
+              Export CSV
+            </button>
+          </div>
         </section>
 
         <div className="bg-card border rounded-lg p-4 mb-4 grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -1285,6 +1396,7 @@ export const MyTimePage: React.FC = () => {
           </form>
         )}
       </Modal>
+
     </div>
   );
 };

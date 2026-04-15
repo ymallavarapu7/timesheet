@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.deps import require_role
+from app.services.notification_emails import notify_time_off_approved, notify_time_off_rejected
 from app.services.activity import (
     TENANT_ADMIN_ACTIVITY_SCOPE,
     build_activity_event,
@@ -171,6 +172,18 @@ async def approve_time_off_item(
             metadata={"employee_id": item.user_id},
         )])
 
+        # Email notification to employee
+        if item.user and item.user.email:
+            await notify_time_off_approved(
+                employee_email=item.user.email,
+                employee_name=item.user.full_name,
+                approver_name=current_user.full_name,
+                leave_type=str(item.leave_type.value if hasattr(item.leave_type, 'value') else item.leave_type),
+                start_date=str(item.start_date),
+                end_date=str(item.end_date),
+                db=db,
+            )
+
         return approved
     except ValueError as exc:
         raise HTTPException(
@@ -217,6 +230,19 @@ async def reject_time_off_item(
             route="/time-off-approvals",
             metadata={"employee_id": item.user_id, "reason": reject_request.rejection_reason},
         )])
+
+        # Email notification to employee
+        if item.user and item.user.email:
+            await notify_time_off_rejected(
+                employee_email=item.user.email,
+                employee_name=item.user.full_name,
+                rejector_name=current_user.full_name,
+                leave_type=str(item.leave_type.value if hasattr(item.leave_type, 'value') else item.leave_type),
+                start_date=str(item.start_date),
+                end_date=str(item.end_date),
+                reason=reject_request.rejection_reason,
+                db=db,
+            )
 
         return rejected
     except ValueError as exc:

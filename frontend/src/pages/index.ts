@@ -15,3 +15,4 @@ export { InboxPage } from './InboxPage';
 export { ReviewPanelPage } from './ReviewPanelPage';
 export { VerifyAccountPage } from './VerifyAccountPage';
 export { PlatformSettingsPage } from './PlatformSettingsPage';
+export { AuditTrailPage } from './AuditTrailPage';
