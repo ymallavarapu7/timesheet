@@ -107,7 +107,7 @@ export const usersAPI = {
   meProfile: () =>
     apiClient.get<UserProfile>('/users/me/profile'),
 
-  updateMyProfile: (data: { full_name?: string; title?: string; department?: string }) =>
+  updateMyProfile: (data: { full_name?: string; title?: string; department?: string; timezone?: string }) =>
     apiClient.patch<User>('/users/me/profile', data),
 
   changePassword: (data: ChangePasswordRequest) =>

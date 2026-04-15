@@ -30,6 +30,7 @@ export const ProfilePage: React.FC = () => {
   const [fullName, setFullName] = useState('');
   const [title, setTitle] = useState('');
   const [department, setDepartment] = useState('');
+  const [timezone, setTimezone] = useState('UTC');
   const [profileError, setProfileError] = useState('');
   const [profileSuccess, setProfileSuccess] = useState('');
 
@@ -44,6 +45,7 @@ export const ProfilePage: React.FC = () => {
       setFullName(profile.full_name);
       setTitle(profile.title ?? '');
       setDepartment(profile.department ?? '');
+      setTimezone(profile.timezone ?? 'UTC');
     }
   }, [profile]);
 
@@ -60,6 +62,7 @@ export const ProfilePage: React.FC = () => {
         full_name: fullName.trim(),
         title: title.trim() || undefined,
         department: department.trim() || undefined,
+        timezone: timezone || undefined,
       });
       setProfileSuccess('Profile updated successfully');
     } catch (err: unknown) {
@@ -148,6 +151,33 @@ export const ProfilePage: React.FC = () => {
                   placeholder="Not set"
                   className="w-full px-3 py-2 border rounded"
                 />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Timezone</label>
+                <select
+                  value={timezone}
+                  onChange={(e) => setTimezone(e.target.value)}
+                  className="w-full px-3 py-2 border rounded"
+                >
+                  <option value="UTC">UTC</option>
+                  <option value="America/New_York">America/New_York (Eastern)</option>
+                  <option value="America/Chicago">America/Chicago (Central)</option>
+                  <option value="America/Denver">America/Denver (Mountain)</option>
+                  <option value="America/Los_Angeles">America/Los_Angeles (Pacific)</option>
+                  <option value="America/Anchorage">America/Anchorage (Alaska)</option>
+                  <option value="Pacific/Honolulu">Pacific/Honolulu (Hawaii)</option>
+                  <option value="Europe/London">Europe/London</option>
+                  <option value="Europe/Paris">Europe/Paris</option>
+                  <option value="Europe/Berlin">Europe/Berlin</option>
+                  <option value="Asia/Kolkata">Asia/Kolkata (India)</option>
+                  <option value="Asia/Singapore">Asia/Singapore</option>
+                  <option value="Asia/Tokyo">Asia/Tokyo</option>
+                  <option value="Asia/Shanghai">Asia/Shanghai</option>
+                  <option value="Australia/Sydney">Australia/Sydney</option>
+                </select>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Used to resolve dates like "yesterday" in natural language entry.
+                </p>
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Role</label>

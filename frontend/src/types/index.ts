@@ -8,6 +8,7 @@ export interface User {
   full_name: string;
   title?: string | null;
   department?: string | null;
+  timezone?: string | null;
   role: UserRole;
   is_active: boolean;
   has_changed_password: boolean;
@@ -35,6 +36,7 @@ export interface UserProfile {
   full_name: string;
   title?: string | null;
   department?: string | null;
+  timezone?: string | null;
   role: UserRole;
   has_changed_password: boolean;
   manager_id?: number | null;

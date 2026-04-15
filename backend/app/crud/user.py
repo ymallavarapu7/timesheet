@@ -338,6 +338,46 @@ async def delete_user(db: AsyncSession, user_id: int) -> bool:
             await db.execute(delete(TimeEntry).where(TimeEntry.user_id == user_id))
             await db.execute(delete(TimeOffRequest).where(TimeOffRequest.user_id == user_id))
 
+            # Clear ingestion references (user might be auto-created by ingestion).
+            # These tables may or may not have CASCADE/SET NULL constraints depending
+            # on whether DB migrations were applied, so clear them explicitly.
+            from app.models.ingestion_timesheet import IngestionTimesheet
+            from app.models.email_sender_mapping import EmailSenderMapping
+            from app.models.activity_log import ActivityLog
+
+            await db.execute(
+                update(IngestionTimesheet)
+                .where(IngestionTimesheet.employee_id == user_id)
+                .values(employee_id=None)
+            )
+            await db.execute(
+                update(IngestionTimesheet)
+                .where(IngestionTimesheet.reviewer_id == user_id)
+                .values(reviewer_id=None)
+            )
+            await db.execute(
+                update(EmailSenderMapping)
+                .where(EmailSenderMapping.employee_id == user_id)
+                .values(employee_id=None)
+            )
+            await db.execute(
+                update(ActivityLog)
+                .where(ActivityLog.actor_user_id == user_id)
+                .values(actor_user_id=None)
+            )
+
+            # Clear time_entry_edit_history edited_by references
+            from sqlalchemy import text as sa_text
+            await db.execute(
+                sa_text("UPDATE time_entry_edit_history SET edited_by = NULL WHERE edited_by = :uid"),
+                {"uid": user_id},
+            )
+            # Clear ingestion_audit_log user_id references
+            await db.execute(
+                sa_text("UPDATE ingestion_audit_log SET user_id = NULL WHERE user_id = :uid"),
+                {"uid": user_id},
+            )
+
             await db.delete(user)
             await db.commit()
             return True
