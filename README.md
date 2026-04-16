@@ -2,18 +2,6 @@
 
 A full-stack, multi-tenant timesheet management platform built for IT consulting firms. Features AI-powered email ingestion, natural language time entry, role-based approval workflows, and comprehensive project/client management.
 
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| **Frontend** | React 18, TypeScript, TanStack Query, Tailwind CSS, shadcn/ui, Vite |
-| **Backend** | Python, FastAPI, SQLAlchemy 2.0 (async), Pydantic v2 |
-| **Database** | PostgreSQL 16 (asyncpg) |
-| **Background Jobs** | arq + Redis 7 |
-| **AI/LLM** | OpenAI (email extraction, natural language parsing) |
-| **Auth** | JWT (access + refresh tokens), bcrypt, OAuth 2.0 (Google, Microsoft) |
-| **Infrastructure** | Docker Compose, Alembic migrations, S3-compatible storage |
-
 ## Features
 
 - **Time Entry** — Grid-based logging with natural language input powered by AI
@@ -26,17 +14,6 @@ A full-stack, multi-tenant timesheet management platform built for IT consulting
 - **Multi-Tenancy** — Full tenant isolation with role-based access control
 - **Dashboard & Analytics** — Summary cards, team overview, and date-range reporting
 - **Dark/Light Mode** — Theme toggle with persistence
-
-## User Roles
-
-| Role | Access |
-|---|---|
-| `EMPLOYEE` | Own time entries |
-| `MANAGER` | Approve direct reports |
-| `SENIOR_MANAGER` | Approve managers and employees |
-| `CEO` | Read-only access to all tenant entries |
-| `ADMIN` | Full management within tenant |
-| `PLATFORM_ADMIN` | Cross-tenant superuser |
 
 ## Getting Started
 
