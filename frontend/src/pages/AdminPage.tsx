@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import { format, startOfMonth, endOfMonth } from 'date-fns';
-import { PlusCircle, Pencil, Trash2, ShieldCheck, UserCircle, X, Clock, Settings, Paperclip } from 'lucide-react';
+import { PlusCircle, Pencil, Trash2, ShieldCheck, UserCircle, X, Clock, Paperclip } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
 import { Loading, Error, OrganizationalChart, SearchInput } from '@/components';
 import { BulkSelectBar } from '@/components/ui/BulkSelectBar';
-import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useResetUserPassword, useBulkDeleteUsers, useAuth, useIsPlatformAdmin, useProjects, useNotifications, useTenantSettings, useUpdateTenantSettings, useUnlockUserTimesheet } from '@/hooks';
+import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useResetUserPassword, useBulkDeleteUsers, useAuth, useIsPlatformAdmin, useProjects, useNotifications, useUnlockUserTimesheet } from '@/hooks';
 import { KeyRound } from 'lucide-react';
 import { timeentriesAPI, ingestionAPI } from '@/api';
 import { IngestionTimesheetSummary, Project, TimeEntry, User, UserRole } from '@/types';
@@ -208,7 +208,7 @@ export const AdminPage: React.FC = () => {
   const userListSectionRef = React.useRef<HTMLDivElement | null>(null);
 
   // Team Timesheets tab state
-  const [activeTab, setActiveTab] = useState<'users' | 'timesheets' | 'settings'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'timesheets'>('users');
   const [tsEmployeeId, setTsEmployeeId] = useState<number | ''>('');
   const [tsStartDate, setTsStartDate] = useState(format(startOfMonth(new Date()), 'yyyy-MM-dd'));
   const [tsEndDate, setTsEndDate] = useState(format(endOfMonth(new Date()), 'yyyy-MM-dd'));
@@ -218,10 +218,6 @@ export const AdminPage: React.FC = () => {
   const [sourceAttachmentFilename, setSourceAttachmentFilename] = useState<string>('');
   const [sourceAttachmentUrl, setSourceAttachmentUrl] = useState<string | null>(null);
   const [sourceAttachmentLoading, setSourceAttachmentLoading] = useState(false);
-
-  // Settings tab state
-  const [settingsSaved, setSettingsSaved] = useState(false);
-  const [fetchScheduleSaved, setFetchScheduleSaved] = useState(false);
 
   const { data: teamEntries = [], isFetching: tsLoading } = useQuery({
     queryKey: ['team-timesheets', tsEmployeeId, tsStartDate, tsEndDate, tsStatus],
@@ -252,41 +248,7 @@ export const AdminPage: React.FC = () => {
     enabled: activeTab === 'timesheets' && (!tsStatus || tsStatus === 'APPROVED'),
   });
 
-  const { data: tenantSettings = {} } = useTenantSettings(activeTab === 'settings');
-  const updateSettings = useUpdateTenantSettings();
   const unlockUser = useUnlockUserTimesheet();
-
-  // Reminder settings form state — initialized from tenantSettings
-  const [internalEnabled, setInternalEnabled] = useState(false);
-  const [internalDeadlineDay, setInternalDeadlineDay] = useState('friday');
-  const [internalDeadlineTime, setInternalDeadlineTime] = useState('17:00');
-  const [internalLockEnabled, setInternalLockEnabled] = useState(false);
-  const [internalRecipients, setInternalRecipients] = useState('all');
-  const [externalEnabled, setExternalEnabled] = useState(false);
-  const [externalDeadlineDayOffset, setExternalDeadlineDayOffset] = useState('-2');
-  const [externalDeadlineTime, setExternalDeadlineTime] = useState('17:00');
-  const [fetchEnabled, setFetchEnabled] = useState(false);
-  const [fetchInterval, setFetchInterval] = useState('60');
-  const [fetchDays, setFetchDays] = useState('mon,tue,wed,thu,fri');
-  const [fetchStartTime, setFetchStartTime] = useState('08:00');
-  const [fetchEndTime, setFetchEndTime] = useState('20:00');
-
-  React.useEffect(() => {
-    if (!tenantSettings || Object.keys(tenantSettings).length === 0) return;
-    if (tenantSettings.reminder_internal_enabled) setInternalEnabled(tenantSettings.reminder_internal_enabled === 'true');
-    if (tenantSettings.reminder_internal_deadline_day) setInternalDeadlineDay(tenantSettings.reminder_internal_deadline_day);
-    if (tenantSettings.reminder_internal_deadline_time) setInternalDeadlineTime(tenantSettings.reminder_internal_deadline_time);
-    if (tenantSettings.reminder_internal_lock_enabled) setInternalLockEnabled(tenantSettings.reminder_internal_lock_enabled === 'true');
-    if (tenantSettings.reminder_internal_recipients) setInternalRecipients(tenantSettings.reminder_internal_recipients);
-    if (tenantSettings.reminder_external_enabled) setExternalEnabled(tenantSettings.reminder_external_enabled === 'true');
-    if (tenantSettings.reminder_external_deadline_day_of_month) setExternalDeadlineDayOffset(tenantSettings.reminder_external_deadline_day_of_month);
-    if (tenantSettings.reminder_external_deadline_time) setExternalDeadlineTime(tenantSettings.reminder_external_deadline_time);
-    if (tenantSettings.fetch_emails_enabled) setFetchEnabled(tenantSettings.fetch_emails_enabled === 'true');
-    if (tenantSettings.fetch_emails_interval_minutes) setFetchInterval(tenantSettings.fetch_emails_interval_minutes);
-    if (tenantSettings.fetch_emails_days) setFetchDays(tenantSettings.fetch_emails_days);
-    if (tenantSettings.fetch_emails_start_time) setFetchStartTime(tenantSettings.fetch_emails_start_time);
-    if (tenantSettings.fetch_emails_end_time) setFetchEndTime(tenantSettings.fetch_emails_end_time);
-  }, [tenantSettings]);
 
   React.useEffect(() => {
     const nextSearch = searchParams.get('search') ?? '';
@@ -638,16 +600,6 @@ export const AdminPage: React.FC = () => {
           >
             <Clock className="w-4 h-4" />Team Timesheets
           </button>
-          <button
-            onClick={() => setActiveTab('settings')}
-            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition ${
-              activeTab === 'settings'
-                ? 'border-primary text-primary'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            <Settings className="w-4 h-4" />Settings
-          </button>
         </div>
 
         {/* Team Timesheets tab */}
@@ -924,111 +876,6 @@ export const AdminPage: React.FC = () => {
                 ) : (
                   <div className="flex items-center justify-center h-full text-sm text-slate-400">Failed to load file.</div>
                 )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Settings tab */}
-        {activeTab === 'settings' && (
-          <div className="space-y-6">
-            {/* Internal Reminders */}
-            <div className="rounded-xl border bg-white shadow-sm p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h3 className="text-base font-semibold">Internal Employee Reminders</h3>
-                  <p className="text-sm text-slate-500 mt-0.5">Send weekly submission reminders to employees</p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input type="checkbox" className="sr-only peer" checked={internalEnabled} onChange={(e) => setInternalEnabled(e.target.checked)} />
-                  <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
-                </label>
-              </div>
-              {internalEnabled && (
-                <div className="space-y-4 pt-2 border-t">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Deadline Day</label>
-                      <select className="w-full rounded-lg border px-3 py-2 text-sm" value={internalDeadlineDay} onChange={(e) => setInternalDeadlineDay(e.target.value)}>
-                        {['monday','tuesday','wednesday','thursday','friday'].map(d => (
-                          <option key={d} value={d}>{d.charAt(0).toUpperCase() + d.slice(1)}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Deadline Time</label>
-                      <input type="time" className="w-full rounded-lg border px-3 py-2 text-sm" value={internalDeadlineTime} onChange={(e) => setInternalDeadlineTime(e.target.value)} />
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input type="checkbox" className="sr-only peer" checked={internalLockEnabled} onChange={(e) => setInternalLockEnabled(e.target.checked)} />
-                      <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
-                    </label>
-                    <span className="text-sm text-slate-700">Lock timesheet if deadline is missed</span>
-                  </div>
-                </div>
-              )}
-              <div className="flex justify-end mt-4">
-                <button
-                  className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary/90 disabled:opacity-50"
-                  disabled={updateSettings.isPending}
-                  onClick={() => {
-                    updateSettings.mutate({
-                      reminder_internal_enabled: String(internalEnabled),
-                      reminder_internal_deadline_day: internalDeadlineDay,
-                      reminder_internal_deadline_time: internalDeadlineTime,
-                      reminder_internal_lock_enabled: String(internalLockEnabled),
-                      reminder_internal_recipients: internalRecipients,
-                    }, { onSuccess: () => { setSettingsSaved(true); setTimeout(() => setSettingsSaved(false), 2000); } });
-                  }}
-                >
-                  {settingsSaved ? 'Saved!' : 'Save'}
-                </button>
-              </div>
-            </div>
-
-            {/* External Contractor Reminders */}
-            <div className="rounded-xl border bg-white shadow-sm p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h3 className="text-base font-semibold">External Contractor Reminders</h3>
-                  <p className="text-sm text-slate-500 mt-0.5">Send monthly reminders to contractors with sender mappings</p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input type="checkbox" className="sr-only peer" checked={externalEnabled} onChange={(e) => setExternalEnabled(e.target.checked)} />
-                  <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
-                </label>
-              </div>
-              {externalEnabled && (
-                <div className="space-y-4 pt-2 border-t">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Days before month end</label>
-                      <input type="number" min="-28" max="-1" className="w-full rounded-lg border px-3 py-2 text-sm" value={externalDeadlineDayOffset} onChange={(e) => setExternalDeadlineDayOffset(e.target.value)} />
-                      <p className="text-xs text-slate-400 mt-1">e.g. -2 = 2 days before end of month</p>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">Deadline Time</label>
-                      <input type="time" className="w-full rounded-lg border px-3 py-2 text-sm" value={externalDeadlineTime} onChange={(e) => setExternalDeadlineTime(e.target.value)} />
-                    </div>
-                  </div>
-                </div>
-              )}
-              <div className="flex justify-end mt-4">
-                <button
-                  className="px-4 py-2 bg-primary text-white rounded-lg text-sm hover:bg-primary/90 disabled:opacity-50"
-                  disabled={updateSettings.isPending}
-                  onClick={() => {
-                    updateSettings.mutate({
-                      reminder_external_enabled: String(externalEnabled),
-                      reminder_external_deadline_day_of_month: externalDeadlineDayOffset,
-                      reminder_external_deadline_time: externalDeadlineTime,
-                    }, { onSuccess: () => { setSettingsSaved(true); setTimeout(() => setSettingsSaved(false), 2000); } });
-                  }}
-                >
-                  {settingsSaved ? 'Saved!' : 'Save'}
-                </button>
               </div>
             </div>
           </div>

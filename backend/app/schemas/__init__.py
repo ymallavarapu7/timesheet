@@ -128,6 +128,7 @@ class UserProfileResponse(BaseModel):
     full_name: str
     title: Optional[str] = None
     department: Optional[str] = None
+    timezone: Optional[str] = None
     role: UserRole
     manager_id: Optional[int] = None
     manager_name: Optional[str] = None

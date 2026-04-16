@@ -6,6 +6,7 @@ export { ApprovalsPage } from './ApprovalsPage';
 export { TimeOffPage } from './TimeOffPage';
 export { CalendarPage } from './CalendarPage';
 export { AdminPage } from './AdminPage';
+export { AdminSettingsPage } from './AdminSettingsPage';
 export { ClientManagementPage } from './ClientManagementPage';
 export { ProfilePage } from './ProfilePage';
 export { PlatformAdminPage } from './PlatformAdminPage';

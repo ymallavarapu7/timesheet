@@ -55,6 +55,7 @@ export const buildNavigation = (user: User | null, ingestionEnabled: boolean): N
         { label: 'Users', to: '/user-management', icon: UsersRound, visible: isAdmin(user) || isManager(user) },
         { label: 'Clients', to: '/client-management', icon: Briefcase, visible: isAdmin(user) },
         { label: 'Audit Trail', to: '/audit-trail', icon: ClipboardList, visible: isAdmin(user) },
+        { label: 'Settings', to: '/settings', icon: Settings, visible: isAdmin(user) },
       ],
     },
     {

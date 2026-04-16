@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Loading, Error, EmptyState, Modal, TimeEntryRow, DateRangePickerCalendar, SearchInput } from '@/components';
-import { useAuth, useTimeEntries, useCreateTimeEntry, useParseNaturalTimeEntry, useSubmitTimeEntries, useProjects, useTasks, useUpdateTimeEntry, useNotifications, useWeeklySubmitStatus, useCreateTask, useMarkNotificationRead } from '@/hooks';
+import { useAuth, useTimeEntries, useCreateTimeEntry, useParseNaturalTimeEntry, useSubmitTimeEntries, useProjects, useTasks, useUpdateTimeEntry, useNotifications, useWeeklySubmitStatus, useCreateTask, useMarkNotificationRead, useTenantPublicSettings } from '@/hooks';
 import { timeentriesAPI } from '@/api/endpoints';
 import { Project, Task, TimeEntry, TimeEntryStatus } from '@/types';
 import { addDays, endOfWeek, format, parseISO, startOfWeek, startOfYear, subDays } from 'date-fns';
@@ -50,6 +50,9 @@ export const MyTimePage: React.FC = () => {
   const [startDate, setStartDate] = useState(deepLinkDate || '');
   const [endDate, setEndDate] = useState(deepLinkDate || '');
   const [weekAnchorDate, setWeekAnchorDate] = useState<Date>(new Date());
+  const { data: publicSettings } = useTenantPublicSettings();
+  const allowFutureEntries = publicSettings?.allow_future_entries === 'true';
+  const todayStr = format(new Date(), 'yyyy-MM-dd');
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');
   const [gridProjectId, setGridProjectId] = useState<number>(0);
@@ -1315,6 +1318,7 @@ export const MyTimePage: React.FC = () => {
                   className="field-input"
                   value={editFormData.entry_date}
                   onChange={(e) => setEditFormData((f) => f ? { ...f, entry_date: e.target.value } : f)}
+                  max={allowFutureEntries ? undefined : todayStr}
                   required
                 />
               </div>

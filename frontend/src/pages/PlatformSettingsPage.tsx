@@ -82,17 +82,17 @@ const SmtpSection: React.FC = () => {
   );
 
   if (isLoading) {
-    return <div className="rounded-xl border bg-white shadow-sm p-5 animate-pulse h-32" />;
+    return <div className="rounded-xl border border-border bg-muted shadow-sm p-5 animate-pulse h-32" />;
   }
 
   return (
-    <div className="rounded-xl border bg-white shadow-sm p-5">
+    <div className="rounded-xl border border-border bg-card shadow-sm p-5">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <Mail className="w-5 h-5 text-primary" />
           <div>
-            <h2 className="text-lg font-semibold text-slate-900">SMTP Configuration</h2>
-            <p className="text-xs text-slate-500">
+            <h2 className="text-lg font-semibold text-foreground">SMTP Configuration</h2>
+            <p className="text-xs text-muted-foreground">
               Outbound email settings for verification and notification emails.{' '}
               {config?.source === 'environment' && (
                 <span className="text-amber-600 font-medium">Currently using environment variables.</span>
@@ -133,15 +133,15 @@ const SmtpSection: React.FC = () => {
       {!editMode && config && (
         config.smtp_host ? (
           <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
-            <div><dt className="text-slate-500 text-xs font-medium uppercase tracking-wide">Host</dt><dd className="font-mono text-slate-800">{config.smtp_host}:{config.smtp_port}</dd></div>
-            <div><dt className="text-slate-500 text-xs font-medium uppercase tracking-wide">Username</dt><dd className="font-mono text-slate-800">{config.smtp_username || '—'}</dd></div>
-            <div><dt className="text-slate-500 text-xs font-medium uppercase tracking-wide">Password</dt><dd className="text-slate-800">{config.smtp_password_set ? '••••••••' : '—'}</dd></div>
-            <div><dt className="text-slate-500 text-xs font-medium uppercase tracking-wide">TLS</dt><dd className="text-slate-800">{config.smtp_use_tls ? 'Enabled' : 'Disabled'}</dd></div>
-            <div><dt className="text-slate-500 text-xs font-medium uppercase tracking-wide">From Address</dt><dd className="text-slate-800">{config.smtp_from_address || '—'}</dd></div>
-            <div><dt className="text-slate-500 text-xs font-medium uppercase tracking-wide">From Name</dt><dd className="text-slate-800">{config.smtp_from_name || '—'}</dd></div>
+            <div><dt className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Host</dt><dd className="font-mono text-foreground">{config.smtp_host}:{config.smtp_port}</dd></div>
+            <div><dt className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Username</dt><dd className="font-mono text-foreground">{config.smtp_username || '—'}</dd></div>
+            <div><dt className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Password</dt><dd className="text-foreground">{config.smtp_password_set ? '••••••••' : '—'}</dd></div>
+            <div><dt className="text-muted-foreground text-xs font-medium uppercase tracking-wide">TLS</dt><dd className="text-foreground">{config.smtp_use_tls ? 'Enabled' : 'Disabled'}</dd></div>
+            <div><dt className="text-muted-foreground text-xs font-medium uppercase tracking-wide">From Address</dt><dd className="text-foreground">{config.smtp_from_address || '—'}</dd></div>
+            <div><dt className="text-muted-foreground text-xs font-medium uppercase tracking-wide">From Name</dt><dd className="text-foreground">{config.smtp_from_name || '—'}</dd></div>
           </dl>
         ) : (
-          <p className="text-sm text-slate-400">No SMTP server configured. Verification emails will be logged to the console.</p>
+          <p className="text-sm text-muted-foreground">No SMTP server configured. Verification emails will be logged to the console.</p>
         )
       )}
 
@@ -150,7 +150,7 @@ const SmtpSection: React.FC = () => {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="flex gap-2">
               <div className="flex-1">
-                <label className="block text-xs font-medium text-slate-600 mb-1">SMTP Host</label>
+                <label className="block text-xs font-medium text-foreground mb-1">SMTP Host</label>
                 <input
                   placeholder="smtp.sendgrid.net"
                   className="field-input w-full"
@@ -159,7 +159,7 @@ const SmtpSection: React.FC = () => {
                 />
               </div>
               <div className="w-24">
-                <label className="block text-xs font-medium text-slate-600 mb-1">Port</label>
+                <label className="block text-xs font-medium text-foreground mb-1">Port</label>
                 <input
                   type="number"
                   className="field-input w-full"
@@ -170,7 +170,7 @@ const SmtpSection: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Username</label>
+              <label className="block text-xs font-medium text-foreground mb-1">Username</label>
               <input
                 placeholder="apikey"
                 className="field-input w-full"
@@ -180,10 +180,10 @@ const SmtpSection: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">
+              <label className="block text-xs font-medium text-foreground mb-1">
                 Password{' '}
                 {config?.smtp_password_set && (
-                  <span className="text-slate-400 font-normal">(leave blank to keep existing)</span>
+                  <span className="text-muted-foreground font-normal">(leave blank to keep existing)</span>
                 )}
               </label>
               <div className="relative">
@@ -197,7 +197,7 @@ const SmtpSection: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setShowPassword((s) => !s)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                 >
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
@@ -205,7 +205,7 @@ const SmtpSection: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">From Address</label>
+              <label className="block text-xs font-medium text-foreground mb-1">From Address</label>
               <input
                 type="email"
                 placeholder="no-reply@yourdomain.com"
@@ -216,7 +216,7 @@ const SmtpSection: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">From Name</label>
+              <label className="block text-xs font-medium text-foreground mb-1">From Name</label>
               <input
                 placeholder="TimesheetIQ"
                 className="field-input w-full"
@@ -229,11 +229,11 @@ const SmtpSection: React.FC = () => {
               <input
                 id="smtp-tls"
                 type="checkbox"
-                className="h-4 w-4 rounded border-slate-300 text-primary"
+                className="h-4 w-4 rounded border-border text-primary"
                 checked={smtpForm.smtp_use_tls}
                 onChange={(e) => setSmtpForm((p) => ({ ...p, smtp_use_tls: e.target.checked }))}
               />
-              <label htmlFor="smtp-tls" className="text-sm text-slate-700">Use STARTTLS</label>
+              <label htmlFor="smtp-tls" className="text-sm text-foreground">Use STARTTLS</label>
             </div>
           </div>
 
@@ -312,35 +312,35 @@ const PlatformAdminsSection: React.FC = () => {
   };
 
   return (
-    <div className="rounded-xl border bg-white shadow-sm p-5">
+    <div className="rounded-xl border border-border bg-card shadow-sm p-5">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <Shield className="w-5 h-5 text-primary" />
           <div>
-            <h2 className="text-lg font-semibold text-slate-900">Platform Admins</h2>
-            <p className="text-xs text-slate-500">Users with cross-tenant superuser access</p>
+            <h2 className="text-lg font-semibold text-foreground">Platform Admins</h2>
+            <p className="text-xs text-muted-foreground">Users with cross-tenant superuser access</p>
           </div>
         </div>
         <button
           onClick={() => { setForm(emptyAdminForm()); setFormError(''); setShowAdd(true); }}
-          className="flex items-center gap-1.5 rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-200"
+          className="flex items-center gap-1.5 rounded-lg bg-muted px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted/80"
         >
           <PlusCircle className="w-3.5 h-3.5" /> Add Platform Admin
         </button>
       </div>
 
       {platformAdmins.length === 0 ? (
-        <p className="text-sm text-slate-400">No platform admins found.</p>
+        <p className="text-sm text-muted-foreground">No platform admins found.</p>
       ) : (
         <div className="space-y-2">
           {platformAdmins.map((pa) => (
-            <div key={pa.id} className="flex items-center justify-between rounded-lg border px-4 py-2.5">
+            <div key={pa.id} className="flex items-center justify-between rounded-lg border border-border px-4 py-2.5">
               <div>
-                <span className="font-medium text-sm text-slate-800">{pa.full_name}</span>
-                <span className="ml-2 text-xs text-slate-500">{pa.email}</span>
+                <span className="font-medium text-sm text-foreground">{pa.full_name}</span>
+                <span className="ml-2 text-xs text-muted-foreground">{pa.email}</span>
               </div>
               <div className="flex items-center gap-3">
-                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${pa.is_active ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-700'}`}>
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${pa.is_active ? 'bg-emerald-100 text-emerald-800' : 'bg-muted text-foreground'}`}>
                   {pa.is_active ? 'Active' : 'Inactive'}
                 </span>
                 <button
@@ -356,7 +356,7 @@ const PlatformAdminsSection: React.FC = () => {
       )}
 
       {showAdd && (
-        <form onSubmit={handleSubmit} className="mt-4 rounded-lg border bg-slate-50 p-4 space-y-3">
+        <form onSubmit={handleSubmit} className="mt-4 rounded-lg border border-border bg-muted/40 p-4 space-y-3">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <input
               placeholder="Full name"
@@ -381,7 +381,7 @@ const PlatformAdminsSection: React.FC = () => {
               onChange={(e) => setForm((p) => ({ ...p, username: e.target.value }))}
             />
           </div>
-          <p className="text-xs text-slate-500">A temporary password will be generated automatically.</p>
+          <p className="text-xs text-muted-foreground">A temporary password will be generated automatically.</p>
           {formError && <p className="text-xs text-red-600">{formError}</p>}
           <div className="flex gap-2">
             <button type="submit" disabled={createUserMutation.isPending} className="action-button text-sm">
@@ -397,14 +397,14 @@ const PlatformAdminsSection: React.FC = () => {
       {/* Credentials dialog */}
       {createdCredentials && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
-            <h3 className="text-lg font-semibold text-slate-900 mb-1">Platform Admin Created</h3>
-            <p className="text-sm text-slate-500 mb-4">
+          <div className="bg-card rounded-xl shadow-2xl p-6 border border-border w-full max-w-md">
+            <h3 className="text-lg font-semibold text-foreground mb-1">Platform Admin Created</h3>
+            <p className="text-sm text-muted-foreground mb-4">
               Share these credentials securely. The password cannot be retrieved again.
             </p>
-            <div className="rounded-lg bg-slate-50 border p-3 space-y-1 font-mono text-sm mb-4">
-              <div><span className="text-slate-500">Email: </span>{createdCredentials.email}</div>
-              <div><span className="text-slate-500">Password: </span>{createdCredentials.password}</div>
+            <div className="rounded-lg bg-muted/40 border border-border p-3 space-y-1 font-mono text-sm mb-4">
+              <div><span className="text-muted-foreground">Email: </span>{createdCredentials.email}</div>
+              <div><span className="text-muted-foreground">Password: </span>{createdCredentials.password}</div>
             </div>
             <div className="flex gap-2">
               <button onClick={copyCredentials} className="action-button text-sm flex-1">
@@ -424,9 +424,9 @@ const PlatformAdminsSection: React.FC = () => {
       {/* Delete confirmation */}
       {confirmDeleteId != null && confirmDeleteUser && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm">
-            <h3 className="text-lg font-semibold text-slate-900 mb-2">Remove Platform Admin</h3>
-            <p className="text-sm text-slate-600 mb-4">
+          <div className="bg-card rounded-xl shadow-2xl p-6 border border-border w-full max-w-sm">
+            <h3 className="text-lg font-semibold text-foreground mb-2">Remove Platform Admin</h3>
+            <p className="text-sm text-foreground mb-4">
               Permanently delete <strong>{confirmDeleteUser.full_name}</strong> ({confirmDeleteUser.email})?
               This cannot be undone.
             </p>
@@ -465,8 +465,8 @@ export const PlatformSettingsPage: React.FC = () => {
         <div className="flex items-center gap-3 mb-2">
           <Settings className="w-6 h-6 text-primary" />
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Platform Settings</h1>
-            <p className="text-sm text-slate-500">Manage platform-level configuration and administrators</p>
+            <h1 className="text-2xl font-bold text-foreground">Platform Settings</h1>
+            <p className="text-sm text-muted-foreground">Manage platform-level configuration and administrators</p>
           </div>
         </div>
 

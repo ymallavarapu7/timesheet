@@ -8,10 +8,22 @@ from app.models.time_entry import TimeEntry, TimeEntryEditHistory, TimeEntryStat
 from app.models.project import Project
 from app.models.task import Task
 from app.models.user import User
+from app.models.tenant_settings import TenantSettings
 from app.core.config import settings
 from app.schemas import TimeEntryCreate, TimeEntryUpdate
 from typing import Optional
 from datetime import date, datetime, timedelta, timezone
+
+
+async def _future_entries_allowed(db: AsyncSession, tenant_id: int) -> bool:
+    result = await db.execute(
+        select(TenantSettings.value).where(
+            TenantSettings.tenant_id == tenant_id,
+            TenantSettings.key == "allow_future_entries",
+        )
+    )
+    value = result.scalar_one_or_none()
+    return str(value).lower() == "true" if value is not None else False
 
 
 async def get_time_entry_by_id(db: AsyncSession, entry_id: int, tenant_id: Optional[int] = None) -> Optional[TimeEntry]:
@@ -54,7 +66,7 @@ async def create_time_entry(db: AsyncSession, user_id: int, tenant_id: int, entr
         raise ValueError(
             f"Cannot create entries more than {settings.time_entry_backdate_weeks} weeks in the past"
         )
-    if entry_create.entry_date > date.today():
+    if entry_create.entry_date > date.today() and not await _future_entries_allowed(db, tenant_id):
         raise ValueError("Cannot create entries for future dates")
 
     await _validate_hours_constraints(
@@ -191,7 +203,7 @@ async def update_time_entry(
         raise ValueError(
             f"Cannot set entry date more than {settings.time_entry_backdate_weeks} weeks in the past"
         )
-    if target_entry_date > date.today():
+    if target_entry_date > date.today() and not await _future_entries_allowed(db, entry.tenant_id):
         raise ValueError("Cannot set entry date to a future date")
 
     await _validate_hours_constraints(

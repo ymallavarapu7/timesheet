@@ -8,6 +8,7 @@ import { AppLayout, Loading } from '@/components';
 import { useAuth, useCanReview, useIngestionEnabled } from '@/hooks';
 import {
   AdminPage,
+  AdminSettingsPage,
   ApprovalsPage,
   AuditTrailPage,
   CalendarPage,
@@ -114,6 +115,7 @@ function AppRoutes() {
           <Route element={<TenantAdminGuard />}>
             <Route path="/client-management" element={<ClientManagementPage />} />
             <Route path="/audit-trail" element={<AuditTrailPage />} />
+            <Route path="/settings" element={<AdminSettingsPage />} />
           </Route>
 
           <Route element={<ManagerGuard />}>

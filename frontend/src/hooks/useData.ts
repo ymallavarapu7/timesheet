@@ -1015,6 +1015,13 @@ export const useTenantSettings = (enabled: boolean = true) => {
   });
 };
 
+export const useTenantPublicSettings = () => {
+  return useQuery({
+    queryKey: ['tenant-settings', 'public'],
+    queryFn: () => tenantSettingsAPI.getPublic().then((res) => res.data),
+  });
+};
+
 export const useUpdateTenantSettings = () => {
   const queryClient = useQueryClient();
   return useMutation({
@@ -1022,6 +1029,7 @@ export const useUpdateTenantSettings = () => {
       tenantSettingsAPI.update(data).then((res) => res.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tenant-settings'] });
+      queryClient.invalidateQueries({ queryKey: ['tenant-settings', 'public'] });
     },
   });
 };

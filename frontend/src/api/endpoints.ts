@@ -422,6 +422,7 @@ export const tenantsAPI = {
 
 export const tenantSettingsAPI = {
   get: () => apiClient.get<Record<string, string | null>>('/users/tenant-settings'),
+  getPublic: () => apiClient.get<Record<string, string | null>>('/users/tenant-settings/public'),
   update: (data: Record<string, string | null>) =>
     apiClient.patch<Record<string, string | null>>('/users/tenant-settings', data),
   unlockUser: (userId: number) =>

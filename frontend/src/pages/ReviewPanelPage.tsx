@@ -494,25 +494,35 @@ export const ReviewPanelPage: React.FC = () => {
             <button type="button" onClick={handleHold} className="action-button-secondary" disabled={holdTimesheet.isPending}>
               <PauseCircle className="mr-1.5 h-4 w-4" /> {holdTimesheet.isPending ? 'Holding...' : 'On Hold'}
             </button>
-            <button type="button" onClick={() => setShowApproveConfirm(true)} className="action-button" disabled={approveTimesheet.isPending}>
-              <Check className="mr-1.5 h-4 w-4" /> {approveTimesheet.isPending ? 'Approving...' : 'Approve'}
-            </button>
+            <div className="relative">
+              <button type="button" onClick={() => setShowApproveConfirm((v) => !v)} className="action-button" disabled={approveTimesheet.isPending}>
+                <Check className="mr-1.5 h-4 w-4" /> {approveTimesheet.isPending ? 'Approving...' : 'Approve'}
+              </button>
+              {showApproveConfirm && timesheet && (() => {
+                const lineCount = timesheet.line_items.length;
+                const totalHoursNum = timesheet.total_hours != null ? Number(timesheet.total_hours) : null;
+                const summary = lineCount > 0
+                  ? `Create ${lineCount} time ${lineCount === 1 ? 'entry' : 'entries'}?`
+                  : totalHoursNum && totalHoursNum > 0
+                    ? `Only ${totalHoursNum} total hours — no daily breakdown. Approve anyway?`
+                    : 'Nothing to create. Approve anyway?';
+                return (
+                  <div className="absolute right-0 top-full z-30 mt-2 w-max max-w-[560px] rounded-lg border border-primary/30 bg-popover p-3 shadow-lg">
+                    <p className="whitespace-nowrap text-sm text-foreground">{summary}</p>
+                    <div className="mt-3 flex justify-end gap-2">
+                      <button type="button" className="action-button-secondary" onClick={() => setShowApproveConfirm(false)}>Cancel</button>
+                      <button type="button" className="action-button" disabled={approveTimesheet.isPending} onClick={handleApprove}>
+                        {approveTimesheet.isPending ? 'Approving...' : 'Confirm'}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
           </>}
         </div>
       </div>
 
-      {/* ── Inline banners ──────────────────────────────────────────── */}
-      {showApproveConfirm && timesheet && (
-        <div className="shrink-0 border-b border-primary/20 bg-[var(--accent-light)] px-6 py-3">
-          <p className="text-sm text-primary">This will create {timesheet.line_items.length} time {timesheet.line_items.length === 1 ? 'entry' : 'entries'}. Confirm?</p>
-          <div className="mt-2 flex gap-2">
-            <button type="button" className="action-button-secondary" onClick={() => setShowApproveConfirm(false)}>Cancel</button>
-            <button type="button" className="action-button" disabled={approveTimesheet.isPending} onClick={handleApprove}>
-              {approveTimesheet.isPending ? 'Approving...' : 'Confirm Approval'}
-            </button>
-          </div>
-        </div>
-      )}
       {showRejectPanel && (
         <div className="shrink-0 border-b border-[var(--danger)]/20 bg-[var(--danger-light)] px-6 py-3">
           <p className="mb-2 text-sm font-medium text-[var(--danger)]">Reject submission</p>
@@ -716,7 +726,12 @@ export const ReviewPanelPage: React.FC = () => {
                 <textarea className="field-textarea" rows={3} value={summaryForm.internal_notes} onChange={(e) => setSummaryForm((c) => ({ ...c, internal_notes: e.target.value }))} />
               </div>
 
-              <div className="flex justify-end">
+              <div className="flex items-center justify-between">
+                {timesheet?.created_at ? (
+                  <p className="text-[11px] text-muted-foreground">
+                    Processed by system · {formatDateTime(timesheet.created_at)}
+                  </p>
+                ) : <span />}
                 <button type="button" onClick={handleSaveSummary} className="action-button" disabled={updateTimesheet.isPending}>
                   <Save className="mr-1.5 h-4 w-4" /> {updateTimesheet.isPending ? 'Saving...' : 'Save Summary'}
                 </button>

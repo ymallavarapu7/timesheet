@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Lock, Mail, Moon, Sun } from 'lucide-react';
+import { Lock, Mail } from 'lucide-react';
 
 import { Card, CardContent } from '@/components';
 import { useAuth } from '@/hooks';
 import { useTheme } from '@/contexts/ThemeContext';
-import { NeuralPrismIcon } from '@/components/layout/AcufyLogo';
+import { AcufyLogo } from '@/components/layout/AcufyLogo';
+import { ThemePicker } from '@/components/layout/ThemePicker';
 
 // Dev-only quick login — file is gitignored and only exists locally.
 // Uses Vite's glob import so the build succeeds even when the file is absent.
@@ -31,7 +32,7 @@ export const LoginPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [DevQuickLogin, setDevQuickLogin] = useState<React.FC<{ isLoading: boolean; onQuickLogin: (email: string, password: string) => void }> | null>(null);
   const { login } = useAuth();
-  const { theme, toggleTheme } = useTheme();
+  const { variant: themeVariant } = useTheme();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -79,19 +80,17 @@ export const LoginPage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-background p-0">
-      {/* Theme toggle - absolute top-right */}
-      <button
-        type="button"
-        onClick={toggleTheme}
-        className="absolute right-6 top-6 z-10 inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
-        aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-      >
-        {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-      </button>
+      {/* Theme picker - absolute top-right */}
+      <div className="absolute right-6 top-6 z-10">
+        <ThemePicker />
+      </div>
 
       <div className="grid min-h-screen grid-cols-1 lg:grid-cols-[55%_45%]">
         {/* Left panel — Acufy branded */}
-        <section className="relative hidden overflow-hidden p-14 lg:flex lg:flex-col lg:justify-between" style={{ background: 'linear-gradient(135deg, #0B1120 0%, #0F172A 40%, #1E293B 100%)' }}>
+        <section
+          className="relative hidden overflow-hidden p-14 lg:flex lg:flex-col lg:justify-between"
+          style={{ background: `linear-gradient(135deg, ${themeVariant.legacy.bgApp} 0%, ${themeVariant.legacy.bgSurface} 60%, ${themeVariant.legacy.bgSurface2} 100%)` }}
+        >
           {/* Animated grid bg */}
           <div
             className="absolute inset-0 opacity-40"
@@ -107,16 +106,7 @@ export const LoginPage: React.FC = () => {
           <div className="absolute -bottom-32 -left-24 h-[400px] w-[400px] animate-pulse rounded-full" style={{ background: 'radial-gradient(circle, rgba(20,184,166,0.1) 0%, transparent 60%)', animationDelay: '2s' }} />
 
           <div className="relative z-10">
-            <div className="flex items-center gap-3">
-              <NeuralPrismIcon size={48} />
-              <div>
-                <h1 className="text-[28px] font-bold text-white tracking-wide">
-                  ACUFY<span className="ml-1 text-lg font-medium text-[#2DD4BF]">AI</span>
-                </h1>
-                <p className="mt-[-2px] text-[10px] font-medium uppercase tracking-[2.5px] text-slate-400">AI Powered Innovation</p>
-              </div>
-            </div>
-            <div className="mt-2 h-[2px] w-40 rounded-full" style={{ background: 'linear-gradient(90deg, #0EA5E9, #06B6D4, #14B8A6, #2DD4BF)' }} />
+            <img src={themeVariant.logoPath} alt="Acufy AI" style={{ height: 64, width: 'auto' }} />
             <p className="mt-6 max-w-md text-base leading-relaxed text-slate-400">
               Intelligent timesheet operations — tracking, ingestion, and approval workflows unified in one platform.
             </p>
@@ -147,11 +137,8 @@ export const LoginPage: React.FC = () => {
             <CardContent className="p-0">
               <div className="mb-8">
                 {/* Mobile logo */}
-                <div className="mb-6 flex items-center gap-2 lg:hidden">
-                  <NeuralPrismIcon size={32} />
-                  <span className="text-lg font-bold text-foreground tracking-wide">
-                    ACUFY<span className="ml-0.5 text-sm font-medium text-[#2DD4BF]">AI</span>
-                  </span>
+                <div className="mb-6 lg:hidden">
+                  <AcufyLogo />
                 </div>
                 <h2 className="text-2xl font-semibold tracking-tight text-foreground">Welcome</h2>
                 <p className="mt-2 text-sm text-muted-foreground">Sign in to your account</p>

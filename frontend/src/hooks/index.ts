@@ -96,6 +96,7 @@ export {
   useRevertIngestionTimesheetRejection,
   useRevertTimeEntryRejection,
   useTenantSettings,
+  useTenantPublicSettings,
   useUpdateTenantSettings,
   useUnlockUserTimesheet,
 } from './useData';

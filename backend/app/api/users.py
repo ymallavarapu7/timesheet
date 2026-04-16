@@ -167,6 +167,7 @@ async def get_my_profile(
         "full_name": current_user.full_name,
         "title": current_user.title,
         "department": current_user.department,
+        "timezone": current_user.timezone,
         "role": current_user.role,
         "manager_id": current_user.manager_id,
         "manager_name": manager_name,
@@ -241,6 +242,29 @@ async def get_tenant_settings(
     )
     rows = result.scalars().all()
     return {row.key: row.value for row in rows}
+
+
+# Keys readable by any authenticated user in the tenant. These drive client-side
+# UI behavior that every submitter needs to know about (e.g. date picker caps).
+PUBLIC_TENANT_SETTING_KEYS = {"allow_future_entries"}
+
+
+@router.get("/tenant-settings/public", response_model=dict)
+async def get_public_tenant_settings(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Whitelisted tenant settings readable by any authenticated user."""
+    from app.models.tenant_settings import TenantSettings
+    if current_user.tenant_id is None:
+        return {}
+    result = await db.execute(
+        select(TenantSettings).where(
+            TenantSettings.tenant_id == current_user.tenant_id,
+            TenantSettings.key.in_(PUBLIC_TENANT_SETTING_KEYS),
+        )
+    )
+    return {row.key: row.value for row in result.scalars().all()}
 
 
 @router.patch("/tenant-settings", response_model=dict)

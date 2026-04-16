@@ -7,17 +7,15 @@ import {
   ChevronRight,
   LogOut,
   Menu,
-  Moon,
-  Sun,
   User as UserIcon,
   X,
 } from 'lucide-react';
 
 import { AcufyLogo, NeuralPrismIcon } from '@/components/layout/AcufyLogo';
+import { ThemePicker } from '@/components/layout/ThemePicker';
 import { buildNavigation } from '@/components/layout/navigation';
 import { cn } from '@/lib/utils';
 import { useAuth, useIngestionEnabled, useMarkAllNotificationsRead, useMarkNotificationRead, useNotifications } from '@/hooks';
-import { useTheme } from '@/contexts/ThemeContext';
 import type { NavSection } from '@/components/layout/navigation';
 
 /* ── Small helper: renders a single nav link (no dropdown) ── */
@@ -114,7 +112,6 @@ const NavDropdown: React.FC<{ section: NavSection; onNavigate?: () => void }> = 
 export const TopNavBar: React.FC = () => {
   const navigate = useNavigate();
   const { user, tenant, logout } = useAuth();
-  const { theme, toggleTheme } = useTheme();
   const ingestionEnabled = useIngestionEnabled();
   const sections = buildNavigation(user, ingestionEnabled);
 
@@ -212,16 +209,15 @@ export const TopNavBar: React.FC = () => {
 
           {/* ── Right: theme + notifications + profile ── */}
           <div className="flex items-center gap-2">
-            {/* Theme toggle */}
-            <button
-              type="button"
-              onClick={toggleTheme}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
-              aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-              title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-            >
-              {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-            </button>
+            {/* Tenant / organization name */}
+            {tenant?.name && (
+              <span className="hidden whitespace-nowrap text-sm font-medium text-foreground md:inline-block">
+                {tenant.name}
+              </span>
+            )}
+
+            {/* Theme picker */}
+            <ThemePicker />
 
             {/* Notifications */}
             <div ref={notificationsRef} className="relative">
