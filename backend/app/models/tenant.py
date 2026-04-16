@@ -1,6 +1,6 @@
 import enum
 
-from sqlalchemy import Boolean, Enum as SAEnum, String
+from sqlalchemy import Boolean, Enum as SAEnum, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampMixin
@@ -25,6 +25,12 @@ class Tenant(Base, TimestampMixin):
     )
     ingestion_enabled: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
+    )
+    # Cap on number of mailboxes a tenant can connect. Only meaningful when
+    # ingestion_enabled is True. NULL = no cap (legacy / unlimited plans).
+    # Default 1 for new ingestion-enabled tenants — platform admin raises it.
+    max_mailboxes: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
     )
 
     # Back-populated from each tenant-scoped model

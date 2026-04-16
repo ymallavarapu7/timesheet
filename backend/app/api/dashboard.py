@@ -120,14 +120,20 @@ async def _get_all_active_user_ids(db: AsyncSession, tenant_id: int) -> list[int
     return list(result.scalars().all())
 
 
-def _week_start(value: date) -> date:
-    return value - timedelta(days=value.weekday())
+def _week_start(value: date, week_start_day: int = 0) -> date:
+    """0=Sunday, 1=Monday."""
+    py_weekday = value.weekday()
+    offset = (py_weekday + 1) % 7 if week_start_day == 0 else py_weekday
+    return value - timedelta(days=offset)
 
 
 async def _count_pending_timesheet_weeks(
     db: AsyncSession,
+    tenant_id: int,
     user_ids: list[int] | None = None,
 ) -> int:
+    from app.crud.time_entry import _tenant_week_start_day
+    wsd = await _tenant_week_start_day(db, tenant_id)
     query = select(TimeEntry.user_id, TimeEntry.entry_date).where(
         TimeEntry.status == TimeEntryStatus.SUBMITTED
     )
@@ -138,7 +144,7 @@ async def _count_pending_timesheet_weeks(
 
     result = await db.execute(query)
     pending_weeks = {
-        (user_id, _week_start(entry_date))
+        (user_id, _week_start(entry_date, wsd))
         for user_id, entry_date in result.all()
     }
     return len(pending_weeks)
@@ -209,6 +215,7 @@ async def get_dashboard_summary(
 
         pending_time_entries_count = await _count_pending_timesheet_weeks(
             db,
+            current_user.tenant_id,
             scoped_employee_ids,
         )
         if scoped_employee_ids:
@@ -350,7 +357,7 @@ async def get_team_daily_overview(
         else:
             missing_users.append(member)
 
-    pending_time_entries_count = await _count_pending_timesheet_weeks(db, team_member_ids)
+    pending_time_entries_count = await _count_pending_timesheet_weeks(db, current_user.tenant_id, team_member_ids)
     pending_time_off_count = int(
         (await db.scalar(
             select(func.count(TimeOffRequest.id)).where(

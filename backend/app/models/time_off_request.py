@@ -1,4 +1,4 @@
-from sqlalchemy import String, ForeignKey, Text, Enum as SQLEnum, DateTime, Numeric, Date, Integer
+from sqlalchemy import String, ForeignKey, Text, Enum as SQLEnum, DateTime, Numeric, Date
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from enum import Enum
 from typing import Optional
@@ -7,6 +7,9 @@ from decimal import Decimal
 from .base import Base, TimestampMixin
 
 
+# Kept for back-compat with code that still imports TimeOffType; values are now
+# tenant-defined strings (see LeaveType model). These constants seed the default
+# set on tenant creation and are used in a few comparison sites.
 class TimeOffType(str, Enum):
     SICK_DAY = "SICK_DAY"
     PTO = "PTO"
@@ -34,8 +37,11 @@ class TimeOffRequest(Base, TimestampMixin):
     request_date: Mapped[date] = mapped_column(
         Date, nullable=False, index=True)
     hours: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
-    leave_type: Mapped[TimeOffType] = mapped_column(
-        SQLEnum(TimeOffType), nullable=False, index=True)
+    # Stored as a free string matching a LeaveType.code within the tenant.
+    # Historically this was a Postgres enum (TimeOffType); migrated to varchar
+    # so tenants can define their own leave types.
+    leave_type: Mapped[str] = mapped_column(
+        String(50), nullable=False, index=True)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[TimeOffStatus] = mapped_column(
         SQLEnum(TimeOffStatus), nullable=False, default=TimeOffStatus.DRAFT, index=True

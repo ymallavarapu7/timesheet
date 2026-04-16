@@ -107,6 +107,10 @@ interface TimeEntryRowProps {
   showActions?: boolean;
   highlighted?: boolean;
   rowId?: string;
+  /** Compact variant for nested lists (e.g. inside a grouped rejection card). */
+  compact?: boolean;
+  /** Hide the per-entry rejection reason (typically shown by the parent group). */
+  hideRejectionReason?: boolean;
 }
 
 export const TimeEntryRow: React.FC<TimeEntryRowProps> = ({
@@ -118,6 +122,8 @@ export const TimeEntryRow: React.FC<TimeEntryRowProps> = ({
   showActions = true,
   highlighted = false,
   rowId,
+  compact = false,
+  hideRejectionReason = false,
 }) => {
   const deleteMutation = useDeleteTimeEntry(entry.id);
 
@@ -139,6 +145,48 @@ export const TimeEntryRow: React.FC<TimeEntryRowProps> = ({
     REJECTED: 'bg-red-50 text-red-700',
   };
 
+  if (compact) {
+    return (
+      <div
+        id={rowId}
+        className={`flex items-center justify-between gap-3 rounded border bg-card px-3 py-2 text-sm ${highlighted ? 'ring-2 ring-primary border-primary' : ''}`}
+      >
+        <div className="min-w-0 flex-1 flex items-center gap-3">
+          <span className="font-medium whitespace-nowrap">{format(new Date(entry.entry_date), 'EEE, MMM d')}</span>
+          {entry.project && (
+            <span className="truncate text-muted-foreground">{entry.project.name}</span>
+          )}
+          <span className="ml-auto whitespace-nowrap font-medium">{Number(entry.hours).toFixed(2)}h</span>
+        </div>
+        {showActions && (entry.status === 'DRAFT' || entry.status === 'REJECTED') && (
+          <div className="flex items-center gap-1.5 shrink-0">
+            {entry.status === 'DRAFT' && onSubmit && (
+              <button
+                onClick={() => onSubmit([entry.id])}
+                className="px-2 py-1 bg-primary text-primary-foreground text-xs rounded hover:bg-primary/80"
+              >
+                Submit
+              </button>
+            )}
+            <button
+              onClick={() => onEdit?.(entry)}
+              className="px-2 py-1 bg-slate-100 text-slate-700 text-xs rounded hover:bg-slate-200"
+            >
+              {entry.status === 'REJECTED' ? 'Edit & Rework' : 'Edit'}
+            </button>
+            <button
+              onClick={handleDelete}
+              disabled={deleteMutation.isPending}
+              className="px-2 py-1 bg-destructive/10 text-destructive text-xs rounded hover:bg-destructive/20 disabled:opacity-50"
+            >
+              {deleteMutation.isPending ? '...' : 'Delete'}
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div id={rowId} className={`border rounded p-4 bg-card ${highlighted ? 'ring-2 ring-primary border-primary' : ''}`}>
       <div className="flex items-start justify-between gap-4">
@@ -148,7 +196,7 @@ export const TimeEntryRow: React.FC<TimeEntryRowProps> = ({
           {entry.project && <p className="text-sm text-muted-foreground">{entry.project.name}</p>}
           <p className="text-sm mt-2">{entry.description}</p>
           <p className="text-sm font-medium mt-1">{entry.hours} hours</p>
-          {entry.rejection_reason && (
+          {entry.rejection_reason && !hideRejectionReason && (
             <div className="bg-red-50 border border-red-200 p-2 rounded text-sm mt-2">
               <p className="font-medium text-red-900">Rejection reason:</p>
               <p className="text-red-800">{entry.rejection_reason}</p>

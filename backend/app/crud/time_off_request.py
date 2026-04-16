@@ -9,9 +9,82 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 
+from app.models.leave_type import LeaveType
+from app.models.tenant_settings import TenantSettings
 from app.models.time_off_request import TimeOffRequest, TimeOffStatus, TimeOffType
 from app.models.user import User
 from app.schemas import TimeOffRequestCreate, TimeOffRequestUpdate
+
+
+DEFAULT_PAST_DAYS = 14
+DEFAULT_FUTURE_DAYS = 365
+DEFAULT_ADVANCE_NOTICE_DAYS = 0
+DEFAULT_MAX_CONSECUTIVE_DAYS = 0  # 0 = no limit
+
+
+def _coerce_int(value: Optional[str], default: int) -> int:
+    if value is None:
+        return default
+    try:
+        return max(0, int(str(value).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_bool(value: Optional[str], default: bool) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("true", "1", "yes", "on")
+
+
+async def _time_off_policy(db: AsyncSession, tenant_id: int) -> dict:
+    """Per-tenant time-off policy with safe defaults."""
+    result = await db.execute(
+        select(TenantSettings.key, TenantSettings.value).where(
+            TenantSettings.tenant_id == tenant_id,
+            TenantSettings.key.in_((
+                "time_off_past_days",
+                "time_off_future_days",
+                "time_off_advance_notice_days",
+                "time_off_max_consecutive_days",
+                "allow_overlapping_time_off",
+            )),
+        )
+    )
+    rows = {row[0]: row[1] for row in result.all()}
+    return {
+        "past_days": _coerce_int(rows.get("time_off_past_days"), DEFAULT_PAST_DAYS),
+        "future_days": _coerce_int(rows.get("time_off_future_days"), DEFAULT_FUTURE_DAYS),
+        "advance_notice_days": _coerce_int(rows.get("time_off_advance_notice_days"), DEFAULT_ADVANCE_NOTICE_DAYS),
+        "max_consecutive_days": _coerce_int(rows.get("time_off_max_consecutive_days"), DEFAULT_MAX_CONSECUTIVE_DAYS),
+        "allow_overlap": _coerce_bool(rows.get("allow_overlapping_time_off"), False),
+    }
+
+
+async def _consecutive_run_length(
+    db: AsyncSession, user_id: int, request_date: date, exclude_id: Optional[int] = None
+) -> int:
+    """Count the consecutive run of non-rejected requests containing request_date (inclusive of the new one)."""
+    q = select(TimeOffRequest.request_date).where(
+        (TimeOffRequest.user_id == user_id)
+        & (TimeOffRequest.status != TimeOffStatus.REJECTED)
+    )
+    if exclude_id is not None:
+        q = q.where(TimeOffRequest.id != exclude_id)
+    result = await db.execute(q)
+    existing = {row[0] for row in result.all()}
+    existing.add(request_date)
+    # Walk backward then forward from request_date.
+    length = 1
+    cursor = request_date - timedelta(days=1)
+    while cursor in existing:
+        length += 1
+        cursor -= timedelta(days=1)
+    cursor = request_date + timedelta(days=1)
+    while cursor in existing:
+        length += 1
+        cursor += timedelta(days=1)
+    return length
 
 
 async def get_time_off_request_by_id(db: AsyncSession, request_id: int, tenant_id: Optional[int] = None) -> Optional[TimeOffRequest]:
@@ -34,25 +107,62 @@ async def create_time_off_request(
     tenant_id: int,
     payload: TimeOffRequestCreate,
 ) -> TimeOffRequest:
-    # Enforce backdate limit
-    max_backdate = date.today() - timedelta(weeks=settings.time_entry_backdate_weeks)
-    if payload.request_date < max_backdate:
-        raise ValueError(
-            f"Cannot create time off requests more than {settings.time_entry_backdate_weeks} weeks in the past"
-        )
+    today = date.today()
+    policy = await _time_off_policy(db, tenant_id)
 
-    # Check for overlapping requests on the same date
-    overlap_count = await db.scalar(
-        select(sa_func.count(TimeOffRequest.id)).where(
-            (TimeOffRequest.user_id == user_id)
-            & (TimeOffRequest.request_date == payload.request_date)
-            & (TimeOffRequest.status != TimeOffStatus.REJECTED)
+    # Validate leave_type against active LeaveType rows for this tenant.
+    lt_row = await db.execute(
+        select(LeaveType.is_active).where(
+            (LeaveType.tenant_id == tenant_id)
+            & (LeaveType.code == payload.leave_type)
         )
     )
-    if overlap_count and overlap_count > 0:
+    lt_active = lt_row.scalar_one_or_none()
+    if lt_active is None:
+        raise ValueError(f"Unknown leave type: {payload.leave_type}")
+    if lt_active is False:
+        raise ValueError(f"Leave type {payload.leave_type} is no longer active")
+
+    min_date = today - timedelta(days=policy["past_days"])
+    max_date = today + timedelta(days=policy["future_days"])
+    if payload.request_date < min_date:
         raise ValueError(
-            f"A time off request already exists for {payload.request_date.isoformat()}"
+            f"Cannot create time off requests more than {policy['past_days']} day(s) in the past"
         )
+    if payload.request_date > max_date:
+        raise ValueError(
+            f"Cannot create time off requests more than {policy['future_days']} day(s) in the future"
+        )
+
+    # Advance notice: future requests must be at least N days out.
+    if policy["advance_notice_days"] > 0 and payload.request_date > today:
+        min_future = today + timedelta(days=policy["advance_notice_days"])
+        if payload.request_date < min_future:
+            raise ValueError(
+                f"Time off requires at least {policy['advance_notice_days']} day(s) advance notice."
+            )
+
+    # Overlap prevention (unless tenant allows it)
+    if not policy["allow_overlap"]:
+        overlap_count = await db.scalar(
+            select(sa_func.count(TimeOffRequest.id)).where(
+                (TimeOffRequest.user_id == user_id)
+                & (TimeOffRequest.request_date == payload.request_date)
+                & (TimeOffRequest.status != TimeOffStatus.REJECTED)
+            )
+        )
+        if overlap_count and overlap_count > 0:
+            raise ValueError(
+                f"A time off request already exists for {payload.request_date.isoformat()}"
+            )
+
+    # Max consecutive days (0 = no limit).
+    if policy["max_consecutive_days"] > 0:
+        run_length = await _consecutive_run_length(db, user_id, payload.request_date)
+        if run_length > policy["max_consecutive_days"]:
+            raise ValueError(
+                f"This would create a {run_length}-day run; maximum is {policy['max_consecutive_days']} consecutive day(s)."
+            )
 
     item = TimeOffRequest(
         user_id=user_id,

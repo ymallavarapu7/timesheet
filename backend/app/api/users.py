@@ -246,7 +246,21 @@ async def get_tenant_settings(
 
 # Keys readable by any authenticated user in the tenant. These drive client-side
 # UI behavior that every submitter needs to know about (e.g. date picker caps).
-PUBLIC_TENANT_SETTING_KEYS = {"allow_future_entries"}
+PUBLIC_TENANT_SETTING_KEYS = {
+    "time_entry_past_days",
+    "time_entry_future_days",
+    "max_hours_per_entry",
+    "max_hours_per_day",
+    "max_hours_per_week",
+    "min_submit_weekly_hours",
+    "allow_partial_week_submit",
+    "week_start_day",
+    "time_off_past_days",
+    "time_off_future_days",
+    "time_off_advance_notice_days",
+    "time_off_max_consecutive_days",
+    "allow_overlapping_time_off",
+}
 
 
 @router.get("/tenant-settings/public", response_model=dict)

@@ -180,14 +180,18 @@ export const TopNavBar: React.FC = () => {
     try { await markNotificationRead.mutateAsync(notificationId); } catch { /* ignore */ }
   };
 
-  /* ── Flatten sections for rendering ── */
+  /* ── Flatten sections for rendering ──
+     Workspace is always rendered inline (it's the user's primary navigation;
+     a dropdown for 2-4 items adds a click for no gain). Other sections stay
+     collapsed in a dropdown. */
   const renderNavItems = (onNavigate?: () => void) =>
-    sections.map((section) => {
-      if (section.items.length === 1) {
-        const item = section.items[0];
-        return <SingleNavLink key={item.to} to={item.to} label={item.label} onClick={onNavigate} />;
+    sections.flatMap((section) => {
+      if (section.items.length === 1 || section.title === 'Workspace') {
+        return section.items.map((item) => (
+          <SingleNavLink key={item.to} to={item.to} label={item.label} onClick={onNavigate} />
+        ));
       }
-      return <NavDropdown key={section.title} section={section} onNavigate={onNavigate} />;
+      return [<NavDropdown key={section.title} section={section} onNavigate={onNavigate} />];
     });
 
   return (

@@ -17,8 +17,33 @@ from app.services.activity import (
     record_activity_events,
 )
 
-MAX_FAILED_ATTEMPTS = 5
-LOCKOUT_DURATION_MINUTES = 15
+DEFAULT_MAX_FAILED_ATTEMPTS = 5
+DEFAULT_LOCKOUT_DURATION_MINUTES = 15
+
+
+async def _lockout_policy(db: AsyncSession, tenant_id: int | None) -> tuple[int, int]:
+    """(max_attempts, lockout_minutes) — per tenant with defaults."""
+    if tenant_id is None:
+        return DEFAULT_MAX_FAILED_ATTEMPTS, DEFAULT_LOCKOUT_DURATION_MINUTES
+    from app.models.tenant_settings import TenantSettings
+    from sqlalchemy import select as _select
+    result = await db.execute(
+        _select(TenantSettings.key, TenantSettings.value).where(
+            TenantSettings.tenant_id == tenant_id,
+            TenantSettings.key.in_(("max_failed_login_attempts", "lockout_duration_minutes")),
+        )
+    )
+    rows = {row[0]: row[1] for row in result.all()}
+    def _i(v, d):
+        try:
+            n = int(str(v).strip())
+            return max(1, n)
+        except Exception:
+            return d
+    return (
+        _i(rows.get("max_failed_login_attempts"), DEFAULT_MAX_FAILED_ATTEMPTS),
+        _i(rows.get("lockout_duration_minutes"), DEFAULT_LOCKOUT_DURATION_MINUTES),
+    )
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
@@ -113,10 +138,11 @@ async def login(
 
     # Verify password
     if not verify_password(login_request.password, user.hashed_password):
+        max_attempts, lockout_minutes = await _lockout_policy(db, user.tenant_id)
         user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
-        locked = user.failed_login_attempts >= MAX_FAILED_ATTEMPTS
+        locked = user.failed_login_attempts >= max_attempts
         if locked:
-            user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+            user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=lockout_minutes)
         db.add(user)
         await db.commit()
 

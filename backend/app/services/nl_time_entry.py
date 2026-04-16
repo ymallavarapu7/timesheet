@@ -215,7 +215,7 @@ async def parse_natural_language_entry(
         # Validate project_id
         pid = entry.get("project_id")
         if pid is None:
-            errors.append(entry.get("error") or "Could not determine project. Please specify which project.")
+            errors.append("Could not determine project. Please specify which project.")
         else:
             # Verify project exists in user's context
             matching_project = next((p for p in context if p["project_id"] == pid), None)
@@ -243,7 +243,7 @@ async def parse_natural_language_entry(
         # Validate hours
         hours = entry.get("hours")
         if hours is None:
-            errors.append(entry.get("error") or "Please specify hours worked or a time range.")
+            errors.append("Please specify hours worked or a time range.")
         else:
             try:
                 hours = float(hours)
@@ -278,7 +278,15 @@ async def parse_natural_language_entry(
             "hours": round(hours, 2) if hours else None,
             "description": entry.get("description", ""),
             "is_billable": entry.get("is_billable", True),
-            "error": "; ".join(errors) if errors else None,
+            # One user-facing message regardless of how many fields failed to parse.
+            # The specific field errors stay useful for logging/debugging but we
+            # don't surface a list to the user.
+            "error": (
+                "Couldn't understand that entry. Try something like "
+                "\"worked on <Project name> for 3 hours yesterday\" "
+                "or \"worked on <Project name> from 3pm to 6pm yesterday\"."
+                if errors else None
+            ),
             "alternatives": entry.get("alternatives", []),
         }
         validated.append(validated_entry)

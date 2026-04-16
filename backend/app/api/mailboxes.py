@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel as PydanticBaseModel
 from fastapi.responses import HTMLResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -331,6 +331,31 @@ async def _exchange_microsoft_oauth_code(code: str) -> dict:
     }
 
 
+async def _enforce_mailbox_cap(session: AsyncSession, tenant_id: int) -> None:
+    """Block creation of a new mailbox if the tenant is at its max_mailboxes cap.
+    Pass-through when the cap is null (unlimited)."""
+    from app.models.tenant import Tenant
+    tenant_row = await session.execute(
+        select(Tenant.max_mailboxes).where(Tenant.id == tenant_id)
+    )
+    cap = tenant_row.scalar_one_or_none()
+    if cap is None:
+        return
+    active_count = await session.scalar(
+        select(func.count(Mailbox.id)).where(
+            (Mailbox.tenant_id == tenant_id) & (Mailbox.is_active.is_(True))
+        )
+    )
+    if (active_count or 0) >= cap:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Mailbox limit reached for this tenant ({cap}). "
+                "Contact the platform admin to raise the limit."
+            ),
+        )
+
+
 async def _upsert_oauth_mailbox(
     session: AsyncSession,
     tenant_id: int,
@@ -354,6 +379,9 @@ async def _upsert_oauth_mailbox(
     default_label = f"{defaults['label_prefix']} - {oauth_email}"
 
     if mailbox is None:
+        # Only enforce the cap on truly new mailboxes — reconnecting an existing
+        # OAuth email to refresh tokens doesn't count as a new mailbox.
+        await _enforce_mailbox_cap(session, tenant_id)
         mailbox = Mailbox(
             tenant_id=tenant_id,
             label=default_label,
@@ -409,6 +437,7 @@ async def create_tenant_mailbox(
     session: AsyncSession = Depends(get_db),
 ) -> dict:
     await _validate_linked_client(session, current_user.tenant_id, body.linked_client_id)
+    await _enforce_mailbox_cap(session, current_user.tenant_id)
     mailbox = await create_mailbox(
         session,
         current_user.tenant_id,

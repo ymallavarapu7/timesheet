@@ -83,10 +83,12 @@ async def create_time_off_item(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role.value not in ["EMPLOYEE", "MANAGER"]:
+    # Any tenanted user can request their own time off. Platform admins aren't
+    # scoped to a tenant and have no reason to create time-off here.
+    if current_user.tenant_id is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only employees and managers can create time off requests",
+            detail="Platform admins cannot create time off requests.",
         )
 
     # Prevent creating time-off on a date that already has time entries

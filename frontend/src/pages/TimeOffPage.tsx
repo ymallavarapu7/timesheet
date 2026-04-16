@@ -4,20 +4,16 @@ import { Loading, Error, EmptyState, SearchInput } from '@/components';
 import {
   useCreateTimeOffRequest,
   useDeleteTimeOffRequest,
+  useLeaveTypes,
   useSubmitTimeOffRequests,
   useTimeOffRequests,
   useUpdateTimeOffRequest,
 } from '@/hooks';
-import { TimeOffRequest, TimeOffStatus, TimeOffType } from '@/types';
+import { TimeOffRequest, TimeOffStatus, TimeOffType, LeaveType } from '@/types';
 import { ArrowDown, ArrowUp, Plus } from 'lucide-react';
 
-const TIME_OFF_CONFIG: Record<TimeOffType, { label: string; defaultHours: number; placeholder: string }> = {
-  SICK_DAY: { label: 'Sick Day', defaultHours: 8, placeholder: 'Sick leave reason' },
-  PTO: { label: 'Paid Time Off (PTO)', defaultHours: 8, placeholder: 'PTO reason' },
-  HALF_DAY: { label: 'Half Day Leave', defaultHours: 4, placeholder: 'Half-day leave reason' },
-  HOURLY_PERMISSION: { label: 'Hourly Permission', defaultHours: 2, placeholder: 'Reason for hourly permission' },
-  OTHER_LEAVE: { label: 'Other Leave', defaultHours: 8, placeholder: 'Leave details' },
-};
+const resolveLabel = (types: LeaveType[], code: string): string =>
+  types.find((t) => t.code === code)?.label || code;
 
 export const TimeOffPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -73,13 +69,21 @@ export const TimeOffPage: React.FC = () => {
   );
 
   const { data: requests, isLoading, error } = useTimeOffRequests(queryParams);
+  const { data: leaveTypes = [] } = useLeaveTypes();
+  // Default the leave_type picker to the first active type once they load.
+  useEffect(() => {
+    if (leaveTypes.length > 0 && !leaveTypes.some((t) => t.code === formData.leave_type)) {
+      setFormData((prev) => ({ ...prev, leave_type: leaveTypes[0].code }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leaveTypes]);
 
   const searchSuggestions = useMemo(() => {
     const set = new Set<string>();
-    Object.values(TIME_OFF_CONFIG).forEach((c) => set.add(c.label));
+    leaveTypes.forEach((t) => set.add(t.label));
     (requests ?? []).forEach((r: TimeOffRequest) => { if (r.reason) set.add(r.reason); });
     return Array.from(set).filter(Boolean).sort();
-  }, [requests]);
+  }, [requests, leaveTypes]);
   const createMutation = useCreateTimeOffRequest();
   const submitMutation = useSubmitTimeOffRequests();
   const updateMutation = useUpdateTimeOffRequest(editingId || 0);
@@ -191,7 +195,7 @@ export const TimeOffPage: React.FC = () => {
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="font-medium">{entry.request_date}</p>
-            <p className="text-sm text-muted-foreground">{TIME_OFF_CONFIG[entry.leave_type].label}</p>
+            <p className="text-sm text-muted-foreground">{resolveLabel(leaveTypes, entry.leave_type)}</p>
             <p className="text-sm mt-2">{entry.reason}</p>
             <p className="text-sm font-medium mt-1">{entry.hours} hours</p>
             {entry.rejection_reason && (
@@ -281,9 +285,9 @@ export const TimeOffPage: React.FC = () => {
             className="px-3 py-2 border rounded"
           >
             <option value="ALL">All Types</option>
-            {Object.keys(TIME_OFF_CONFIG).map((type) => (
-              <option key={type} value={type}>
-                {TIME_OFF_CONFIG[type as TimeOffType].label}
+            {leaveTypes.map((type) => (
+              <option key={type.code} value={type.code}>
+                {type.label}
               </option>
             ))}
           </select>
@@ -325,19 +329,14 @@ export const TimeOffPage: React.FC = () => {
                     value={formData.leave_type}
                     onChange={(e) => {
                       const leave_type = e.target.value as TimeOffType;
-                      setFormData((prev) => ({
-                        ...prev,
-                        leave_type,
-                        hours: TIME_OFF_CONFIG[leave_type].defaultHours,
-                        reason: prev.reason || TIME_OFF_CONFIG[leave_type].placeholder,
-                      }));
+                      setFormData((prev) => ({ ...prev, leave_type }));
                     }}
                     className="w-full px-3 py-2 border rounded"
                     required
                   >
-                    {Object.entries(TIME_OFF_CONFIG).map(([value, config]) => (
-                      <option key={value} value={value}>
-                        {config.label}
+                    {leaveTypes.map((t) => (
+                      <option key={t.code} value={t.code}>
+                        {t.label}
                       </option>
                     ))}
                   </select>
@@ -389,7 +388,7 @@ export const TimeOffPage: React.FC = () => {
                 <textarea
                   value={formData.reason}
                   onChange={(e) => setFormData({ ...formData, reason: e.target.value })}
-                  placeholder={TIME_OFF_CONFIG[formData.leave_type].placeholder}
+                  placeholder={`${resolveLabel(leaveTypes, formData.leave_type)} reason`}
                   className="w-full px-3 py-2 border rounded"
                   rows={3}
                   required
@@ -438,9 +437,9 @@ export const TimeOffPage: React.FC = () => {
                     className="w-full px-3 py-2 border rounded"
                     required
                   >
-                    {Object.entries(TIME_OFF_CONFIG).map(([value, config]) => (
-                      <option key={value} value={value}>
-                        {config.label}
+                    {leaveTypes.map((t) => (
+                      <option key={t.code} value={t.code}>
+                        {t.label}
                       </option>
                     ))}
                   </select>

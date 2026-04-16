@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowRight, ChevronDown, ChevronRight, RefreshCw, ScanSearch, Search, Trash2 } from 'lucide-react';
+import { ArrowRight, ChevronDown, ChevronRight, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import axios from 'axios';
@@ -15,7 +15,7 @@ import {
   useDeleteIngestedEmail,
   useFetchJobStatus,
   useIngestionTimesheets,
-  useReapplyIngestionMappings,
+  useMailboxes,
   useReprocessIngestionEmail,
   useReprocessSkippedEmails,
   useSkippedEmails,
@@ -267,16 +267,24 @@ export const InboxPage: React.FC = () => {
   const [statusTone, setStatusTone] = React.useState<'success' | 'danger' | 'info'>('info');
 
   const [showDiagnostics, setShowDiagnostics] = React.useState(false);
-  const [showMoreActions, setShowMoreActions] = React.useState(false);
   const [showTechnicalDetails, setShowTechnicalDetails] = React.useState(false);
   const [selectedEmailIds, setSelectedEmailIds] = useState<Set<number>>(new Set());
 
   const queryClient = useQueryClient();
   const triggerFetch = useTriggerFetchEmails();
+  const { data: mailboxes = [] } = useMailboxes();
+  const lastFetchedAt = React.useMemo(() => {
+    const stamps = mailboxes
+      .map((m) => m.last_fetched_at)
+      .filter((s): s is string => Boolean(s))
+      .map((s) => new Date(s).getTime())
+      .filter((n) => Number.isFinite(n));
+    if (stamps.length === 0) return null;
+    return new Date(Math.max(...stamps));
+  }, [mailboxes]);
   const reprocessSkipped = useReprocessSkippedEmails();
   const reprocessEmail = useReprocessIngestionEmail();
   const deleteEmail = useDeleteIngestedEmail();
-  const reapplyMappings = useReapplyIngestionMappings();
   const bulkReprocessEmails = useBulkReprocessEmails();
   const bulkDeleteEmails = useBulkDeleteIngestedEmails();
   const { data: fetchStatus } = useFetchJobStatus(activeJobId, Boolean(activeJobId));
@@ -354,7 +362,6 @@ export const InboxPage: React.FC = () => {
     reprocessSkipped.isPending ||
     reprocessEmail.isPending ||
     deleteEmail.isPending ||
-    reapplyMappings.isPending ||
     bulkReprocessEmails.isPending ||
     bulkDeleteEmails.isPending;
 
@@ -449,17 +456,6 @@ export const InboxPage: React.FC = () => {
     }
   };
 
-  const handleReapplyMappings = async () => {
-    try {
-      const result = await reapplyMappings.mutateAsync();
-      setStatusTone('success');
-      setStatusMessage(`Re-applied mappings across ${result.checked} staged timesheets. Updated ${result.updated}.`);
-    } catch (error) {
-      setStatusTone('danger');
-      setStatusMessage(getApiErrorMessage(error, 'Unable to re-apply mappings.'));
-    }
-  };
-
   const toggleEmailId = (emailId: number) => {
     setSelectedEmailIds((prev) => {
       const next = new Set(prev);
@@ -529,47 +525,17 @@ export const InboxPage: React.FC = () => {
       <div className="flex flex-col justify-between gap-4 xl:flex-row xl:items-start">
         <div>
           <h1 className="text-[20px] font-semibold text-foreground">Inbox</h1>
-          <p className="mt-2 text-sm text-muted-foreground">Review and process incoming timesheets.</p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Review and process incoming timesheets.
+            {lastFetchedAt && (
+              <>
+                {' '}<span className="text-muted-foreground/80">· Last fetched {lastFetchedAt.toLocaleString()}</span>
+              </>
+            )}
+          </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setShowMoreActions((current) => !current)}
-              className="action-button-secondary"
-              disabled={isBusy}
-            >
-              More Actions
-              <ChevronDown className="ml-2 h-4 w-4" />
-            </button>
-            {showMoreActions ? (
-              <div className="absolute right-0 top-[calc(100%+8px)] z-20 min-w-[220px] rounded-xl border border-border bg-background p-2 shadow-lg">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowMoreActions(false);
-                    void handleReapplyMappings();
-                  }}
-                  className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-foreground transition hover:bg-muted"
-                >
-                  <RefreshCw className="mr-2 h-4 w-4" />
-                  {reapplyMappings.isPending ? 'Applying mappings...' : 'Re-apply mappings'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowMoreActions(false);
-                    void handleReprocessSkipped();
-                  }}
-                  className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-foreground transition hover:bg-muted"
-                >
-                  <ScanSearch className="mr-2 h-4 w-4" />
-                  {reprocessSkipped.isPending ? 'Queueing skipped emails...' : 'Reprocess skipped emails'}
-                </button>
-              </div>
-            ) : null}
-          </div>
           <button
             type="button"
             onClick={handleFetch}
@@ -964,20 +930,20 @@ export const InboxPage: React.FC = () => {
                           {formatShortDate(rowTarget.received_at || rowTarget.created_at)}
                         </td>
                         <td className="px-4 py-5 align-top text-right">
-                          <div className="flex justify-end gap-2 opacity-0 transition group-hover:opacity-100">
+                          <div className="flex justify-end gap-2">
                             <button
                               type="button"
                               onClick={(event) => {
                                 event.stopPropagation();
-                                const attachmentIds = group.timesheets
-                                  .map((timesheet) => timesheet.attachment_id)
-                                  .filter((attachmentId): attachmentId is number => Boolean(attachmentId));
-                                void handleReprocessEmail(rowTarget.email_id, attachmentIds.length ? attachmentIds : undefined);
+                                if (!canOpenReview) return;
+                                navigate(`/ingestion/review/${rowTarget.id}`);
                               }}
-                              className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-muted text-foreground transition hover:bg-slate-200"
-                              aria-label={`Reprocess email ${rowTarget.email_id}`}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-muted text-foreground transition hover:bg-muted/70"
+                              aria-label={`Open submission ${rowTarget.id}`}
+                              title="Open"
+                              disabled={!canOpenReview}
                             >
-                              <RefreshCw className="h-4 w-4" />
+                              <ArrowRight className="h-4 w-4" />
                             </button>
                             <button
                               type="button"
@@ -990,31 +956,6 @@ export const InboxPage: React.FC = () => {
                               title="Delete"
                             >
                               <Trash2 className="h-4 w-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void handleDeleteEmail(rowTarget.email_id, rowTarget.subject, true);
-                              }}
-                              className="inline-flex h-7 items-center justify-center rounded-md bg-muted px-1.5 text-[10px] font-medium text-foreground transition hover:bg-amber-50 hover:text-amber-700"
-                              aria-label={`Delete and refetch email ${rowTarget.email_id}`}
-                              title="Delete & re-fetch on next Fetch Emails"
-                            >
-                              Re-fetch
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                if (!canOpenReview) return;
-                                navigate(`/ingestion/review/${rowTarget.id}`);
-                              }}
-                              className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-muted text-foreground transition hover:bg-slate-200"
-                              aria-label={`Open submission ${rowTarget.id}`}
-                              disabled={!canOpenReview}
-                            >
-                              <ArrowRight className="h-4 w-4" />
                             </button>
                           </div>
                         </td>
@@ -1087,15 +1028,6 @@ export const InboxPage: React.FC = () => {
                     >
                       <Trash2 className="mr-2 h-4 w-4" />
                       Delete
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteEmail(email.id, email.subject, true)}
-                      className="action-button-secondary"
-                      disabled={isBusy}
-                    >
-                      <RefreshCw className="mr-2 h-4 w-4" />
-                      Delete &amp; Re-fetch
                     </button>
                   </div>
                 </div>

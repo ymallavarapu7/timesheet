@@ -97,7 +97,19 @@ export interface Task {
 
 // TimeEntry types
 export type TimeEntryStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED';
-export type TimeOffType = 'SICK_DAY' | 'PTO' | 'HALF_DAY' | 'HOURLY_PERMISSION' | 'OTHER_LEAVE';
+/** Leave-type code. Historically a fixed enum; now tenants define their own. */
+export type TimeOffType = string;
+
+export interface LeaveType {
+  id: number;
+  tenant_id: number;
+  code: string;
+  label: string;
+  color: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
 export type TimeOffStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED';
 
 export interface TimeEntry {
@@ -112,6 +124,7 @@ export interface TimeEntry {
   status: TimeEntryStatus;
   submitted_at: string | null;
   approved_by: number | null;
+  approved_by_name?: string | null;
   approved_at: string | null;
   rejection_reason: string | null;
   quickbooks_time_activity_id: string | null;
@@ -294,6 +307,7 @@ export interface Tenant {
   slug: string;
   status: TenantStatus;
   ingestion_enabled: boolean;
+  max_mailboxes?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -444,6 +458,14 @@ export interface SkippedEmail {
 export interface SkippedEmailOverview {
   count: number;
   emails: SkippedEmail[];
+}
+
+export interface Department {
+  id: number;
+  tenant_id: number;
+  name: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface SpreadsheetPreviewBlock {

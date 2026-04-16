@@ -13,6 +13,7 @@ import {
   usePendingTimeOffApprovals,
   useApproveTimeOffRequest,
   useRejectTimeOffRequest,
+  useWeekStartsOn,
 } from '@/hooks';
 import type { HistoryGroup } from '@/api/endpoints';
 import { TimeEntry, TimeOffRequest } from '@/types';
@@ -33,11 +34,11 @@ type WeeklyTimesheetGroup = {
 
 const parseEntryDate = (value: string) => parseISO(value);
 
-const groupTimesheetsByEmployeeWeek = (items: TimeEntry[]): WeeklyTimesheetGroup[] => {
+const groupTimesheetsByEmployeeWeek = (items: TimeEntry[], weekStartsOn: 0 | 1): WeeklyTimesheetGroup[] => {
   const grouped = new Map<string, WeeklyTimesheetGroup>();
 
   items.forEach((item) => {
-    const weekStartDate = startOfWeek(parseEntryDate(item.entry_date), { weekStartsOn: 1 });
+    const weekStartDate = startOfWeek(parseEntryDate(item.entry_date), { weekStartsOn });
     const weekEndDate = new Date(weekStartDate);
     weekEndDate.setDate(weekEndDate.getDate() + 6);
     const weekStart = format(weekStartDate, 'yyyy-MM-dd');
@@ -133,10 +134,12 @@ export const ApprovalsPage: React.FC = () => {
   const approveTimeOffMutation = useApproveTimeOffRequest();
   const rejectTimeOffMutation = useRejectTimeOffRequest();
 
+  const weekStartsOn = useWeekStartsOn();
+
   // All grouping / memos must be BEFORE early returns (Rules of Hooks)
   const timesheetWeeklyGroups = useMemo(
-    () => groupTimesheetsByEmployeeWeek((timeEntries ?? []) as TimeEntry[]),
-    [timeEntries]
+    () => groupTimesheetsByEmployeeWeek((timeEntries ?? []) as TimeEntry[], weekStartsOn),
+    [timeEntries, weekStartsOn]
   );
   const employeeOverview: EmployeeOverview[] = useMemo(() => {
     const map = new Map<number, EmployeeOverview>();

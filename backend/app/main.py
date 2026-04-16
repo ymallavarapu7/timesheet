@@ -11,7 +11,9 @@ from app.api import (
     auth,
     clients,
     dashboard,
+    departments,
     ingestion,
+    leave_types,
     mailboxes,
     mappings,
     notifications,
@@ -89,6 +91,8 @@ async def add_security_headers(request: Request, call_next):
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(clients.router)
+app.include_router(departments.router)
+app.include_router(leave_types.router)
 app.include_router(projects.router)
 app.include_router(tasks.router)
 app.include_router(timesheets.router)

@@ -15,21 +15,6 @@ import secrets
 import string
 
 
-DEPARTMENT_FAMILY_MAP = {
-    "engineering": "engineering",
-    "software engineering": "engineering",
-    "operations": "operations",
-    "infrastructure": "operations",
-    "qa & testing": "engineering",
-    "qa": "engineering",
-    "administration": "operations",
-    "product": "product",
-    "product & innovation": "product",
-    "devops": "product",
-    "executive": "executive",
-}
-
-
 async def get_user_by_id(db: AsyncSession, user_id: int) -> Optional[User]:
     """Get user by ID."""
     result = await db.execute(
@@ -92,10 +77,6 @@ async def _sync_user_assignments(
         if user.tenant_id is not None and manager.tenant_id != user.tenant_id:
             raise ValueError("Selected supervisor must belong to the same tenant")
 
-        if not _is_department_compatible(user.department, manager.department, manager.role):
-            raise ValueError(
-                "Selected supervisor must be in a compatible department family unless the supervisor is CEO")
-
         db.add(EmployeeManagerAssignment(
             employee_id=user.id, manager_id=manager_id))
 
@@ -146,31 +127,11 @@ def _allowed_manager_roles_for_role(role: UserRole) -> set[UserRole]:
     if role == UserRole.SENIOR_MANAGER:
         return {UserRole.CEO}
     if role == UserRole.ADMIN:
-        return {UserRole.MANAGER, UserRole.SENIOR_MANAGER}
+        # Admins are employees with elevated permissions; their reporting chain
+        # follows normal org lines — any people-manager role, including another
+        # admin, is a valid supervisor.
+        return {UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO, UserRole.ADMIN}
     return set()
-
-
-def _department_family(value: Optional[str]) -> Optional[str]:
-    normalized = (value or "").strip().lower()
-    if not normalized:
-        return None
-    return DEPARTMENT_FAMILY_MAP.get(normalized, normalized)
-
-
-def _is_department_compatible(
-    user_department: Optional[str],
-    manager_department: Optional[str],
-    manager_role: UserRole,
-) -> bool:
-    if manager_role == UserRole.CEO:
-        return True
-
-    user_family = _department_family(user_department)
-    manager_family = _department_family(manager_department)
-    if not user_family or not manager_family:
-        return True
-
-    return user_family == manager_family
 
 
 def _generate_default_password() -> str:

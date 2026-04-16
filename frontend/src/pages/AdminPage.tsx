@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import { format, startOfMonth, endOfMonth } from 'date-fns';
-import { PlusCircle, Pencil, Trash2, ShieldCheck, UserCircle, X, Clock, Paperclip } from 'lucide-react';
+import { PlusCircle, Pencil, Trash2, ShieldCheck, UserCircle, X, Clock, Paperclip, Building2 } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
 import { Loading, Error, OrganizationalChart, SearchInput } from '@/components';
 import { BulkSelectBar } from '@/components/ui/BulkSelectBar';
-import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useResetUserPassword, useBulkDeleteUsers, useAuth, useIsPlatformAdmin, useProjects, useNotifications, useUnlockUserTimesheet } from '@/hooks';
+import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useResetUserPassword, useBulkDeleteUsers, useAuth, useIsPlatformAdmin, useProjects, useNotifications, useUnlockUserTimesheet, useDepartments, useCreateDepartment, useDeleteDepartment, useLeaveTypes, useCreateLeaveType, useUpdateLeaveType, useDeleteLeaveType } from '@/hooks';
 import { KeyRound } from 'lucide-react';
 import { timeentriesAPI, ingestionAPI } from '@/api';
 import { IngestionTimesheetSummary, Project, TimeEntry, User, UserRole } from '@/types';
@@ -43,41 +43,19 @@ const getAllowedSupervisorRoles = (role: UserRole): UserRole[] => {
   if (role === 'EMPLOYEE') return ['MANAGER', 'SENIOR_MANAGER', 'CEO', 'ADMIN'];
   if (role === 'MANAGER') return ['SENIOR_MANAGER', 'CEO'];
   if (role === 'SENIOR_MANAGER') return ['CEO'];
-  if (role === 'ADMIN') return ['MANAGER', 'SENIOR_MANAGER'];
+  if (role === 'ADMIN') return ['MANAGER', 'SENIOR_MANAGER', 'CEO', 'ADMIN'];
   return [];
 };
 
 const normalizeDepartment = (value?: string | null): string => (value ?? '').trim().toLowerCase();
 
-const DEPARTMENT_FAMILY_MAP: Record<string, string> = {
-  'engineering': 'engineering',
-  'software engineering': 'engineering',
-  'operations': 'operations',
-  'infrastructure': 'operations',
-  'qa & testing': 'engineering',
-  'qa': 'engineering',
-  'administration': 'operations',
-  'product': 'product',
-  'product & innovation': 'product',
-  'devops': 'product',
-  'executive': 'executive',
-};
-
-const departmentFamily = (value?: string | null): string => {
-  const normalized = normalizeDepartment(value);
-  return DEPARTMENT_FAMILY_MAP[normalized] ?? normalized;
-};
-
 const isSupervisorCompatibleForRoleAndDepartment = (
   userRole: UserRole,
-  userDepartment: string,
+  _userDepartment: string,
   supervisor: User,
 ): boolean => {
   const allowedSupervisorRoles = getAllowedSupervisorRoles(userRole);
-  if (!allowedSupervisorRoles.includes(supervisor.role)) return false;
-  if (supervisor.role === 'CEO') return true;
-  if (!userDepartment) return true;
-  return departmentFamily(supervisor.department) === departmentFamily(userDepartment);
+  return allowedSupervisorRoles.includes(supervisor.role);
 };
 
 const roleBadge = (role: UserRole) => {
@@ -137,6 +115,8 @@ export const AdminPage: React.FC = () => {
   const deleteUser = useDeleteUser();
   const resetPassword = useResetUserPassword();
   const bulkDeleteUsers = useBulkDeleteUsers();
+  const { data: departments = [] } = useDepartments();
+  const createDepartment = useCreateDepartment();
   const [selectedUserIds, setSelectedUserIds] = useState<Set<number>>(new Set());
   const [resetPasswordUserId, setResetPasswordUserId] = useState<number | null>(null);
   const [resetPasswordValue, setResetPasswordValue] = useState('');
@@ -203,12 +183,20 @@ export const AdminPage: React.FC = () => {
   });
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [showNoProjectModal, setShowNoProjectModal] = useState(false);
-  const [newUserCredentials, setNewUserCredentials] = useState<{ email: string; password: string } | null>(null);
-  const [credentialsCopied, setCredentialsCopied] = useState(false);
+  const [createdUserEmail, setCreatedUserEmail] = useState<string | null>(null);
   const userListSectionRef = React.useRef<HTMLDivElement | null>(null);
 
   // Team Timesheets tab state
-  const [activeTab, setActiveTab] = useState<'users' | 'timesheets'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'timesheets' | 'departments' | 'leave_types'>('users');
+  const deleteDepartment = useDeleteDepartment();
+  const [newDepartmentName, setNewDepartmentName] = useState('');
+
+  const { data: leaveTypesAll = [] } = useLeaveTypes(true);
+  const createLeaveType = useCreateLeaveType();
+  const updateLeaveType = useUpdateLeaveType();
+  const deleteLeaveType = useDeleteLeaveType();
+  const [newLeaveTypeLabel, setNewLeaveTypeLabel] = useState('');
+  const [newLeaveTypeColor, setNewLeaveTypeColor] = useState('#6b7280');
   const [tsEmployeeId, setTsEmployeeId] = useState<number | ''>('');
   const [tsStartDate, setTsStartDate] = useState(format(startOfMonth(new Date()), 'yyyy-MM-dd'));
   const [tsEndDate, setTsEndDate] = useState(format(endOfMonth(new Date()), 'yyyy-MM-dd'));
@@ -293,15 +281,9 @@ export const AdminPage: React.FC = () => {
   if (error || projectsError) return <Error message="Failed to load user management data" />;
 
   const allowedSupervisorRoles = getAllowedSupervisorRoles(form.role);
-  const formDepartment = form.role === 'ADMIN' ? '' : normalizeDepartment(form.department);
   const supervisors = (users ?? [])
     .filter((u) => allowedSupervisorRoles.includes(u.role))
     .filter((u) => u.id !== editingUser?.id)
-    .filter((u) => {
-      if (u.role === 'CEO') return true;
-      if (!formDepartment) return true;
-      return departmentFamily(u.department) === departmentFamily(formDepartment);
-    })
     .sort((a, b) => a.full_name.localeCompare(b.full_name));
   const usersByManager = (users ?? []).reduce<Record<number, User[]>>((acc, user) => {
     if (!user.manager_id) return acc;
@@ -492,9 +474,9 @@ export const AdminPage: React.FC = () => {
           manager_id: form.manager_id,
           project_ids: form.role === 'EMPLOYEE' ? form.project_ids : [],
         });
-        // Show credentials dialog so admin can relay them to the new user
-        setNewUserCredentials({ email: normalizedEmail, password: result.temporary_password });
-        setCredentialsCopied(false);
+        // Confirm to the admin that the verification email is on its way.
+        void result; // temporary_password is intentionally not surfaced — the user sets their own via the verification link.
+        setCreatedUserEmail(normalizedEmail);
       }
       await refetchUsers();
       closeModal();
@@ -599,6 +581,26 @@ export const AdminPage: React.FC = () => {
             }`}
           >
             <Clock className="w-4 h-4" />Team Timesheets
+          </button>
+          <button
+            onClick={() => setActiveTab('departments')}
+            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition ${
+              activeTab === 'departments'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <Building2 className="w-4 h-4" />Departments
+          </button>
+          <button
+            onClick={() => setActiveTab('leave_types')}
+            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition ${
+              activeTab === 'leave_types'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <Paperclip className="w-4 h-4" />Leave Types
           </button>
         </div>
 
@@ -878,6 +880,141 @@ export const AdminPage: React.FC = () => {
                 )}
               </div>
             </div>
+          </div>
+        )}
+
+        {activeTab === 'departments' && (
+          <div className="rounded-xl border border-border bg-card shadow-sm p-6 max-w-2xl">
+            <div className="mb-4">
+              <h3 className="text-base font-semibold">Departments</h3>
+              <p className="text-sm text-muted-foreground mt-0.5">Departments shown in the user form dropdown.</p>
+            </div>
+            <form
+              className="flex gap-2 mb-4"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const name = newDepartmentName.trim();
+                if (!name) return;
+                createDepartment.mutate(name, {
+                  onSuccess: () => setNewDepartmentName(''),
+                  onError: () => alert('Failed to create department (it may already exist).'),
+                });
+              }}
+            >
+              <input
+                value={newDepartmentName}
+                onChange={(e) => setNewDepartmentName(e.target.value)}
+                placeholder="New department name"
+                className="field-input flex-1"
+              />
+              <button type="submit" className="action-button text-sm" disabled={createDepartment.isPending || !newDepartmentName.trim()}>
+                Add
+              </button>
+            </form>
+            {departments.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No departments yet.</p>
+            ) : (
+              <ul className="divide-y divide-border">
+                {departments.map((d) => (
+                  <li key={d.id} className="flex items-center justify-between py-2 text-sm">
+                    <span className="text-foreground">{d.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!window.confirm(`Delete department "${d.name}"? Users currently assigned will keep the value as a legacy reference.`)) return;
+                        deleteDepartment.mutate(d.id);
+                      }}
+                      className="text-xs text-destructive hover:underline"
+                      disabled={deleteDepartment.isPending}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'leave_types' && (
+          <div className="rounded-xl border border-border bg-card shadow-sm p-6 max-w-2xl">
+            <div className="mb-4">
+              <h3 className="text-base font-semibold">Leave types</h3>
+              <p className="text-sm text-muted-foreground mt-0.5">Types of time off employees can request. Deactivate to retire a type without deleting historical requests.</p>
+            </div>
+            <form
+              className="flex gap-2 mb-4"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const label = newLeaveTypeLabel.trim();
+                if (!label) return;
+                createLeaveType.mutate(
+                  { label, color: newLeaveTypeColor },
+                  {
+                    onSuccess: () => {
+                      setNewLeaveTypeLabel('');
+                      setNewLeaveTypeColor('#6b7280');
+                    },
+                    onError: () => alert('Failed to create leave type (code may already exist).'),
+                  },
+                );
+              }}
+            >
+              <input
+                value={newLeaveTypeLabel}
+                onChange={(e) => setNewLeaveTypeLabel(e.target.value)}
+                placeholder="New leave type name (e.g. Bereavement)"
+                className="field-input flex-1"
+              />
+              <input
+                type="color"
+                value={newLeaveTypeColor}
+                onChange={(e) => setNewLeaveTypeColor(e.target.value)}
+                className="h-9 w-12 cursor-pointer rounded border border-border"
+                title="Pick a color"
+              />
+              <button type="submit" className="action-button text-sm" disabled={createLeaveType.isPending || !newLeaveTypeLabel.trim()}>
+                Add
+              </button>
+            </form>
+            {leaveTypesAll.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No leave types yet.</p>
+            ) : (
+              <ul className="divide-y divide-border">
+                {leaveTypesAll.map((lt) => (
+                  <li key={lt.id} className="flex items-center gap-3 py-2 text-sm">
+                    <span className="inline-block h-3 w-3 rounded-full shrink-0" style={{ backgroundColor: lt.color }} />
+                    <span className={`flex-1 ${lt.is_active ? 'text-foreground' : 'text-muted-foreground line-through'}`}>
+                      {lt.label}
+                      <span className="ml-2 text-xs text-muted-foreground">({lt.code})</span>
+                    </span>
+                    <button
+                      type="button"
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                      onClick={() => updateLeaveType.mutate({ id: lt.id, data: { is_active: !lt.is_active } })}
+                    >
+                      {lt.is_active ? 'Deactivate' : 'Reactivate'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!window.confirm(`Permanently delete "${lt.label}"? This is only possible if no time-off requests reference it; otherwise deactivate instead.`)) return;
+                        deleteLeaveType.mutate(lt.id, {
+                          onError: (err: unknown) => {
+                            const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+                            alert(detail || 'Failed to delete leave type.');
+                          },
+                        });
+                      }}
+                      className="text-xs text-destructive hover:underline"
+                      disabled={deleteLeaveType.isPending}
+                    >
+                      Delete
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
 
@@ -1229,28 +1366,50 @@ export const AdminPage: React.FC = () => {
                       </select>
                     </div>
                     {(form.role === 'MANAGER' || form.role === 'EMPLOYEE') && (
-                      <>
-                        <div>
-                          <label className="block text-sm font-medium mb-1">Title</label>
-                          <input
-                            required
-                            value={form.title}
-                            onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
-                            className="w-full px-3 py-2 border rounded"
-                            placeholder={form.role === 'MANAGER' ? 'Manager' : 'Senior Software Engineer'}
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium mb-1">Department</label>
-                          <input
+                      <div>
+                        <label className="block text-sm font-medium mb-1">Title</label>
+                        <input
+                          required
+                          value={form.title}
+                          onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+                          className="w-full px-3 py-2 border rounded"
+                          placeholder={form.role === 'MANAGER' ? 'Manager' : 'Senior Software Engineer'}
+                        />
+                      </div>
+                    )}
+                    {(form.role === 'MANAGER' || form.role === 'EMPLOYEE' || form.role === 'ADMIN') && (
+                      <div>
+                        <label className="block text-sm font-medium mb-1">Department</label>
+                        <div className="flex gap-2">
+                          <select
                             required={form.role === 'MANAGER'}
                             value={form.department}
-                            onChange={(e) => setForm((f) => ({ ...f, department: e.target.value }))}
-                            className="w-full px-3 py-2 border rounded"
-                            placeholder={form.role === 'MANAGER' ? 'Software Engineering' : 'Optional for employees'}
-                          />
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              if (v === '__new__') {
+                                const name = window.prompt('New department name')?.trim();
+                                if (!name) return;
+                                createDepartment.mutate(name, {
+                                  onSuccess: (created) => setForm((f) => ({ ...f, department: created.name })),
+                                  onError: () => alert('Failed to create department (it may already exist).'),
+                                });
+                                return;
+                              }
+                              setForm((f) => ({ ...f, department: v }));
+                            }}
+                            className="flex-1 px-3 py-2 border rounded"
+                          >
+                            <option value="">{form.role === 'MANAGER' ? 'Select a department' : '— No department —'}</option>
+                            {departments.map((d) => (
+                              <option key={d.id} value={d.name}>{d.name}</option>
+                            ))}
+                            {form.department && !departments.some((d) => d.name === form.department) && (
+                              <option value={form.department}>{form.department} (legacy)</option>
+                            )}
+                            <option value="__new__">+ Add new department…</option>
+                          </select>
                         </div>
-                      </>
+                      </div>
                     )}
                     <div>
                       <label className="block text-sm font-medium mb-1">Reports To</label>
@@ -1445,38 +1604,17 @@ export const AdminPage: React.FC = () => {
       })()}
 
       {/* New user credentials dialog */}
-      {newUserCredentials && (
+      {createdUserEmail && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
           <div className="bg-card rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4">
             <h2 className="text-lg font-semibold text-foreground">User created</h2>
             <p className="text-sm text-muted-foreground">
-              Share these credentials with the user. They will receive a verification email and must set a new password before logging in.
+              Verification email sent to <span className="font-medium text-foreground">{createdUserEmail}</span>.
             </p>
-            <div className="rounded-lg border bg-muted/30 p-4 space-y-2 font-mono text-sm">
-              <div className="flex justify-between gap-2">
-                <span className="text-muted-foreground">Email</span>
-                <span className="font-medium select-all">{newUserCredentials.email}</span>
-              </div>
-              <div className="flex justify-between gap-2">
-                <span className="text-muted-foreground">Temp password</span>
-                <span className="font-medium select-all">{newUserCredentials.password}</span>
-              </div>
-            </div>
-            <div className="flex gap-3">
+            <div className="flex justify-end">
               <button
-                className="action-button flex-1"
-                onClick={() => {
-                  void navigator.clipboard.writeText(
-                    `Email: ${newUserCredentials.email}\nTemporary password: ${newUserCredentials.password}`
-                  );
-                  setCredentialsCopied(true);
-                }}
-              >
-                {credentialsCopied ? 'Copied!' : 'Copy credentials'}
-              </button>
-              <button
-                className="flex-1 rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted/50"
-                onClick={() => setNewUserCredentials(null)}
+                className="action-button"
+                onClick={() => setCreatedUserEmail(null)}
               >
                 Done
               </button>

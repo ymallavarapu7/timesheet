@@ -34,8 +34,8 @@ const apiError = (e: unknown) =>
 
 // ─── Form types ────────────────────────────────────────────────────────────
 
-type TenantFormState = { name: string; slug: string; status: TenantStatus; ingestion_enabled: boolean };
-const emptyTenantForm = (): TenantFormState => ({ name: '', slug: '', status: 'active', ingestion_enabled: false });
+type TenantFormState = { name: string; slug: string; status: TenantStatus; ingestion_enabled: boolean; max_mailboxes: string };
+const emptyTenantForm = (): TenantFormState => ({ name: '', slug: '', status: 'active', ingestion_enabled: false, max_mailboxes: '1' });
 
 type AdminFormState = { full_name: string; email: string; username: string; password: string };
 const emptyAdminForm = (): AdminFormState => ({ full_name: '', email: '', username: '', password: 'password' });
@@ -84,7 +84,7 @@ export const PlatformAdminPage: React.FC = () => {
     onError: (e: unknown) => setTenantFormError(apiError(e)),
   });
   const updateTenantMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: Partial<TenantFormState> }) =>
+    mutationFn: ({ id, data }: { id: number; data: Partial<Omit<TenantFormState, 'max_mailboxes'>> & { max_mailboxes?: number | null } }) =>
       tenantsAPI.update(id, data).then((r) => r.data),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['tenants'] }); qc.invalidateQueries({ queryKey: ['dashboard'] }); closeTenantModal(); },
     onError: (e: unknown) => setTenantFormError(apiError(e)),
@@ -114,7 +114,13 @@ export const PlatformAdminPage: React.FC = () => {
   const openCreateTenant = () => { setTenantForm(emptyTenantForm()); setTenantFormError(''); setShowCreateTenant(true); };
   const openEditTenant = (e: React.MouseEvent, t: Tenant) => {
     e.stopPropagation();
-    setTenantForm({ name: t.name, slug: t.slug, status: t.status, ingestion_enabled: t.ingestion_enabled });
+    setTenantForm({
+      name: t.name,
+      slug: t.slug,
+      status: t.status,
+      ingestion_enabled: t.ingestion_enabled,
+      max_mailboxes: t.max_mailboxes == null ? '' : String(t.max_mailboxes),
+    });
     setTenantFormError('');
     setEditingTenant(t);
   };
@@ -125,8 +131,18 @@ export const PlatformAdminPage: React.FC = () => {
     setTenantFormError('');
     if (!tenantForm.name.trim() || !tenantForm.slug.trim()) { setTenantFormError('Name and slug are required'); return; }
     if (!/^[a-z0-9-]+$/.test(tenantForm.slug)) { setTenantFormError('Slug must be lowercase letters, numbers, hyphens only'); return; }
-    if (editingTenant) updateTenantMutation.mutate({ id: editingTenant.id, data: tenantForm });
-    else createTenantMutation.mutate({ name: tenantForm.name.trim(), slug: tenantForm.slug.trim() });
+    if (editingTenant) {
+      const trimmed = tenantForm.max_mailboxes.trim();
+      const maxMailboxes = trimmed === '' ? null : Math.max(0, parseInt(trimmed, 10) || 0);
+      // Only send max_mailboxes when ingestion is on; it's meaningless otherwise.
+      const { max_mailboxes: _drop, ...rest } = tenantForm;
+      updateTenantMutation.mutate({
+        id: editingTenant.id,
+        data: tenantForm.ingestion_enabled ? { ...rest, max_mailboxes: maxMailboxes } : rest,
+      });
+    } else {
+      createTenantMutation.mutate({ name: tenantForm.name.trim(), slug: tenantForm.slug.trim() });
+    }
   };
 
   // ── Add admin state ───────────────────────────────────────────────────────
@@ -585,6 +601,20 @@ export const PlatformAdminPage: React.FC = () => {
                     />
                     Enable ingestion for this tenant
                   </label>
+                  {tenantForm.ingestion_enabled && (
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Max mailboxes</label>
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="Leave blank for unlimited"
+                        className="w-full rounded-lg border px-3 py-2 text-sm"
+                        value={tenantForm.max_mailboxes}
+                        onChange={(e) => setTenantForm((f) => ({ ...f, max_mailboxes: e.target.value }))}
+                      />
+                      <p className="text-xs text-slate-500 mt-1">Cap on mailboxes this tenant can connect. Blank = unlimited.</p>
+                    </div>
+                  )}
                 </div>
               )}
               {tenantFormError && <p className="text-xs text-red-600">{tenantFormError}</p>}

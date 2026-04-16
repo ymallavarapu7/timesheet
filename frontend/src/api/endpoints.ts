@@ -28,6 +28,8 @@ import {
   ChangePasswordRequest,
   UserCreateResponse,
   DashboardAnalytics,
+  Department,
+  LeaveType,
   DashboardRecentActivityItem,
   DashboardSummary,
   FetchJobResponse,
@@ -148,6 +150,24 @@ export const clientsAPI = {
   
   delete: (id: number) =>
     apiClient.delete(`/clients/${id}`),
+
+  bulkDelete: (clientIds: number[]) =>
+    apiClient.post<{ deleted: number }>('/clients/bulk-delete', { client_ids: clientIds }),
+};
+
+export const departmentsAPI = {
+  list: () => apiClient.get<Department[]>('/departments'),
+  create: (name: string) => apiClient.post<Department>('/departments', { name }),
+  delete: (id: number) => apiClient.delete(`/departments/${id}`),
+};
+
+export const leaveTypesAPI = {
+  list: (includeInactive = false) => apiClient.get<LeaveType[]>(`/leave-types${includeInactive ? '?include_inactive=true' : ''}`),
+  create: (data: { label: string; code?: string; color?: string }) =>
+    apiClient.post<LeaveType>('/leave-types', data),
+  update: (id: number, data: Partial<Pick<LeaveType, 'label' | 'color' | 'is_active'>>) =>
+    apiClient.patch<LeaveType>(`/leave-types/${id}`, data),
+  delete: (id: number) => apiClient.delete(`/leave-types/${id}`),
 };
 
 // Projects endpoints

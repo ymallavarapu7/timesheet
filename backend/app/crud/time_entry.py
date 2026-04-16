@@ -15,15 +15,82 @@ from typing import Optional
 from datetime import date, datetime, timedelta, timezone
 
 
-async def _future_entries_allowed(db: AsyncSession, tenant_id: int) -> bool:
+DEFAULT_PAST_DAYS = 14
+DEFAULT_FUTURE_DAYS = 0
+
+
+def _coerce_int(value: Optional[str], default: int) -> int:
+    if value is None:
+        return default
+    try:
+        n = int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return max(0, n)
+
+
+def _coerce_float(value: Optional[str], default: float) -> float:
+    if value is None:
+        return default
+    try:
+        n = float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, n)
+
+
+def _coerce_bool(value: Optional[str], default: bool) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("true", "1", "yes", "on")
+
+
+async def _tenant_hours_policy(db: AsyncSession, tenant_id: int) -> dict:
+    """Return per-tenant hour caps with env-config defaults."""
     result = await db.execute(
-        select(TenantSettings.value).where(
+        select(TenantSettings.key, TenantSettings.value).where(
             TenantSettings.tenant_id == tenant_id,
-            TenantSettings.key == "allow_future_entries",
+            TenantSettings.key.in_((
+                "max_hours_per_entry",
+                "max_hours_per_day",
+                "max_hours_per_week",
+                "min_submit_weekly_hours",
+                "allow_partial_week_submit",
+            )),
         )
     )
-    value = result.scalar_one_or_none()
-    return str(value).lower() == "true" if value is not None else False
+    rows = {row[0]: row[1] for row in result.all()}
+    return {
+        "max_per_entry": _coerce_float(rows.get("max_hours_per_entry"), settings.max_hours_per_entry),
+        "max_per_day": _coerce_float(rows.get("max_hours_per_day"), settings.max_hours_per_day),
+        "max_per_week": _coerce_float(rows.get("max_hours_per_week"), settings.max_hours_per_week),
+        "min_submit_weekly": _coerce_float(rows.get("min_submit_weekly_hours"), settings.min_submit_weekly_hours),
+        "allow_partial_week": _coerce_bool(rows.get("allow_partial_week_submit"), False),
+    }
+
+
+async def _entry_window(db: AsyncSession, tenant_id: int) -> tuple[date, date, int, int]:
+    """Return (min_date, max_date, past_days, future_days) for the tenant's editable window."""
+    result = await db.execute(
+        select(TenantSettings.key, TenantSettings.value).where(
+            TenantSettings.tenant_id == tenant_id,
+            TenantSettings.key.in_(("time_entry_past_days", "time_entry_future_days")),
+        )
+    )
+    rows = {row[0]: row[1] for row in result.all()}
+    past_days = _coerce_int(rows.get("time_entry_past_days"), DEFAULT_PAST_DAYS)
+    future_days = _coerce_int(rows.get("time_entry_future_days"), DEFAULT_FUTURE_DAYS)
+    today = date.today()
+    return today - timedelta(days=past_days), today + timedelta(days=future_days), past_days, future_days
+
+
+def _format_window_error(action: str, past_days: int, future_days: int) -> str:
+    parts = [f"up to {past_days} day{'s' if past_days != 1 else ''} in the past"]
+    if future_days > 0:
+        parts.append(f"and {future_days} day{'s' if future_days != 1 else ''} in the future")
+    else:
+        parts.append("but not in the future")
+    return f"You can only {action} time {' '.join(parts)}."
 
 
 async def get_time_entry_by_id(db: AsyncSession, entry_id: int, tenant_id: Optional[int] = None) -> Optional[TimeEntry]:
@@ -36,6 +103,7 @@ async def get_time_entry_by_id(db: AsyncSession, entry_id: int, tenant_id: Optio
         selectinload(TimeEntry.user).selectinload(User.project_access),
         selectinload(TimeEntry.project),
         selectinload(TimeEntry.task),
+        selectinload(TimeEntry.approved_by_user),
     )
     result = await db.execute(query)
     return result.scalars().first()
@@ -53,6 +121,7 @@ async def get_time_entries_by_ids(db: AsyncSession, entry_ids: list[int], tenant
         selectinload(TimeEntry.user).selectinload(User.project_access),
         selectinload(TimeEntry.project),
         selectinload(TimeEntry.task),
+        selectinload(TimeEntry.approved_by_user),
     )
     result = await db.execute(query)
     return list(result.scalars().all())
@@ -60,18 +129,14 @@ async def get_time_entries_by_ids(db: AsyncSession, entry_ids: list[int], tenant
 
 async def create_time_entry(db: AsyncSession, user_id: int, tenant_id: int, entry_create: TimeEntryCreate) -> TimeEntry:
     """Create a new time entry."""
-    # Enforce backdate limit
-    max_backdate = date.today() - timedelta(weeks=settings.time_entry_backdate_weeks)
-    if entry_create.entry_date < max_backdate:
-        raise ValueError(
-            f"Cannot create entries more than {settings.time_entry_backdate_weeks} weeks in the past"
-        )
-    if entry_create.entry_date > date.today() and not await _future_entries_allowed(db, tenant_id):
-        raise ValueError("Cannot create entries for future dates")
+    min_date, max_date, past_days, future_days = await _entry_window(db, tenant_id)
+    if entry_create.entry_date < min_date or entry_create.entry_date > max_date:
+        raise ValueError(_format_window_error("log", past_days, future_days))
 
     await _validate_hours_constraints(
         db,
         user_id=user_id,
+        tenant_id=tenant_id,
         entry_date=entry_create.entry_date,
         hours=entry_create.hours,
     )
@@ -98,29 +163,58 @@ async def create_time_entry(db: AsyncSession, user_id: int, tenant_id: int, entr
     return db_entry
 
 
-def _week_start(value: date) -> date:
-    return value - timedelta(days=value.weekday())
+def _week_start(value: date, week_start_day: int = 0) -> date:
+    """Return the date of the start of the week containing `value`.
+
+    week_start_day: 0=Sunday, 1=Monday (matches date-fns convention).
+    Defaults to Sunday for the synchronous callers that don't have tenant context;
+    async callers should pass the tenant's configured value.
+    """
+    # Python's weekday() returns 0=Monday..6=Sunday. Convert to days-since-Sunday-or-Monday.
+    py_weekday = value.weekday()  # 0=Mon..6=Sun
+    if week_start_day == 0:
+        # Sunday-based: shift so Sunday=0..Saturday=6
+        offset = (py_weekday + 1) % 7
+    else:
+        # Monday-based: already 0=Mon..6=Sun
+        offset = py_weekday
+    return value - timedelta(days=offset)
 
 
-def _last_working_day_for_week(value: date) -> date:
-    return _week_start(value) + timedelta(days=4)
+def _last_working_day_for_week(value: date, week_start_day: int = 0) -> date:
+    return _week_start(value, week_start_day) + timedelta(days=4)
+
+
+async def _tenant_week_start_day(db: AsyncSession, tenant_id: int) -> int:
+    """0=Sunday (default), 1=Monday."""
+    result = await db.execute(
+        select(TenantSettings.value).where(
+            TenantSettings.tenant_id == tenant_id,
+            TenantSettings.key == "week_start_day",
+        )
+    )
+    raw = result.scalar_one_or_none()
+    n = _coerce_int(raw, 0)
+    return 1 if n == 1 else 0
 
 
 async def _validate_hours_constraints(
     db: AsyncSession,
     user_id: int,
+    tenant_id: int,
     entry_date: date,
     hours: Decimal,
     exclude_entry_id: Optional[int] = None,
 ) -> None:
     entry_hours = Decimal(str(hours))
-    max_hours_per_entry = Decimal(str(settings.max_hours_per_entry))
-    max_hours_per_day = Decimal(str(settings.max_hours_per_day))
-    max_hours_per_week = Decimal(str(settings.max_hours_per_week))
+    policy = await _tenant_hours_policy(db, tenant_id)
+    max_hours_per_entry = Decimal(str(policy["max_per_entry"]))
+    max_hours_per_day = Decimal(str(policy["max_per_day"]))
+    max_hours_per_week = Decimal(str(policy["max_per_week"]))
 
     if entry_hours > max_hours_per_entry:
         raise ValueError(
-            f"Hours per entry cannot exceed {settings.max_hours_per_entry:g}"
+            f"Hours per entry cannot exceed {policy['max_per_entry']:g}"
         )
 
     daily_query = select(func.coalesce(func.sum(TimeEntry.hours), 0)).where(
@@ -134,10 +228,11 @@ async def _validate_hours_constraints(
     daily_existing_total = Decimal(str((await db.scalar(daily_query)) or 0))
     if daily_existing_total + entry_hours > max_hours_per_day:
         raise ValueError(
-            f"Daily total hours cannot exceed {settings.max_hours_per_day:g}"
+            f"Daily total hours cannot exceed {policy['max_per_day']:g}"
         )
 
-    week_start = _week_start(entry_date)
+    wsd = await _tenant_week_start_day(db, tenant_id)
+    week_start = _week_start(entry_date, wsd)
     week_end = week_start + timedelta(days=6)
     weekly_query = select(func.coalesce(func.sum(TimeEntry.hours), 0)).where(
         (TimeEntry.user_id == user_id)
@@ -151,7 +246,7 @@ async def _validate_hours_constraints(
     weekly_existing_total = Decimal(str((await db.scalar(weekly_query)) or 0))
     if weekly_existing_total + entry_hours > max_hours_per_week:
         raise ValueError(
-            f"Weekly total hours cannot exceed {settings.max_hours_per_week:g}"
+            f"Weekly total hours cannot exceed {policy['max_per_week']:g}"
         )
 
 
@@ -198,17 +293,14 @@ async def update_time_entry(
     target_project_id = update_data.get("project_id", entry.project_id)
     target_task_id = update_data.get("task_id", entry.task_id)
 
-    max_backdate = date.today() - timedelta(weeks=settings.time_entry_backdate_weeks)
-    if target_entry_date < max_backdate:
-        raise ValueError(
-            f"Cannot set entry date more than {settings.time_entry_backdate_weeks} weeks in the past"
-        )
-    if target_entry_date > date.today() and not await _future_entries_allowed(db, entry.tenant_id):
-        raise ValueError("Cannot set entry date to a future date")
+    min_date, max_date, past_days, future_days = await _entry_window(db, entry.tenant_id)
+    if target_entry_date < min_date or target_entry_date > max_date:
+        raise ValueError(_format_window_error("set entry date", past_days, future_days))
 
     await _validate_hours_constraints(
         db,
         user_id=entry.user_id,
+        tenant_id=entry.tenant_id,
         entry_date=target_entry_date,
         hours=target_hours,
         exclude_entry_id=entry.id,
@@ -284,6 +376,7 @@ async def list_user_entries(
         selectinload(TimeEntry.user).selectinload(User.project_access),
         selectinload(TimeEntry.project),
         selectinload(TimeEntry.task),
+        selectinload(TimeEntry.approved_by_user),
     )
 
     if start_date:
@@ -375,6 +468,7 @@ async def submit_time_entries(
         selectinload(TimeEntry.user).selectinload(User.project_access),
         selectinload(TimeEntry.project),
         selectinload(TimeEntry.task),
+        selectinload(TimeEntry.approved_by_user),
     )
     result = await db.execute(query)
     entries = result.scalars().all()
@@ -382,20 +476,23 @@ async def submit_time_entries(
     if not entries:
         raise ValueError("No DRAFT entries found to submit")
 
-    today = date.today()
+    tenant_id = entries[0].tenant_id
+    min_date, max_date, past_days, future_days = await _entry_window(db, tenant_id)
+    out_of_window = [e for e in entries if e.entry_date < min_date or e.entry_date > max_date]
+    if out_of_window:
+        raise ValueError(_format_window_error("submit", past_days, future_days))
+
+    policy = await _tenant_hours_policy(db, tenant_id)
+    wsd = await _tenant_week_start_day(db, tenant_id)
+
     requested_ids = {entry.id for entry in entries}
-    week_starts = {_week_start(entry.entry_date) for entry in entries}
+    week_starts = {_week_start(entry.entry_date, wsd) for entry in entries}
 
     for week_start in week_starts:
-        week_end = week_start + timedelta(days=4)
         week_end_calendar = week_start + timedelta(days=6)
-        if today < week_end:
-            raise ValueError(
-                f"Weekly entry submission for week ending {week_end.isoformat()} is allowed on or after the last working day"
-            )
 
         week_entries = [entry for entry in entries if _week_start(
-            entry.entry_date) == week_start]
+            entry.entry_date, wsd) == week_start]
         week_requested_ids = {entry.id for entry in week_entries}
 
         full_week_query = select(TimeEntry.id).where(
@@ -406,10 +503,12 @@ async def submit_time_entries(
         )
         full_week_result = await db.execute(full_week_query)
         full_week_ids = set(full_week_result.scalars().all())
-        if week_requested_ids != full_week_ids:
+        # Default: must submit all DRAFT entries for the week together. Tenants
+        # that allow partial-week submission (e.g. mid-week corrections) skip this.
+        if not policy["allow_partial_week"] and week_requested_ids != full_week_ids:
             missing_ids = sorted(list(full_week_ids - requested_ids))
             raise ValueError(
-                f"Submit all draft entries for the week ending {week_end.isoformat()} together. Missing entry ids: {missing_ids}"
+                f"Submit all draft entries for the week of {week_start.isoformat()} together. Missing entry ids: {missing_ids}"
             )
 
         weekly_total = Decimal(str((await db.scalar(
@@ -421,10 +520,10 @@ async def submit_time_entries(
             )
         )) or 0))
 
-        minimum_weekly_hours = Decimal(str(settings.min_submit_weekly_hours))
+        minimum_weekly_hours = Decimal(str(policy["min_submit_weekly"]))
         if weekly_total < minimum_weekly_hours:
             raise ValueError(
-                f"Cannot submit week ending {week_end.isoformat()} because weekly hours are below minimum required ({settings.min_submit_weekly_hours:g})"
+                f"Cannot submit week of {week_start.isoformat()} because weekly hours are below minimum required ({policy['min_submit_weekly']:g})"
             )
 
     # Update status
@@ -444,22 +543,28 @@ async def submit_time_entries(
 
 
 async def get_weekly_submission_status(db: AsyncSession, user_id: int) -> tuple[bool, str | None, date]:
+    """can_submit is true when the user has any DRAFT entries inside the tenant's editable window."""
     today = date.today()
-    due_date = _last_working_day_for_week(today)
-    if today < due_date:
-        return False, f"Weekly entry submission opens on {due_date.isoformat()}", due_date
 
-    week_start = _week_start(today)
+    user_row = await db.execute(select(User.tenant_id).where(User.id == user_id))
+    tenant_id = user_row.scalar_one_or_none()
+    if tenant_id is None:
+        return False, "No tenant context for this user.", today
+
+    wsd = await _tenant_week_start_day(db, tenant_id)
+    due_date = _last_working_day_for_week(today, wsd)
+
+    min_date, max_date, _, _ = await _entry_window(db, tenant_id)
     draft_count = await db.scalar(
         select(func.count(TimeEntry.id)).where(
             (TimeEntry.user_id == user_id)
             & (TimeEntry.status == TimeEntryStatus.DRAFT)
-            & (TimeEntry.entry_date >= week_start)
-            & (TimeEntry.entry_date <= due_date)
+            & (TimeEntry.entry_date >= min_date)
+            & (TimeEntry.entry_date <= max_date)
         )
     )
     if int(draft_count or 0) == 0:
-        return False, "No draft entries available for this week", due_date
+        return False, "No draft entries to submit.", due_date
 
     return True, None, due_date
 

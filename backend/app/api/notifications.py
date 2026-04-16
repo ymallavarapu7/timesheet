@@ -67,14 +67,20 @@ async def _get_managed_employee_ids(db: AsyncSession, manager_id: int) -> list[i
     return list(result.scalars().all())
 
 
-def _week_start(value: date) -> date:
-    return value - timedelta(days=value.weekday())
+def _week_start(value: date, week_start_day: int = 0) -> date:
+    """0=Sunday, 1=Monday."""
+    py_weekday = value.weekday()
+    offset = (py_weekday + 1) % 7 if week_start_day == 0 else py_weekday
+    return value - timedelta(days=offset)
 
 
 async def _get_pending_timesheet_week_stats(
     db: AsyncSession,
+    tenant_id: int,
     employee_ids: list[int] | None = None,
 ) -> tuple[int, datetime | None]:
+    from app.crud.time_entry import _tenant_week_start_day
+    wsd = await _tenant_week_start_day(db, tenant_id)
     query = select(TimeEntry.user_id, TimeEntry.entry_date, TimeEntry.submitted_at).where(
         TimeEntry.status == TimeEntryStatus.SUBMITTED
     )
@@ -86,7 +92,7 @@ async def _get_pending_timesheet_week_stats(
     result = await db.execute(query)
     rows = result.all()
     pending_weeks = {
-        (user_id, _week_start(entry_date))
+        (user_id, _week_start(entry_date, wsd))
         for user_id, entry_date, _submitted_at in rows
     }
     latest_submitted_at = max(
@@ -156,7 +162,7 @@ async def _build_notification_summary(
         notification_id="rejected-time-entries",
         title="Rejected time entries",
         message=f"{int(rejected_time_entry_count or 0)} time entr{'y' if int(rejected_time_entry_count or 0) == 1 else 'ies'} need correction and resubmission.",
-        route="/my-time",
+        route="/my-time?notif=rejected-time-entries",
         count=int(rejected_time_entry_count or 0),
         severity="warning",
         created_at=rejected_time_entry_latest,
@@ -177,7 +183,7 @@ async def _build_notification_summary(
         notification_id="draft-time-entries",
         title="Draft timesheet entries",
         message=f"{int(draft_time_entry_count or 0)} draft time entr{'y is' if int(draft_time_entry_count or 0) == 1 else 'ies are'} ready to review and submit.",
-        route="/my-time",
+        route="/my-time?notif=draft-time-entries",
         count=int(draft_time_entry_count or 0),
         severity="info",
         created_at=draft_time_entry_latest,
@@ -241,7 +247,7 @@ async def _build_notification_summary(
             notification_id="missing-previous-day-entry",
             title="Missing yesterday's time entry",
             message=f"No time entry was logged for {previous_work_day.strftime('%b %d')}. Please add it today.",
-            route="/my-time",
+            route="/my-time?notif=missing-previous-day-entry",
             count=1,
             severity="warning",
             created_at=reminder_anchor,
@@ -261,7 +267,7 @@ async def _build_notification_summary(
             notification_id="weekly-timesheet-reminder",
             title="Weekly timesheet reminder",
             message="You have not logged any timesheet entries for this week yet.",
-            route="/my-time",
+            route="/my-time?notif=weekly-timesheet-reminder",
             count=1,
             severity="info",
             created_at=week_anchor,
@@ -277,6 +283,7 @@ async def _build_notification_summary(
 
         pending_time_entries_count, pending_time_entries_latest = await _get_pending_timesheet_week_stats(
             db,
+            current_user.tenant_id,
             managed_employee_ids,
         )
         if managed_employee_ids is not None:
@@ -373,7 +380,7 @@ async def _build_notification_summary(
             notification_id="new-users-created",
             title="New users created",
             message=f"{int(users_created_count or 0)} new user account{' was' if int(users_created_count or 0) == 1 else 's were'} created in the last 7 days.",
-            route="/admin",
+            route="/user-management",
             count=int(users_created_count or 0),
             severity="info",
             created_at=users_created_latest,
@@ -396,7 +403,7 @@ async def _build_notification_summary(
             notification_id="employees-without-manager",
             title="Employees without manager",
             message=f"{int(employees_without_manager_count or 0)} employee{' needs' if int(employees_without_manager_count or 0) == 1 else 's need'} a manager assignment.",
-            route="/admin",
+            route="/user-management?role=EMPLOYEE",
             count=int(employees_without_manager_count or 0),
             severity="warning",
             created_at=employees_without_manager_latest or now,
@@ -419,7 +426,7 @@ async def _build_notification_summary(
             notification_id="employees-without-projects",
             title="Employees without project access",
             message=f"{int(employees_without_projects_count or 0)} employee{' is' if int(employees_without_projects_count or 0) == 1 else 's are'} missing project access.",
-            route="/admin",
+            route="/user-management?role=EMPLOYEE",
             count=int(employees_without_projects_count or 0),
             severity="warning",
             created_at=employees_without_projects_latest or now,

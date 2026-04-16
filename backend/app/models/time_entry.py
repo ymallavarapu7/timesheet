@@ -95,6 +95,14 @@ class TimeEntry(Base, TimestampMixin):
         cascade="all, delete-orphan",
     )
 
+    @property
+    def approved_by_name(self) -> Optional[str]:
+        """Convenience for response serialization. Requires approved_by_user to be eager-loaded."""
+        try:
+            return self.approved_by_user.full_name if self.approved_by_user else None
+        except Exception:
+            return None
+
     def __repr__(self) -> str:
         return f"<TimeEntry(id={self.id}, user_id={self.user_id}, project_id={self.project_id}, date={self.entry_date}, status={self.status})>"
 

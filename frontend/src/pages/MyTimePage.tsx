@@ -3,11 +3,11 @@ import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Loading, Error, EmptyState, Modal, TimeEntryRow, DateRangePickerCalendar, SearchInput } from '@/components';
-import { useAuth, useTimeEntries, useCreateTimeEntry, useParseNaturalTimeEntry, useSubmitTimeEntries, useProjects, useTasks, useUpdateTimeEntry, useNotifications, useWeeklySubmitStatus, useCreateTask, useMarkNotificationRead, useTenantPublicSettings } from '@/hooks';
+import { useAuth, useTimeEntries, useCreateTimeEntry, useParseNaturalTimeEntry, useSubmitTimeEntries, useProjects, useTasks, useUpdateTimeEntry, useNotifications, useWeeklySubmitStatus, useCreateTask, useMarkNotificationRead, useTenantPublicSettings, useWeekStartsOn } from '@/hooks';
 import { timeentriesAPI } from '@/api/endpoints';
 import { Project, Task, TimeEntry, TimeEntryStatus } from '@/types';
 import { addDays, endOfWeek, format, parseISO, startOfWeek, startOfYear, subDays } from 'date-fns';
-import { ArrowDown, ArrowUp, Search, Sparkles, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, Search, Sparkles, X } from 'lucide-react';
 
 type EntryFormData = {
   project_id: number;
@@ -30,13 +30,115 @@ type GridRow = {
 };
 
 const TIME_OFF_PREFIX_REGEX = /^\[(SICK_DAY|PTO|HALF_DAY|HOURLY_PERMISSION|OTHER_LEAVE)\]/;
-const WEEK_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MAX_HOURS_PER_DAY = 24;
+
+type RejectedGroup = {
+  key: string;
+  weekStart: Date;
+  weekEnd: Date;
+  rejectedAt: string | null;
+  rejectorName: string | null;
+  reason: string;
+  entries: TimeEntry[];
+  totalHours: number;
+};
+
+const groupRejectedEntries = (entries: TimeEntry[], weekStartsOn: 0 | 1): RejectedGroup[] => {
+  const map = new Map<string, RejectedGroup>();
+  for (const entry of entries) {
+    const weekStart = startOfWeek(parseISO(entry.entry_date), { weekStartsOn });
+    const weekKey = format(weekStart, 'yyyy-MM-dd');
+    // Round rejected_at to the minute so a batch reject (which all share an
+    // identical microsecond timestamp) groups cleanly.
+    const rejectedAt = entry.approved_at ? entry.approved_at.slice(0, 16) : 'unknown';
+    const reason = entry.rejection_reason || '';
+    const rejector = entry.approved_by_name || `User #${entry.approved_by ?? '?'}`;
+    const key = `${weekKey}|${rejectedAt}|${rejector}|${reason}`;
+    let group = map.get(key);
+    if (!group) {
+      group = {
+        key,
+        weekStart,
+        weekEnd: addDays(weekStart, 6),
+        rejectedAt: entry.approved_at ?? null,
+        rejectorName: entry.approved_by_name ?? null,
+        reason,
+        entries: [],
+        totalHours: 0,
+      };
+      map.set(key, group);
+    }
+    group.entries.push(entry);
+    group.totalHours += Number(entry.hours) || 0;
+  }
+  // Sort groups by most recent rejection first, then by week.
+  return Array.from(map.values()).sort((a, b) => {
+    const at = a.rejectedAt ? new Date(a.rejectedAt).getTime() : 0;
+    const bt = b.rejectedAt ? new Date(b.rejectedAt).getTime() : 0;
+    if (at !== bt) return bt - at;
+    return b.weekStart.getTime() - a.weekStart.getTime();
+  });
+};
+
+const RejectedGroupCard: React.FC<{
+  group: RejectedGroup;
+  onEdit: (entry: TimeEntry) => void;
+  highlightedEntryId?: number | null;
+}> = ({ group, onEdit, highlightedEntryId }) => {
+  const [open, setOpen] = useState(true);
+  const weekLabel = `${format(group.weekStart, 'MMM d')} – ${format(group.weekEnd, 'MMM d, yyyy')}`;
+  const rejectedLabel = group.rejectedAt
+    ? new Date(group.rejectedAt).toLocaleString()
+    : 'date unknown';
+  return (
+    <div className="rounded-lg border border-red-200 bg-red-50/40">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-start justify-between gap-4 px-4 py-3 text-left"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-800">REJECTED</span>
+            <span className="text-sm font-semibold text-foreground">Week of {weekLabel}</span>
+            <span className="text-xs text-muted-foreground">· {group.entries.length} entr{group.entries.length === 1 ? 'y' : 'ies'} · {group.totalHours.toFixed(2)}h</span>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Rejected by <span className="font-medium text-foreground">{group.rejectorName ?? 'unknown'}</span> on {rejectedLabel}
+          </p>
+          {group.reason && (
+            <div className="mt-2 rounded border border-red-200 bg-white/60 p-2">
+              <p className="text-xs font-semibold text-red-900">Reason</p>
+              <p className="text-sm text-red-900 whitespace-pre-wrap">{group.reason}</p>
+            </div>
+          )}
+        </div>
+        <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="space-y-2 border-t border-red-200 px-3 py-3">
+          {group.entries.map((entry) => (
+            <TimeEntryRow
+              key={entry.id}
+              entry={entry}
+              showActions
+              onEdit={onEdit}
+              highlighted={entry.id === highlightedEntryId}
+              rowId={`time-entry-${entry.id}`}
+              compact
+              hideRejectionReason
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
 
 export const MyTimePage: React.FC = () => {
   const queryClient = useQueryClient();
   const { user } = useAuth();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkEntryId = Number(searchParams.get('entryId') || 0) || null;
   const deepLinkDate = searchParams.get('date') || '';
   const deepLinkMode = searchParams.get('mode') || '';
@@ -51,8 +153,13 @@ export const MyTimePage: React.FC = () => {
   const [endDate, setEndDate] = useState(deepLinkDate || '');
   const [weekAnchorDate, setWeekAnchorDate] = useState<Date>(new Date());
   const { data: publicSettings } = useTenantPublicSettings();
-  const allowFutureEntries = publicSettings?.allow_future_entries === 'true';
-  const todayStr = format(new Date(), 'yyyy-MM-dd');
+  const weekStartsOn = useWeekStartsOn();
+  const pastDaysAllowed = Math.max(0, parseInt(publicSettings?.time_entry_past_days ?? '14', 10) || 0);
+  const futureDaysAllowed = Math.max(0, parseInt(publicSettings?.time_entry_future_days ?? '0', 10) || 0);
+  const today = new Date();
+  const todayStr = format(today, 'yyyy-MM-dd');
+  const minEntryDateStr = format(addDays(today, -pastDaysAllowed), 'yyyy-MM-dd');
+  const maxEntryDateStr = format(addDays(today, futureDaysAllowed), 'yyyy-MM-dd');
   const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');
   const [gridProjectId, setGridProjectId] = useState<number>(0);
@@ -192,11 +299,28 @@ export const MyTimePage: React.FC = () => {
 
   const regularEntries = entries?.filter((entry: TimeEntry) => !TIME_OFF_PREFIX_REGEX.test(entry.description)) || [];
   const draftEntries = regularEntries.filter((e: TimeEntry) => e.status === 'DRAFT');
-  const historyEntries = regularEntries.filter((e: TimeEntry) => e.status !== 'DRAFT');
+  // Exclude rejected from the filterable history — they get their own always-on
+  // grouped section above. Avoids duplicate rendering.
+  const historyEntries = regularEntries.filter(
+    (e: TimeEntry) => e.status !== 'DRAFT' && e.status !== 'REJECTED',
+  );
   const hasHistoryRange = Boolean((startDate && endDate) || statusFilter !== 'ALL' || search.trim());
   const myTimeNotifications = (notifications?.items ?? []).filter(
-    (item) => item.route === '/my-time' && item.id !== 'draft-time-entries'
+    (item) => item.route?.startsWith('/my-time') && item.id !== 'draft-time-entries'
   );
+
+  // Bell-dropdown notifications navigate here with `?notif=<id>`. Replay the
+  // same handler the in-page notification panel uses so filters/scroll match.
+  const notifParam = searchParams.get('notif');
+  useEffect(() => {
+    if (!notifParam) return;
+    handleNotificationClick(notifParam);
+    // Strip the param so a manual refresh doesn't re-trigger.
+    const next = new URLSearchParams(searchParams);
+    next.delete('notif');
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notifParam]);
 
   useEffect(() => {
     if (!pendingNotificationTarget || statusFilter !== pendingNotificationTarget) return;
@@ -213,8 +337,8 @@ export const MyTimePage: React.FC = () => {
     }
   }, [pendingNotificationTarget, statusFilter, historyEntries.length]);
 
-  const weekStart = startOfWeek(weekAnchorDate, { weekStartsOn: 0 });
-  const weekEnd = endOfWeek(weekAnchorDate, { weekStartsOn: 0 });
+  const weekStart = startOfWeek(weekAnchorDate, { weekStartsOn });
+  const weekEnd = endOfWeek(weekAnchorDate, { weekStartsOn });
   const weekDates = Array.from({ length: 7 }, (_, index) => addDays(weekStart, index));
   const weekStartKey = format(weekStart, 'yyyy-MM-dd');
   const weekEndKey = format(weekEnd, 'yyyy-MM-dd');
@@ -231,6 +355,25 @@ export const MyTimePage: React.FC = () => {
   );
 
   const { data: weeklyGridEntries } = useTimeEntries(weeklyGridQueryParams);
+
+  // Always-on view: rejected entries from the last 90 days, independent of
+  // history filters, so the user sees corrections needed without filtering.
+  const rejectedQueryParams = useMemo(
+    () => ({
+      status: 'REJECTED' as TimeEntryStatus,
+      sort_by: 'entry_date',
+      sort_order: 'desc' as const,
+      start_date: format(addDays(new Date(), -90), 'yyyy-MM-dd'),
+      end_date: format(new Date(), 'yyyy-MM-dd'),
+      limit: 500,
+    }),
+    [],
+  );
+  const { data: allRejectedEntries } = useTimeEntries(rejectedQueryParams);
+  const rejectedEntries = useMemo(
+    () => (allRejectedEntries ?? []).filter((e: TimeEntry) => !TIME_OFF_PREFIX_REGEX.test(e.description)),
+    [allRejectedEntries],
+  );
 
   // Previous week entries (for Copy Last Week)
   const prevWeekStart = format(addDays(weekStart, -7), 'yyyy-MM-dd');
@@ -447,8 +590,8 @@ export const MyTimePage: React.FC = () => {
 
     // Navigate the grid to the week containing this entry date
     const entryDate = parseISO(dateKey);
-    const entryWeekStart = startOfWeek(entryDate, { weekStartsOn: 0 });
-    const currentWeekStart = startOfWeek(weekAnchorDate, { weekStartsOn: 0 });
+    const entryWeekStart = startOfWeek(entryDate, { weekStartsOn });
+    const currentWeekStart = startOfWeek(weekAnchorDate, { weekStartsOn });
     if (entryWeekStart.getTime() !== currentWeekStart.getTime()) {
       setWeekAnchorDate(entryDate);
     }
@@ -881,19 +1024,6 @@ export const MyTimePage: React.FC = () => {
           </div>
         )}
 
-        <div className="mb-4 rounded-lg border bg-card p-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-          <p className="text-sm text-muted-foreground">
-            {weeklySubmitStatus?.reason ?? `Weekly entry submission due on ${weeklySubmitStatus?.due_date ?? '-'}`}
-          </p>
-          <button
-            onClick={handleSubmitWeek}
-            disabled={!weeklySubmitStatus?.can_submit || submitMutation.isPending}
-            className="px-3 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 disabled:opacity-50"
-          >
-            {submitMutation.isPending ? 'Submitting...' : 'Submit Weekly Entries'}
-          </button>
-        </div>
-
         {/* ── Natural Language Input ── */}
         <section className="mb-6 rounded-lg border bg-card">
           <div className="border-b px-4 py-3 flex items-center gap-2">
@@ -944,7 +1074,7 @@ export const MyTimePage: React.FC = () => {
                         ) : (
                           <>
                             <p className="font-medium text-foreground">
-                              {entry.client_name} → {entry.project_name} → {entry.task_name}
+                              {[entry.client_name, entry.project_name, entry.task_name].filter(Boolean).join(' → ')}
                             </p>
                             <p className="text-muted-foreground">
                               {entry.entry_date} · {entry.hours}h · {entry.is_billable ? 'Billable' : 'Non-billable'}
@@ -958,33 +1088,36 @@ export const MyTimePage: React.FC = () => {
                           <div className="mt-1">
                             <p className="text-xs text-muted-foreground">Did you mean:</p>
                             {entry.alternatives.map((alt, ai) => (
-                              <span key={ai} className="mr-2 text-xs text-primary">{alt.project_name} → {alt.task_name}</span>
+                              <span key={ai} className="mr-2 text-xs text-primary">{[alt.project_name, alt.task_name].filter(Boolean).join(' → ')}</span>
                             ))}
                           </div>
                         )}
                       </div>
-                      {!entry.error && entry.project_id && entry.hours && (
-                        <button
-                          type="button"
-                          onClick={() => handleNlApplyEntry(entry)}
-                          className="action-button-secondary text-xs px-2 py-1 h-auto"
-                        >
-                          Apply
-                        </button>
-                      )}
                     </div>
                   </div>
                 ))}
-                {nlResult.entries.some((e) => !e.error && e.project_id && e.hours) && (
-                  <div className="flex gap-2">
-                    <button type="button" onClick={handleNlApplyAll} className="action-button text-xs px-3 py-1.5 h-auto">
-                      Apply All Valid Entries
-                    </button>
-                    <button type="button" onClick={() => { setNlResult(null); setNlInput(''); }} className="action-button-secondary text-xs px-3 py-1.5 h-auto">
-                      Dismiss
-                    </button>
-                  </div>
-                )}
+                {(() => {
+                  const valid = nlResult.entries.filter((e) => !e.error && e.project_id && e.hours);
+                  if (valid.length === 0) {
+                    return (
+                      <div className="flex gap-2">
+                        <button type="button" onClick={() => { setNlResult(null); setNlInput(''); }} className="action-button-secondary text-xs px-3 py-1.5 h-auto">
+                          Dismiss
+                        </button>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="flex gap-2">
+                      <button type="button" onClick={handleNlApplyAll} className="action-button text-xs px-3 py-1.5 h-auto">
+                        {valid.length === 1 ? 'Apply' : `Apply ${valid.length} entries`}
+                      </button>
+                      <button type="button" onClick={() => { setNlResult(null); setNlInput(''); }} className="action-button-secondary text-xs px-3 py-1.5 h-auto">
+                        Dismiss
+                      </button>
+                    </div>
+                  );
+                })()}
               </div>
             )}
           </div>
@@ -1019,8 +1152,8 @@ export const MyTimePage: React.FC = () => {
             <div className="min-w-[900px]">
               <div className="grid grid-cols-[minmax(280px,2.2fr)_repeat(7,minmax(64px,0.8fr))_minmax(70px,0.7fr)_minmax(80px,0.9fr)] items-center gap-2 text-xs text-muted-foreground mb-3 px-2">
                 <div>Project / Task</div>
-                {weekDates.map((day, index) => (
-                  <div key={getWeekDateKey(day)} className="text-center">{WEEK_DAYS[index]}, {format(day, 'MMM d')}</div>
+                {weekDates.map((day) => (
+                  <div key={getWeekDateKey(day)} className="text-center">{format(day, 'EEE, MMM d')}</div>
                 ))}
                 <div className="text-center">Total</div>
                 <div className="text-right mr-1">Action</div>
@@ -1091,15 +1224,15 @@ export const MyTimePage: React.FC = () => {
                         <div className="text-center text-muted-foreground text-xs"></div>
 
                         <div className="flex justify-end gap-1">
-                          {gridRows.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveGridRow(row.id)}
-                              className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
-                            >
-                              Remove
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveGridRow(row.id)}
+                            disabled={gridRows.length <= 1}
+                            className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed"
+                            title={gridRows.length <= 1 ? 'Add another row before removing this one' : 'Remove this row'}
+                          >
+                            Remove
+                          </button>
                         </div>
                       </div>
 
@@ -1180,13 +1313,26 @@ export const MyTimePage: React.FC = () => {
                   rows={2}
                 />
 
-                <button
-                  onClick={handleSaveGridRows}
-                  disabled={createMutation.isPending}
-                  className="w-full px-3 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 disabled:opacity-50"
-                >
-                  {createMutation.isPending ? 'Saving...' : 'Save Week'}
-                </button>
+                {weeklySubmitStatus?.reason && (
+                  <p className="text-xs text-muted-foreground -mb-1">{weeklySubmitStatus.reason}</p>
+                )}
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={handleSaveGridRows}
+                    disabled={createMutation.isPending}
+                    className="px-3 py-2 bg-muted text-foreground rounded hover:bg-muted/70 disabled:opacity-50"
+                  >
+                    {createMutation.isPending ? 'Saving...' : 'Save Week'}
+                  </button>
+                  <button
+                    onClick={handleSubmitWeek}
+                    disabled={!weeklySubmitStatus?.can_submit || submitMutation.isPending}
+                    className="px-3 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 disabled:opacity-50"
+                    title={weeklySubmitStatus?.can_submit ? 'Submit drafts in the editable window for approval' : weeklySubmitStatus?.reason ?? 'Nothing to submit'}
+                  >
+                    {submitMutation.isPending ? 'Submitting...' : 'Submit for Approval'}
+                  </button>
+                </div>
               </div>
 
             </div>
@@ -1275,8 +1421,24 @@ export const MyTimePage: React.FC = () => {
 
 
 
-        {hasHistoryRange && historyEntries.length > 0 && (
+        {rejectedEntries.length > 0 && (
           <div className="mb-8" ref={historySectionRef}>
+            <h2 className="text-xl font-bold mb-4">Rejected entries · needs rework</h2>
+            <div className="space-y-3">
+              {groupRejectedEntries(rejectedEntries, weekStartsOn).map((group) => (
+                <RejectedGroupCard
+                  key={group.key}
+                  group={group}
+                  onEdit={handleEditEntry}
+                  highlightedEntryId={deepLinkEntryId}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {hasHistoryRange && historyEntries.length > 0 && (
+          <div className="mb-8">
             <h2 className="text-xl font-bold mb-4">History Entries</h2>
             <div className="space-y-4">
               {historyEntries.map((entry: TimeEntry) => (
@@ -1318,7 +1480,8 @@ export const MyTimePage: React.FC = () => {
                   className="field-input"
                   value={editFormData.entry_date}
                   onChange={(e) => setEditFormData((f) => f ? { ...f, entry_date: e.target.value } : f)}
-                  max={allowFutureEntries ? undefined : todayStr}
+                  min={minEntryDateStr}
+                  max={maxEntryDateStr}
                   required
                 />
               </div>

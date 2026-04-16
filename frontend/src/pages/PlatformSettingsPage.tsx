@@ -267,8 +267,7 @@ const PlatformAdminsSection: React.FC = () => {
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState<AdminFormState>(emptyAdminForm());
   const [formError, setFormError] = useState('');
-  const [createdCredentials, setCreatedCredentials] = useState<{ email: string; password: string } | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [createdEmail, setCreatedEmail] = useState<string | null>(null);
 
   const { data: allUsers = [] } = useUsers();
   const platformAdmins = allUsers.filter((u) => u.role === 'PLATFORM_ADMIN');
@@ -294,21 +293,15 @@ const PlatformAdminsSection: React.FC = () => {
       },
       {
         onSuccess: (result) => {
+          void result; // temporary_password intentionally not surfaced — user sets one via verification link.
           setShowAdd(false);
           setForm(emptyAdminForm());
           setFormError('');
-          setCreatedCredentials({ email: form.email, password: result.temporary_password });
+          setCreatedEmail(form.email);
         },
         onError: (err) => setFormError(apiError(err)),
       },
     );
-  };
-
-  const copyCredentials = () => {
-    if (!createdCredentials) return;
-    navigator.clipboard.writeText(`Email: ${createdCredentials.email}\nPassword: ${createdCredentials.password}`);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
@@ -394,27 +387,20 @@ const PlatformAdminsSection: React.FC = () => {
         </form>
       )}
 
-      {/* Credentials dialog */}
-      {createdCredentials && (
+      {/* Verification-sent dialog */}
+      {createdEmail && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-card rounded-xl shadow-2xl p-6 border border-border w-full max-w-md">
             <h3 className="text-lg font-semibold text-foreground mb-1">Platform Admin Created</h3>
             <p className="text-sm text-muted-foreground mb-4">
-              Share these credentials securely. The password cannot be retrieved again.
+              Verification email sent to <span className="font-medium text-foreground">{createdEmail}</span>.
             </p>
-            <div className="rounded-lg bg-muted/40 border border-border p-3 space-y-1 font-mono text-sm mb-4">
-              <div><span className="text-muted-foreground">Email: </span>{createdCredentials.email}</div>
-              <div><span className="text-muted-foreground">Password: </span>{createdCredentials.password}</div>
-            </div>
-            <div className="flex gap-2">
-              <button onClick={copyCredentials} className="action-button text-sm flex-1">
-                {copied ? 'Copied!' : 'Copy credentials'}
-              </button>
+            <div className="flex justify-end">
               <button
-                onClick={() => { setCreatedCredentials(null); setCopied(false); }}
-                className="action-button-secondary text-sm"
+                onClick={() => setCreatedEmail(null)}
+                className="action-button text-sm"
               >
-                Close
+                Done
               </button>
             </div>
           </div>

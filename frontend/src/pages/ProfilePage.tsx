@@ -29,7 +29,7 @@ export const ProfilePage: React.FC = () => {
 
   const [fullName, setFullName] = useState('');
   const [title, setTitle] = useState('');
-  const [department, setDepartment] = useState('');
+  const [department, setDepartment] = useState('');  // read-only on this page; admin manages via user management
   const [timezone, setTimezone] = useState('UTC');
   const [profileError, setProfileError] = useState('');
   const [profileSuccess, setProfileSuccess] = useState('');
@@ -61,7 +61,6 @@ export const ProfilePage: React.FC = () => {
       await updateProfileMutation.mutateAsync({
         full_name: fullName.trim(),
         title: title.trim() || undefined,
-        department: department.trim() || undefined,
         timezone: timezone || undefined,
       });
       setProfileSuccess('Profile updated successfully');
@@ -135,6 +134,12 @@ export const ProfilePage: React.FC = () => {
                 />
               </div>
               <div>
+                <label className="block text-sm font-medium mb-1">Email</label>
+                <div className="w-full px-3 py-2 border rounded bg-muted/40 text-foreground">
+                  {profile?.email || <span className="text-muted-foreground">Not set</span>}
+                </div>
+              </div>
+              <div>
                 <label className="block text-sm font-medium mb-1">Title</label>
                 <input
                   value={title}
@@ -145,12 +150,9 @@ export const ProfilePage: React.FC = () => {
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Department</label>
-                <input
-                  value={department}
-                  onChange={(e) => setDepartment(e.target.value)}
-                  placeholder="Not set"
-                  className="w-full px-3 py-2 border rounded"
-                />
+                <div className="w-full px-3 py-2 border rounded bg-muted/40 text-foreground">
+                  {department || <span className="text-muted-foreground">Not set</span>}
+                </div>
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Timezone</label>
@@ -175,9 +177,6 @@ export const ProfilePage: React.FC = () => {
                   <option value="Asia/Shanghai">Asia/Shanghai</option>
                   <option value="Australia/Sydney">Australia/Sydney</option>
                 </select>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Used to resolve dates like "yesterday" in natural language entry.
-                </p>
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Role</label>

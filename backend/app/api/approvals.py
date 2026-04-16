@@ -47,8 +47,16 @@ async def _get_direct_report_ids(db: AsyncSession, manager_user_id: int) -> list
     return list(result.scalars().all())
 
 
-def _week_start(value: date) -> date:
-    return value - timedelta(days=value.weekday())
+def _week_start(value: date, week_start_day: int = 0) -> date:
+    """0=Sunday, 1=Monday."""
+    py_weekday = value.weekday()  # 0=Mon..6=Sun
+    offset = (py_weekday + 1) % 7 if week_start_day == 0 else py_weekday
+    return value - timedelta(days=offset)
+
+
+async def _resolve_week_start_day(db: AsyncSession, tenant_id: int) -> int:
+    from app.crud.time_entry import _tenant_week_start_day
+    return await _tenant_week_start_day(db, tenant_id)
 
 
 async def _validate_weekly_batch(
@@ -86,7 +94,8 @@ async def _validate_weekly_batch(
             detail="Weekly approval must target one employee at a time",
         )
 
-    week_starts = {_week_start(entry.entry_date) for entry in entries}
+    wsd = await _resolve_week_start_day(db, current_user.tenant_id)
+    week_starts = {_week_start(entry.entry_date, wsd) for entry in entries}
     if len(week_starts) != 1:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -255,10 +264,12 @@ async def get_approval_history_grouped(
     result = await db.execute(query)
     entries = list(result.scalars().all())
 
+    wsd = await _resolve_week_start_day(db, current_user.tenant_id)
+
     # Group by (user_id, week_start)
     groups: dict[str, dict] = {}
     for entry in entries:
-        ws = _week_start(entry.entry_date)
+        ws = _week_start(entry.entry_date, wsd)
         we = ws + timedelta(days=6)
         key = f"{entry.user_id}-{ws.isoformat()}"
         if key not in groups:

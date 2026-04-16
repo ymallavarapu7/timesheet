@@ -11,7 +11,6 @@ import {
   Mail,
   Settings,
   ShieldCheck,
-  UserCircle2,
   UsersRound,
 } from 'lucide-react';
 
@@ -45,7 +44,6 @@ export const buildNavigation = (user: User | null, ingestionEnabled: boolean): N
         { label: 'My Time', to: '/my-time', icon: Clock3, visible: Boolean(user && user.role !== 'PLATFORM_ADMIN') },
         { label: 'Time Off', to: '/time-off', icon: ClipboardCheck, visible: Boolean(user && user.role !== 'PLATFORM_ADMIN') },
         { label: 'Calendar', to: '/calendar', icon: CalendarDays, visible: Boolean(user) },
-        { label: 'Profile', to: '/profile', icon: UserCircle2, visible: Boolean(user) },
       ],
     },
     {

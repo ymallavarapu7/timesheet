@@ -18,6 +18,7 @@ import {
   useIngestionTimesheets,
   useCanReview,
   useIngestionEnabled,
+  useWeekStartsOn,
 } from '@/hooks';
 import type { DashboardActivity, DashboardBarEntryDetail, DashboardDayBreakdown, DashboardProjectBreakdown, DashboardRecentActivityItem, NotificationItem, Project, TeamDailyOverview, Tenant, User } from '@/types';
 
@@ -230,7 +231,8 @@ export const DashboardPage: React.FC = () => {
   const [isPasswordChangeModalOpen, setIsPasswordChangeModalOpen] = useState(false);
   const [showWeekPicker, setShowWeekPicker] = useState(false);
   const [showRecentActivity, setShowRecentActivity] = useState(false);
-  const [pickerMonth, setPickerMonth] = useState<Date>(() => startOfWeek(new Date(), { weekStartsOn: 0 }));
+  const weekStartsOn = useWeekStartsOn();
+  const [pickerMonth, setPickerMonth] = useState<Date>(() => new Date());
   const submittedSectionRef = useRef<HTMLDivElement | null>(null);
   const draftSectionRef = useRef<HTMLDivElement | null>(null);
   const missingSectionRef = useRef<HTMLDivElement | null>(null);
@@ -256,13 +258,13 @@ export const DashboardPage: React.FC = () => {
   const weekRange = useMemo(() => {
     const managerReference = isManagerView ? getLatestWorkingDate(new Date()) : new Date();
     const referenceDate = addWeeks(managerReference, weekOffset);
-    const start = startOfWeek(referenceDate, { weekStartsOn: 0 });
-    const end = endOfWeek(referenceDate, { weekStartsOn: 0 });
+    const start = startOfWeek(referenceDate, { weekStartsOn });
+    const end = endOfWeek(referenceDate, { weekStartsOn });
 
     return {
       startDate: format(start, 'yyyy-MM-dd'),
       endDate: format(end, 'yyyy-MM-dd'),
-      label: isThisWeek(referenceDate, { weekStartsOn: 0 })
+      label: isThisWeek(referenceDate, { weekStartsOn })
         ? 'This week'
         : `${format(start, 'MMM d')} - ${format(end, 'MMM d')}`,
     };
@@ -536,16 +538,16 @@ export const DashboardPage: React.FC = () => {
                     {/* Day grid */}
                     {(() => {
                       const monthStart = new Date(pickerMonth.getFullYear(), pickerMonth.getMonth(), 1);
-                      const gridStart = startOfWeek(monthStart, { weekStartsOn: 0 });
+                      const gridStart = startOfWeek(monthStart, { weekStartsOn });
                       const currentWeekStart = parseISO(weekRange.startDate);
                       const managerReference = isManagerView ? getLatestWorkingDate(new Date()) : new Date();
-                      const anchorWeekStart = startOfWeek(managerReference, { weekStartsOn: 0 });
+                      const anchorWeekStart = startOfWeek(managerReference, { weekStartsOn });
                       const days: React.ReactNode[] = [];
                       for (let i = 0; i < 42; i++) {
                         const day = new Date(gridStart);
                         day.setDate(gridStart.getDate() + i);
-                        const weekStart = startOfWeek(day, { weekStartsOn: 0 });
-                        const weekEnd = endOfWeek(day, { weekStartsOn: 0 });
+                        const weekStart = startOfWeek(day, { weekStartsOn });
+                        const weekEnd = endOfWeek(day, { weekStartsOn });
                         const isCurrentMonth = day.getMonth() === pickerMonth.getMonth();
                         const isInSelectedWeek = day >= currentWeekStart && day <= new Date(weekRange.endDate + 'T00:00:00');
                         days.push(
@@ -553,7 +555,7 @@ export const DashboardPage: React.FC = () => {
                             key={i}
                             type="button"
                             onClick={() => {
-                              const diff = differenceInCalendarWeeks(weekStart, anchorWeekStart, { weekStartsOn: 0 });
+                              const diff = differenceInCalendarWeeks(weekStart, anchorWeekStart, { weekStartsOn });
                               setWeekOffset(diff);
                               setShowWeekPicker(false);
                             }}

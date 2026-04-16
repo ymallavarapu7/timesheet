@@ -5,7 +5,7 @@ import axios from 'axios';
 import { apiClient } from '@/api/client';
 import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, EmptyState, Loading } from '@/components';
 import { mailboxesAPI } from '@/api/endpoints';
-import { useClients, useCreateMailbox, useDeleteMailbox, useMailboxes, useResetMailboxCursor, useTestMailbox, useUpdateMailbox, useTenantSettings, useUpdateTenantSettings } from '@/hooks';
+import { useAuth, useClients, useCreateMailbox, useDeleteMailbox, useMailboxes, useResetMailboxCursor, useTestMailbox, useUpdateMailbox, useTenantSettings, useUpdateTenantSettings } from '@/hooks';
 import type { Mailbox, MailboxPayload, OAuthProvider } from '@/types';
 
 type FormState = {
@@ -74,6 +74,10 @@ const getApiErrorMessage = (error: unknown, fallback: string): string => {
 
 export const MailboxesPage: React.FC = () => {
   const { data: mailboxes = [], isLoading, refetch: refetchMailboxes } = useMailboxes();
+  const { tenant } = useAuth();
+  const maxMailboxes = tenant?.max_mailboxes ?? null;
+  const activeMailboxCount = mailboxes.filter((m) => m.is_active).length;
+  const atCap = maxMailboxes != null && activeMailboxCount >= maxMailboxes;
   const { data: clients = [] } = useClients();
   const createMailbox = useCreateMailbox();
   const updateMailbox = useUpdateMailbox();
@@ -248,9 +252,22 @@ export const MailboxesPage: React.FC = () => {
           <p className="text-xs font-semibold uppercase tracking-[0.28em] text-amber-200/80">Ingestion Admin</p>
           <h1 className="mt-2 text-3xl font-semibold tracking-tight">Mailboxes</h1>
           <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-            Configure intake mailboxes for timesheet submissions. Passwords never come back from the API once saved.</p>
+            Configure intake mailboxes for timesheet submissions. Passwords never come back from the API once saved.
+          </p>
+          {maxMailboxes != null && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {activeMailboxCount} of {maxMailboxes} connected.
+              {atCap && ' Contact the platform admin to raise the limit.'}
+            </p>
+          )}
         </div>
-        <button type="button" onClick={openCreate} className="action-button">
+        <button
+          type="button"
+          onClick={openCreate}
+          className="action-button disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled={atCap}
+          title={atCap ? 'Mailbox limit reached' : 'Add a new mailbox'}
+        >
           <Plus className="mr-2 h-4 w-4" />
           New Mailbox
         </button>
@@ -333,11 +350,23 @@ export const MailboxesPage: React.FC = () => {
           </div>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-3">
-          <button type="button" onClick={() => handleOAuthConnect('google')} className="action-button-secondary">
+          <button
+            type="button"
+            onClick={() => handleOAuthConnect('google')}
+            className="action-button-secondary disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={atCap}
+            title={atCap ? 'Mailbox limit reached' : undefined}
+          >
             <ExternalLink className="mr-2 h-4 w-4" />
             Connect Google
           </button>
-          <button type="button" onClick={() => handleOAuthConnect('microsoft')} className="action-button-secondary">
+          <button
+            type="button"
+            onClick={() => handleOAuthConnect('microsoft')}
+            className="action-button-secondary disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={atCap}
+            title={atCap ? 'Mailbox limit reached' : undefined}
+          >
             <ExternalLink className="mr-2 h-4 w-4" />
             Connect Microsoft
           </button>

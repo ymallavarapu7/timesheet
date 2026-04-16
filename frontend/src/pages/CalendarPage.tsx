@@ -16,7 +16,7 @@ import {
 } from 'date-fns';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Loading, Error, EmptyState } from '@/components';
-import { useTimeEntries, useTimeOffRequests, useUpdateTimeEntry, useUpdateTimeOffRequest } from '@/hooks';
+import { useTimeEntries, useTimeOffRequests, useUpdateTimeEntry, useUpdateTimeOffRequest, useWeekStartsOn } from '@/hooks';
 import { TimeEntry, TimeOffRequest } from '@/types';
 
 type CalendarEntryStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED';
@@ -54,10 +54,11 @@ export const CalendarPage: React.FC = () => {
   const updateTimeEntryMutation = useUpdateTimeEntry(selectedEntryId || 0);
   const updateTimeOffMutation = useUpdateTimeOffRequest(selectedEntryId || 0);
 
+  const weekStartsOn = useWeekStartsOn();
   const monthStart = startOfMonth(currentMonth);
   const monthEnd = endOfMonth(currentMonth);
-  const gridStart = startOfWeek(monthStart, { weekStartsOn: 1 });
-  const gridEnd = endOfWeek(monthEnd, { weekStartsOn: 1 });
+  const gridStart = startOfWeek(monthStart, { weekStartsOn });
+  const gridEnd = endOfWeek(monthEnd, { weekStartsOn });
 
   const calendarDays = eachDayOfInterval({ start: gridStart, end: gridEnd });
 

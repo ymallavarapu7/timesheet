@@ -67,8 +67,9 @@ class UserCreate(UserBase):
 class UserSelfUpdate(BaseModel):
     full_name: Optional[str] = None
     title: Optional[str] = None
-    department: Optional[str] = None
     timezone: Optional[str] = None
+    # Note: department is intentionally not self-editable; only admins can
+    # change it via the user management screen.
 
 
 class UserUpdate(BaseModel):
@@ -293,6 +294,7 @@ class TimeEntryResponse(TimeEntryBase):
     status: TimeEntryStatus
     submitted_at: Optional[datetime] = None
     approved_by: Optional[int] = None
+    approved_by_name: Optional[str] = None
     created_by: Optional[int] = None
     updated_by: Optional[int] = None
     approved_at: Optional[datetime] = None
@@ -346,7 +348,7 @@ class TimeEntryBatchRejectRequest(BaseModel):
 class TimeOffRequestBase(BaseModel):
     request_date: date
     hours: Decimal = Field(..., gt=0, le=24)
-    leave_type: TimeOffType
+    leave_type: str = Field(min_length=1, max_length=50)
     reason: str
 
 
@@ -357,8 +359,33 @@ class TimeOffRequestCreate(TimeOffRequestBase):
 class TimeOffRequestUpdate(BaseModel):
     request_date: Optional[date] = None
     hours: Optional[Decimal] = Field(None, gt=0, le=24)
-    leave_type: Optional[TimeOffType] = None
+    leave_type: Optional[str] = Field(None, min_length=1, max_length=50)
     reason: Optional[str] = None
+
+
+class LeaveTypeCreate(BaseModel):
+    code: Optional[str] = Field(None, min_length=1, max_length=50)
+    label: str = Field(min_length=1, max_length=100)
+    color: Optional[str] = Field(default="#6b7280", max_length=20)
+
+
+class LeaveTypeUpdate(BaseModel):
+    label: Optional[str] = Field(None, min_length=1, max_length=100)
+    color: Optional[str] = Field(None, max_length=20)
+    is_active: Optional[bool] = None
+
+
+class LeaveTypeResponse(BaseModel):
+    id: int
+    tenant_id: int
+    code: str
+    label: str
+    color: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class TimeOffRequestResponse(TimeOffRequestBase):
@@ -560,6 +587,7 @@ class TenantUpdate(BaseModel):
     slug: Optional[str] = Field(None, min_length=1, max_length=100, pattern=r"^[a-z0-9-]+$")
     status: Optional[TenantStatus] = None
     ingestion_enabled: Optional[bool] = None
+    max_mailboxes: Optional[int] = Field(None, ge=0)
 
 
 class TenantResponse(BaseModel):
@@ -568,6 +596,21 @@ class TenantResponse(BaseModel):
     slug: str
     status: TenantStatus
     ingestion_enabled: bool = False
+    max_mailboxes: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DepartmentCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+class DepartmentResponse(BaseModel):
+    id: int
+    tenant_id: int
+    name: str
     created_at: datetime
     updated_at: datetime
 

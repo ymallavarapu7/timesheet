@@ -38,30 +38,19 @@ const extractErrorMessage = (error: unknown): string => {
   return 'Authentication failed';
 };
 
-const readStorageObject = <T,>(key: string): T | null => {
-  const raw = sessionStorage.getItem(key);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    sessionStorage.removeItem(key);
-    return null;
-  }
-};
-
 const createTenantFallback = (user: User): Tenant | null => {
   if (!user.tenant_id) return null;
-  // Try to preserve the name from a previously cached tenant in localStorage
-  const cached = readStorageObject<Tenant>('tenant');
-  const name = (cached && cached.id === user.tenant_id && cached.name) ? cached.name : 'Workspace';
+  // Minimal placeholder used only when /tenants/mine fails. Do NOT read from
+  // sessionStorage — stale cached names (e.g. "Timesheet Application" from an
+  // old seed) would display even after the DB has been updated.
   return {
     id: user.tenant_id,
-    name,
-    slug: cached?.slug || `tenant-${user.tenant_id}`,
+    name: 'Workspace',
+    slug: `tenant-${user.tenant_id}`,
     status: 'active',
-    ingestion_enabled: cached?.ingestion_enabled ?? false,
-    created_at: cached?.created_at || '',
-    updated_at: cached?.updated_at || '',
+    ingestion_enabled: false,
+    created_at: '',
+    updated_at: '',
   };
 };
 
@@ -92,15 +81,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [error, setError] = useState<string | null>(null);
   const sessionVersionRef = useRef(0);
 
-  const persistAuthState = useCallback((nextUser: User | null, nextTenant: Tenant | null, nextToken: string | null) => {
-    if (nextUser) sessionStorage.setItem(USER_STORAGE_KEY, JSON.stringify(nextUser));
-    else sessionStorage.removeItem(USER_STORAGE_KEY);
-
-    if (nextTenant) sessionStorage.setItem(TENANT_STORAGE_KEY, JSON.stringify(nextTenant));
-    else sessionStorage.removeItem(TENANT_STORAGE_KEY);
-
+  const persistAuthState = useCallback((_nextUser: User | null, _nextTenant: Tenant | null, nextToken: string | null) => {
+    // We cache the token (axios interceptor reads it synchronously) but NOT the
+    // user/tenant objects — fetching /auth/me and /tenants/mine fresh on every
+    // page load avoids stale-identity bugs when users get reassigned, renamed,
+    // or moved between tenants.
     if (nextToken) sessionStorage.setItem(TOKEN_STORAGE_KEY, nextToken);
     else sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    sessionStorage.removeItem(USER_STORAGE_KEY);
+    sessionStorage.removeItem(TENANT_STORAGE_KEY);
   }, []);
 
   const logout = useCallback(() => {
@@ -123,7 +112,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const userToUse = nextUser ?? user;
     if (!userToUse?.tenant_id) {
       setTenant(null);
-      persistAuthState(userToUse ?? null, null, accessToken);
       return;
     }
 
@@ -134,7 +122,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         ? await tenantsAPI.get(userToUse.tenant_id)
         : await tenantsAPI.mine();
       setTenant(response.data);
-      persistAuthState(userToUse, response.data, accessToken);
       return;
     } catch {
       const fallback = createTenantFallback(userToUse);
@@ -146,12 +133,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
       }
       setTenant(fallback);
-      persistAuthState(userToUse, fallback, accessToken);
     }
-  }, [accessToken, persistAuthState, user]);
+  }, [user]);
 
   const refreshUser = useCallback(async () => {
-    if (!accessToken) return;
+    // accessToken state may not yet be in scope on the very first call right
+    // after a session restore, so also accept the sessionStorage token.
+    if (!accessToken && !sessionStorage.getItem(TOKEN_STORAGE_KEY)) return;
     const refreshSessionVersion = sessionVersionRef.current;
 
     try {
@@ -223,22 +211,25 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   refreshUserRef.current = refreshUser;
 
   useEffect(() => {
-    const savedUser = readStorageObject<User>(USER_STORAGE_KEY);
-    const savedTenant = readStorageObject<Tenant>(TENANT_STORAGE_KEY);
     const savedToken = sessionStorage.getItem(TOKEN_STORAGE_KEY);
     const savedRefreshToken = sessionStorage.getItem(REFRESH_TOKEN_STORAGE_KEY);
+    // Clear any legacy user/tenant cache from earlier versions so it can't leak
+    // into the UI on first paint.
+    sessionStorage.removeItem(USER_STORAGE_KEY);
+    sessionStorage.removeItem(TENANT_STORAGE_KEY);
 
     if (!savedToken && !savedRefreshToken) {
       setIsLoading(false);
       return;
     }
 
-    if (savedToken && savedUser) {
-      setUser(savedUser);
-      setTenant(savedTenant);
+    if (savedToken) {
+      // Set the token immediately so axios/` /auth/me` can fire with it, but
+      // keep user/tenant null until we get fresh data back from the server.
+      // Nothing flashes on screen because ProtectedRoute shows a spinner while
+      // isLoading is true.
       setAccessToken(savedToken);
-      setIsLoading(false);
-      void refreshUserRef.current();
+      void refreshUserRef.current().finally(() => setIsLoading(false));
       return;
     }
 

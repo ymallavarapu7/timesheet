@@ -1,4 +1,5 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query
+from pydantic import BaseModel as PydanticBaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.schemas import ClientResponse, ClientCreate, ClientUpdate
@@ -123,6 +124,42 @@ async def update_client_endpoint(
         )
 
     return updated_client
+
+
+class BulkDeleteClientsRequest(PydanticBaseModel):
+    client_ids: list[int]
+
+
+@router.post("/bulk-delete")
+async def bulk_delete_clients(
+    body: BulkDeleteClientsRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+) -> dict:
+    deleted = 0
+    for client_id in body.client_ids:
+        client = await get_client_by_id(db, client_id, tenant_id=current_user.tenant_id)
+        if not client:
+            continue
+        ingestion_client_id = client.ingestion_client_id
+        client_id_local = client.id
+        success = await delete_client(db, client_id, tenant_id=current_user.tenant_id)
+        if not success:
+            continue
+        deleted += 1
+        if ingestion_client_id:
+            background_tasks.add_task(
+                _try_outbound_webhook,
+                tenant_id=current_user.tenant_id,
+                event_type="client.deleted",
+                local_id=client_id_local,
+                ingestion_id=ingestion_client_id,
+                changed_fields={},
+                changed_by_name=current_user.full_name,
+                session=db,
+            )
+    return {"deleted": deleted}
 
 
 @router.delete("/{client_id}", status_code=status.HTTP_204_NO_CONTENT)

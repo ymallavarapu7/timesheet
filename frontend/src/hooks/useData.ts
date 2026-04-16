@@ -16,6 +16,8 @@ import {
   mappingsAPI,
   ingestionAPI,
   tenantSettingsAPI,
+  departmentsAPI,
+  leaveTypesAPI,
 } from '@/api/endpoints';
 
 type TimeEntriesListParams = Parameters<typeof timeentriesAPI.list>[0];
@@ -205,6 +207,17 @@ export const useDeleteClient = () => {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: number) => clientsAPI.delete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+};
+
+export const useBulkDeleteClients = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (clientIds: number[]) => clientsAPI.bulkDelete(clientIds).then((res) => res.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
@@ -1022,6 +1035,12 @@ export const useTenantPublicSettings = () => {
   });
 };
 
+/** Resolve tenant week start day as a date-fns compatible 0|1. Defaults to 0 (Sunday). */
+export const useWeekStartsOn = (): 0 | 1 => {
+  const { data } = useTenantPublicSettings();
+  return data?.week_start_day === '1' ? 1 : 0;
+};
+
 export const useUpdateTenantSettings = () => {
   const queryClient = useQueryClient();
   return useMutation({
@@ -1040,6 +1059,76 @@ export const useUnlockUserTimesheet = () => {
     mutationFn: (userId: number) => tenantSettingsAPI.unlockUser(userId).then((res) => res.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
+    },
+  });
+};
+
+// ── Departments ────────────────────────────────────────────────────────────
+
+export const useDepartments = () => {
+  return useQuery({
+    queryKey: ['departments'],
+    queryFn: () => departmentsAPI.list().then((res) => res.data),
+  });
+};
+
+export const useCreateDepartment = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => departmentsAPI.create(name).then((res) => res.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['departments'] });
+    },
+  });
+};
+
+export const useDeleteDepartment = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => departmentsAPI.delete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['departments'] });
+    },
+  });
+};
+
+// ── Leave types ────────────────────────────────────────────────────────────
+
+export const useLeaveTypes = (includeInactive = false) => {
+  return useQuery({
+    queryKey: ['leave-types', includeInactive],
+    queryFn: () => leaveTypesAPI.list(includeInactive).then((r) => r.data),
+  });
+};
+
+export const useCreateLeaveType = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { label: string; code?: string; color?: string }) =>
+      leaveTypesAPI.create(data).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['leave-types'] });
+    },
+  });
+};
+
+export const useUpdateLeaveType = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: number; data: { label?: string; color?: string; is_active?: boolean } }) =>
+      leaveTypesAPI.update(id, data).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['leave-types'] });
+    },
+  });
+};
+
+export const useDeleteLeaveType = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => leaveTypesAPI.delete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['leave-types'] });
     },
   });
 };

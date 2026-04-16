@@ -546,9 +546,18 @@ async def update_last_fetched_at(mailbox: Mailbox, session: AsyncSession) -> Non
     Callers (e.g. the email_fetch worker) should invoke this AFTER messages
     returned by fetch_messages have been fully processed, so that the cursor
     is not advanced on partial failure.
+
+    Uses a direct UPDATE so it works even when the mailbox instance was loaded
+    in a different (now closed) session — the worker's prefetch loop holds
+    detached Mailbox objects across multiple sessions.
     """
-    mailbox.last_fetched_at = datetime.now(timezone.utc)
-    await session.flush()
+    from sqlalchemy import update as sa_update
+    now = datetime.now(timezone.utc)
+    await session.execute(
+        sa_update(Mailbox).where(Mailbox.id == mailbox.id).values(last_fetched_at=now)
+    )
+    # Keep the in-memory object roughly in sync for any caller that reads it.
+    mailbox.last_fetched_at = now
 
 
 async def fetch_single_message(

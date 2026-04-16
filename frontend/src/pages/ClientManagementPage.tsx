@@ -3,7 +3,8 @@ import { PlusCircle, Pencil, Trash2, X } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 
 import { Loading, Error, SearchInput } from '@/components';
-import { useClients, useCreateClient, useUpdateClient, useDeleteClient, useProjects, useCreateProject, useUpdateProject, useDeleteProject, useTasks, useCreateTask, useUpdateTask, useDeleteTask } from '@/hooks';
+import { BulkSelectBar } from '@/components/ui/BulkSelectBar';
+import { useClients, useCreateClient, useUpdateClient, useDeleteClient, useBulkDeleteClients, useProjects, useCreateProject, useUpdateProject, useDeleteProject, useTasks, useCreateTask, useUpdateTask, useDeleteTask } from '@/hooks';
 import { Client, Project, Task } from '@/types';
 
 type ClientFormState = {
@@ -78,6 +79,8 @@ export const ClientManagementPage: React.FC = () => {
   const createClient = useCreateClient();
   const updateClient = useUpdateClient();
   const deleteClient = useDeleteClient();
+  const bulkDeleteClients = useBulkDeleteClients();
+  const [selectedClientIds, setSelectedClientIds] = useState<Set<number>>(new Set());
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const deleteProject = useDeleteProject();
 
@@ -429,6 +432,27 @@ export const ClientManagementPage: React.FC = () => {
     }
   };
 
+  const toggleClientSelection = (clientId: number) => {
+    setSelectedClientIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(clientId)) next.delete(clientId);
+      else next.add(clientId);
+      return next;
+    });
+  };
+
+  const handleBulkDeleteClients = async () => {
+    const ids = Array.from(selectedClientIds);
+    if (ids.length === 0) return;
+    if (!window.confirm(`Delete ${ids.length} client(s)? This will also delete their projects and cannot be undone.`)) return;
+    try {
+      await bulkDeleteClients.mutateAsync(ids);
+      setSelectedClientIds(new Set());
+    } catch {
+      alert('Failed to delete some clients. They may have associated time entries.');
+    }
+  };
+
   const handleDeleteProject = async (project: Project) => {
     if (!window.confirm(`Delete project "${project.name}"? This will also delete its tasks and time entries.`)) return;
     try {
@@ -487,10 +511,31 @@ export const ClientManagementPage: React.FC = () => {
               />
             </div>
 
+            <BulkSelectBar
+              selectedCount={selectedClientIds.size}
+              totalCount={filteredClients.length}
+              onSelectAll={() => setSelectedClientIds(new Set(filteredClients.map((c: Client) => c.id)))}
+              onClearSelection={() => setSelectedClientIds(new Set())}
+              onDelete={handleBulkDeleteClients}
+              isDeleting={bulkDeleteClients.isPending}
+              itemLabel="client"
+            />
+
             <div className="bg-card border rounded-xl overflow-hidden">
               <table className="w-full text-sm">
                 <thead className="bg-muted/40 border-b">
                   <tr>
+                    <th className="px-3 py-3 w-10">
+                      <input
+                        type="checkbox"
+                        checked={filteredClients.length > 0 && selectedClientIds.size === filteredClients.length}
+                        onChange={(e) => {
+                          if (e.target.checked) setSelectedClientIds(new Set(filteredClients.map((c: Client) => c.id)));
+                          else setSelectedClientIds(new Set());
+                        }}
+                        aria-label="Select all clients"
+                      />
+                    </th>
                     <th className="text-left px-4 py-3 font-semibold">Client Name</th>
                     <th className="text-left px-4 py-3 font-semibold">QuickBooks Customer ID</th>
                     <th className="text-right px-4 py-3 font-semibold">Projects</th>
@@ -500,7 +545,7 @@ export const ClientManagementPage: React.FC = () => {
                 <tbody className="divide-y">
                   {filteredClients.length === 0 && (
                     <tr>
-                      <td colSpan={3} className="text-center py-8 text-muted-foreground">
+                      <td colSpan={5} className="text-center py-8 text-muted-foreground">
                         No clients found
                       </td>
                     </tr>
@@ -511,6 +556,14 @@ export const ClientManagementPage: React.FC = () => {
                       className="hover:bg-muted/10 transition-colors cursor-pointer"
                       onClick={() => navigateToProjects(client.id)}
                     >
+                      <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={selectedClientIds.has(client.id)}
+                          onChange={() => toggleClientSelection(client.id)}
+                          aria-label={`Select ${client.name}`}
+                        />
+                      </td>
                       <td className="px-4 py-3">
                         <div className="font-semibold text-primary underline underline-offset-2">{client.name}</div>
                       </td>
