@@ -26,7 +26,7 @@ import {
   useUpdateIngestionTimesheetData,
   useUsers,
 } from '@/hooks';
-import type { EmailAttachmentSummary, IngestionLineItem, IngestionLineItemPayload } from '@/types';
+import type { EmailAttachmentSummary, IngestionLineItem, IngestionLineItemPayload, SpreadsheetPreview } from '@/types';
 
 type LineItemFormState = { work_date: string; hours: string; description: string; project_code: string; project_id: string };
 
@@ -65,6 +65,110 @@ const normalizeEmployeeNameForMatch = (value?: string | null) => {
   if (first.startsWith('venj') && first.length > 6) parts[0] = first.slice(4);
   if (first.startsWith('veni') && first.length > 6) parts[0] = first.slice(4);
   return parts.join(' ');
+};
+
+const trimTrailingEmptyColumns = (rows: string[][]): string[][] => {
+  if (rows.length === 0) return rows;
+  const width = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  let keep = width;
+  while (keep > 0 && rows.every((row) => ((row[keep - 1] ?? '') as string).trim() === '')) {
+    keep -= 1;
+  }
+  return keep === width ? rows : rows.map((row) => row.slice(0, keep));
+};
+
+const splitIntoBlocks = (rows: string[][]): string[][][] => {
+  if (rows.length === 0) return [];
+  const width = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  if (width === 0) return [];
+  const emptyCols = new Set<number>();
+  for (let c = 0; c < width; c += 1) {
+    if (rows.every((row) => ((row[c] ?? '') as string).trim() === '')) emptyCols.add(c);
+  }
+  const ranges: Array<[number, number]> = [];
+  let start: number | null = null;
+  for (let c = 0; c < width; c += 1) {
+    if (emptyCols.has(c)) {
+      if (start !== null) {
+        ranges.push([start, c]);
+        start = null;
+      }
+    } else if (start === null) {
+      start = c;
+    }
+  }
+  if (start !== null) ranges.push([start, width]);
+  return ranges
+    .map(([s, e]) => rows.map((row) => row.slice(s, e)).filter((row) => row.some((cell) => cell.trim() !== '')))
+    .filter((block) => block.length > 0);
+};
+
+const BlockTable: React.FC<{ rows: string[][] }> = ({ rows }) => {
+  const maxCols = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  return (
+    <table className="min-w-full border-collapse text-sm">
+      <tbody>
+        {rows.map((row, rIdx) => (
+          <tr
+            key={rIdx}
+            className={rIdx === 0 ? 'bg-muted/50 font-semibold text-foreground' : 'even:bg-muted/20'}
+          >
+            {Array.from({ length: maxCols }, (_, cIdx) => (
+              <td
+                key={cIdx}
+                className="whitespace-nowrap border border-border/60 px-3 py-1.5 align-top text-foreground"
+              >
+                {row[cIdx] ?? ''}
+              </td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+};
+
+const SpreadsheetPreviewTable: React.FC<{ preview: SpreadsheetPreview }> = ({ preview }) => {
+  const [activeSheet, setActiveSheet] = React.useState(0);
+  const sheets = preview.sheets ?? [];
+  if (sheets.length === 0) {
+    return <div className="px-6 py-10 text-sm text-muted-foreground">Spreadsheet is empty.</div>;
+  }
+  const rawCurrent = sheets[Math.min(activeSheet, sheets.length - 1)];
+  const trimmedRows = trimTrailingEmptyColumns(rawCurrent.rows);
+  // Prefer server-provided blocks; fall back to computing them client-side so
+  // older previews without the `blocks` field still benefit.
+  const blocks = rawCurrent.blocks?.length
+    ? rawCurrent.blocks.map((b) => b.rows)
+    : splitIntoBlocks(trimmedRows);
+  const renderBlocks = blocks.length > 0 ? blocks : [trimmedRows];
+  return (
+    <div className="flex flex-col">
+      {sheets.length > 1 && (
+        <div className="flex shrink-0 gap-1 border-b border-border/60 px-4 py-2 overflow-x-auto">
+          {sheets.map((sheet, idx) => (
+            <button
+              key={`${sheet.name}-${idx}`}
+              type="button"
+              onClick={() => setActiveSheet(idx)}
+              className={`shrink-0 rounded-md px-3 py-1 text-xs font-medium transition ${
+                idx === activeSheet
+                  ? 'bg-primary/15 text-primary'
+                  : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+              }`}
+            >
+              {sheet.name || `Sheet ${idx + 1}`}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="overflow-auto max-h-[75vh] px-4 py-3 space-y-4">
+        {renderBlocks.map((rows, idx) => (
+          <BlockTable key={idx} rows={rows} />
+        ))}
+      </div>
+    </div>
+  );
 };
 
 export const ReviewPanelPage: React.FC = () => {
@@ -151,6 +255,9 @@ export const ReviewPanelPage: React.FC = () => {
   const [selectedAttachmentId, setSelectedAttachmentId] = React.useState<number | null>(null);
   const [attachmentUrl, setAttachmentUrl] = React.useState<string | null>(null);
   const [attachmentLoadError, setAttachmentLoadError] = React.useState<string | null>(null);
+  const [showFullSheet, setShowFullSheet] = React.useState(false);
+  const [fullSheetHtml, setFullSheetHtml] = React.useState<string | null>(null);
+  const [fullSheetLoading, setFullSheetLoading] = React.useState(false);
   const [showApproveConfirm, setShowApproveConfirm] = React.useState(false);
   const [showRejectPanel, setShowRejectPanel] = React.useState(false);
   const [rejectingLineItemId, setRejectingLineItemId] = React.useState<number | null>(null);
@@ -204,6 +311,22 @@ export const ReviewPanelPage: React.FC = () => {
       .catch(() => { setAttachmentUrl(null); setAttachmentLoadError('Unable to load attachment preview.'); });
     return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
   }, [selectedAttachmentId]); // intentionally excludes emailContext — only re-fetch when the actual ID changes
+
+  // Reset full-sheet state when switching attachments.
+  React.useEffect(() => {
+    setShowFullSheet(false);
+    setFullSheetHtml(null);
+  }, [selectedAttachmentId]);
+
+  // Lazy-load full HTML the first time the toggle is flipped on.
+  React.useEffect(() => {
+    if (!showFullSheet || !selectedAttachmentId || fullSheetHtml || fullSheetLoading) return;
+    setFullSheetLoading(true);
+    ingestionAPI.getAttachmentFullHtml(selectedAttachmentId)
+      .then((res) => setFullSheetHtml(res.data.html))
+      .catch(() => setFullSheetHtml('<p style="padding:16px;font-family:sans-serif">Failed to load full sheet.</p>'))
+      .finally(() => setFullSheetLoading(false));
+  }, [showFullSheet, selectedAttachmentId, fullSheetHtml, fullSheetLoading]);
 
   const selectedAttachment = emailContext?.attachments.find((item) => item.id === selectedAttachmentId) ?? null;
   const linkedAttachment =
@@ -596,6 +719,17 @@ export const ReviewPanelPage: React.FC = () => {
                 <p className="font-medium text-foreground">{selectedAttachment.filename}</p>
                 <Badge tone="outline">{selectedAttachment.extraction_status}</Badge>
                 {selectedAttachment.extraction_method && <Badge tone="info">{selectedAttachment.extraction_method}</Badge>}
+                {selectedAttachment.rendered_html && (
+                  <label className="ml-auto flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 cursor-pointer"
+                      checked={showFullSheet}
+                      onChange={(e) => setShowFullSheet(e.target.checked)}
+                    />
+                    Show full sheet{fullSheetLoading && showFullSheet ? '…' : ''}
+                  </label>
+                )}
               </div>
               <div>
                 {attachmentLoadError
@@ -604,9 +738,13 @@ export const ReviewPanelPage: React.FC = () => {
                     ? <iframe src={attachmentUrl} className="h-[75vh] w-full border-0" title={selectedAttachment.filename} />
                     : selectedAttachmentType === 'image' && attachmentUrl
                       ? <div className="flex items-center justify-center p-4"><img src={attachmentUrl} alt={selectedAttachment.filename} className="max-w-full rounded-2xl object-contain" /></div>
-                      : selectedAttachment.raw_extracted_text
-                        ? <pre className="whitespace-pre-wrap px-5 py-5 font-mono text-sm text-muted-foreground">{selectedAttachment.raw_extracted_text}</pre>
-                        : <div className="px-6 py-10 text-sm text-muted-foreground">Preview unavailable for this attachment.</div>}
+                      : selectedAttachment.rendered_html
+                        ? <iframe srcDoc={showFullSheet && fullSheetHtml ? fullSheetHtml : selectedAttachment.rendered_html} className="h-[75vh] w-full border-0" title={selectedAttachment.filename} sandbox="" />
+                        : selectedAttachment.spreadsheet_preview
+                          ? <SpreadsheetPreviewTable preview={selectedAttachment.spreadsheet_preview} />
+                          : selectedAttachment.raw_extracted_text
+                            ? <pre className="whitespace-pre overflow-x-auto px-5 py-5 font-mono text-sm text-muted-foreground">{selectedAttachment.raw_extracted_text}</pre>
+                            : <div className="px-6 py-10 text-sm text-muted-foreground">Preview unavailable for this attachment.</div>}
               </div>
             </div>
           )}

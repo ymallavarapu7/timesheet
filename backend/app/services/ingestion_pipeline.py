@@ -449,6 +449,8 @@ async def reprocess_stored_email(
         attachment_record.extraction_status = ExtractionStatus.pending
         attachment_record.extraction_error = None
         attachment_record.raw_extracted_text = None
+        attachment_record.spreadsheet_preview = None
+        attachment_record.rendered_html = None
         try:
             content = await read_file(attachment_record.storage_key)
         except Exception as exc:
@@ -685,6 +687,8 @@ async def _process_timesheet_attachment(
         mime_type=attachment.mime_type,
     )
     attachment_record.raw_extracted_text = extraction.text
+    attachment_record.spreadsheet_preview = extraction.spreadsheet_preview
+    attachment_record.rendered_html = extraction.rendered_html
     attachment_record.extraction_method = (
         extraction.method if extraction.method != "failed" else None
     )

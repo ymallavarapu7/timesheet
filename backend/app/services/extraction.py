@@ -109,6 +109,8 @@ class ExtractionResult:
         confidence: float | None = None,
         error: str | None = None,
         vision_timesheets: list[dict] | None = None,
+        spreadsheet_preview: dict | None = None,
+        rendered_html: str | None = None,
     ) -> None:
         self.text = text
         self.method = method
@@ -117,6 +119,13 @@ class ExtractionResult:
         # Populated when Vision API returns structured JSON directly.
         # When set, the pipeline skips a second LLM extraction call.
         self.vision_timesheets = vision_timesheets
+        # Structured preview of spreadsheet content for the reviewer UI.
+        # Shape: {"sheets": [{"name": str, "rows": list[list[str]]}]}.
+        # Retained for backward-compat; new previews use `rendered_html`.
+        self.spreadsheet_preview = spreadsheet_preview
+        # Self-contained HTML document rendering the source spreadsheet for
+        # reviewer display. Populated for xlsx/csv attachments.
+        self.rendered_html = rendered_html
 
     @property
     def success(self) -> bool:
@@ -126,6 +135,59 @@ class ExtractionResult:
 
 
 # ─── Spreadsheet extraction ───────────────────────────────────────────────────
+
+
+def _trim_trailing_empty_columns(rows: list[list[str]]) -> list[list[str]]:
+    """Drop columns from the right edge where every cell across all rows is empty."""
+    if not rows:
+        return rows
+    width = max((len(r) for r in rows), default=0)
+    keep = width
+    while keep > 0 and all((row[keep - 1] if keep - 1 < len(row) else "").strip() == "" for row in rows):
+        keep -= 1
+    if keep == width:
+        return rows
+    return [row[:keep] for row in rows]
+
+
+def _split_into_blocks(rows: list[list[str]]) -> list[list[list[str]]]:
+    """Split rows horizontally on fully-empty separator columns.
+
+    Excel sheets often pack multiple unrelated tables side-by-side with a blank
+    column between them. This returns one rows-list per dense block.
+    """
+    if not rows:
+        return []
+    width = max((len(r) for r in rows), default=0)
+    if width == 0:
+        return []
+    # A column is "empty" when no row has any non-whitespace content there.
+    empty_cols = {
+        c for c in range(width)
+        if all(((row[c] if c < len(row) else "")).strip() == "" for row in rows)
+    }
+    # Walk columns left→right, accumulating dense ranges separated by empties.
+    ranges: list[tuple[int, int]] = []
+    start: int | None = None
+    for c in range(width):
+        if c in empty_cols:
+            if start is not None:
+                ranges.append((start, c))
+                start = None
+        else:
+            if start is None:
+                start = c
+    if start is not None:
+        ranges.append((start, width))
+    blocks: list[list[list[str]]] = []
+    for s, e in ranges:
+        block = [row[s:e] for row in rows]
+        # Drop rows that are fully empty inside this block.
+        block = [row for row in block if any(cell.strip() for cell in row)]
+        if block:
+            blocks.append(block)
+    return blocks
+
 
 def _extract_spreadsheet(content: bytes, mime_type: str) -> ExtractionResult:
     try:
@@ -140,20 +202,43 @@ def _extract_spreadsheet(content: bytes, mime_type: str) -> ExtractionResult:
             except ImportError:
                 pass
             text = content.decode(encoding, errors="replace")
-            reader = csv.reader(io.StringIO(text))
+            rows = [row for row in csv.reader(io.StringIO(text))]
+            trimmed = _trim_trailing_empty_columns(rows)
+            blocks = [{"rows": b} for b in _split_into_blocks(trimmed)]
+            preview = {"sheets": [{"name": "Sheet1", "rows": trimmed, "blocks": blocks}]}
+            csv_html = None
+            try:
+                from app.services.xlsx_render import render_csv_to_html
+                csv_html = render_csv_to_html(content, encoding)
+            except Exception as render_exc:
+                logger.warning("csv HTML render failed (non-fatal): %s", render_exc)
             return ExtractionResult(
-                text="\n".join("\t".join(row) for row in reader),
+                text="\n".join("\t".join(row) for row in rows),
                 method="native_spreadsheet",
+                spreadsheet_preview=preview,
+                rendered_html=csv_html,
             )
 
         # ── Helper: convert Excel date serial numbers to readable dates ──
         from datetime import datetime as _dt, timedelta as _td
+
+        # Excel's epoch is 1899-12-30 (with the Lotus 1-2-3 1900 leap-year bug).
+        # That makes 1900-01-01 a Sunday, so day-of-month directly indexes a
+        # weekday name. Excel users frequently put weekdays in a column using a
+        # custom format like `dddd` — openpyxl returns the underlying datetime,
+        # not the rendered string, so we'd otherwise show "1900-01-01" etc. Map
+        # 1900 dates back to weekday names — no real timesheet uses 1900 dates.
+        _WEEKDAY_NAMES = ("Sunday", "Monday", "Tuesday", "Wednesday",
+                          "Thursday", "Friday", "Saturday")
 
         def _format_cell(cell_value):
             """Convert a cell value to string, handling Excel date serials."""
             if cell_value is None:
                 return ""
             if isinstance(cell_value, _dt):
+                if cell_value.year == 1900:
+                    # Day 1 = 1900-01-01 = Sunday; map to weekday name.
+                    return _WEEKDAY_NAMES[(cell_value.day - 1) % 7]
                 return cell_value.strftime("%Y-%m-%d")
             if isinstance(cell_value, (int, float)):
                 # Excel date serial range: ~36526 (2000-01-01) to ~54789 (2050-01-01)
@@ -170,15 +255,19 @@ def _extract_spreadsheet(content: bytes, mime_type: str) -> ExtractionResult:
 
         # Try openpyxl first (.xlsx), then fall back to xlrd (.xls)
         lines: list[str] = []
+        sheets_preview: list[dict] = []
         try:
             import openpyxl
             workbook = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
             for sheet in workbook.worksheets:
                 lines.append(f"=== Sheet: {sheet.title} ===")
+                sheet_rows: list[list[str]] = []
                 for row in sheet.iter_rows(values_only=True):
                     cells = [_format_cell(cell) for cell in row]
                     if any(cell.strip() for cell in cells):
                         lines.append("\t".join(cells))
+                        sheet_rows.append(cells)
+                sheets_preview.append({"name": sheet.title, "rows": sheet_rows})
         except Exception:
             # openpyxl failed — try xlrd for old .xls format
             try:
@@ -186,6 +275,7 @@ def _extract_spreadsheet(content: bytes, mime_type: str) -> ExtractionResult:
                 workbook = xlrd.open_workbook(file_contents=content)
                 for sheet in workbook.sheets():
                     lines.append(f"=== Sheet: {sheet.name} ===")
+                    sheet_rows: list[list[str]] = []
                     for row_idx in range(sheet.nrows):
                         cells = []
                         for col in range(sheet.ncols):
@@ -195,20 +285,48 @@ def _extract_spreadsheet(content: bytes, mime_type: str) -> ExtractionResult:
                             if cell_type == 3:
                                 try:
                                     date_tuple = xlrd.xldate_as_tuple(cell_value, workbook.datemode)
-                                    cells.append(_dt(*date_tuple[:3]).strftime("%Y-%m-%d") if date_tuple[0] else
-                                                 f"{date_tuple[3]:02d}:{date_tuple[4]:02d}")
+                                    if date_tuple[0] == 1900:
+                                        cells.append(_WEEKDAY_NAMES[(date_tuple[2] - 1) % 7])
+                                    elif date_tuple[0]:
+                                        cells.append(_dt(*date_tuple[:3]).strftime("%Y-%m-%d"))
+                                    else:
+                                        cells.append(f"{date_tuple[3]:02d}:{date_tuple[4]:02d}")
                                 except Exception:
                                     cells.append(_format_cell(cell_value))
                             else:
                                 cells.append(_format_cell(cell_value))
                         if any(cell.strip() for cell in cells):
                             lines.append("\t".join(cells))
+                            sheet_rows.append(cells)
+                    sheets_preview.append({"name": sheet.name, "rows": sheet_rows})
             except ImportError:
                 raise ValueError("Neither openpyxl nor xlrd available for spreadsheet extraction")
 
         if not lines:
             raise ValueError("Spreadsheet extraction produced no content")
-        return ExtractionResult(text="\n".join(lines), method="native_spreadsheet")
+        for sheet in sheets_preview:
+            sheet["rows"] = _trim_trailing_empty_columns(sheet["rows"])
+            sheet["blocks"] = [
+                {"rows": block} for block in _split_into_blocks(sheet["rows"])
+            ]
+        preview = {"sheets": sheets_preview} if sheets_preview else None
+        # HTML render is display-only — never let its failure break extraction.
+        rendered_html = None
+        try:
+            if "openxmlformats" in mime_type or mime_type.endswith(".sheet"):
+                from app.services.xlsx_render import render_xlsx_to_html
+                rendered_html = render_xlsx_to_html(content)
+            elif mime_type == "application/vnd.ms-excel":
+                from app.services.xlsx_render import render_xls_to_html
+                rendered_html = render_xls_to_html(content)
+        except Exception as render_exc:
+            logger.warning("xlsx HTML render failed (non-fatal): %s", render_exc)
+        return ExtractionResult(
+            text="\n".join(lines),
+            method="native_spreadsheet",
+            spreadsheet_preview=preview,
+            rendered_html=rendered_html,
+        )
     except Exception as exc:
         logger.warning("Spreadsheet extraction failed: %s", exc)
         return ExtractionResult(text="", method="failed", error=str(exc))

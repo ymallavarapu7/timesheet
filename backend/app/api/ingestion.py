@@ -230,6 +230,8 @@ def _timesheet_to_detail(timesheet: IngestionTimesheet) -> dict:
                     "extraction_status": _enum_value(attachment.extraction_status),
                     "extraction_error": attachment.extraction_error,
                     "raw_extracted_text": attachment.raw_extracted_text,
+                    "spreadsheet_preview": attachment.spreadsheet_preview,
+                    "rendered_html": attachment.rendered_html,
                 }
             )
 
@@ -313,6 +315,8 @@ def _attachment_to_read_dict(attachment: EmailAttachment) -> dict:
         "extraction_status": _enum_value(attachment.extraction_status),
         "extraction_error": attachment.extraction_error,
         "raw_extracted_text": attachment.raw_extracted_text,
+        "spreadsheet_preview": attachment.spreadsheet_preview,
+        "rendered_html": attachment.rendered_html,
     }
 
 
@@ -913,6 +917,49 @@ async def get_attachment_file(
             "Content-Disposition": f'inline; filename="{attachment.filename}"',
         },
     )
+
+
+@router.get("/attachments/{attachment_id}/full-html")
+async def get_attachment_full_html(
+    attachment_id: int,
+    current_user=Depends(require_can_review),
+    _: object = Depends(require_ingestion_enabled),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """Return an unbounded HTML render of a spreadsheet attachment.
+
+    The default `rendered_html` field on the attachment is bounded to the dense
+    top-left rectangle. Reviewers can request the full sheet on demand.
+    """
+    attachment_result = await session.execute(
+        select(EmailAttachment)
+        .where(EmailAttachment.id == attachment_id)
+        .options(selectinload(EmailAttachment.email))
+    )
+    attachment = attachment_result.scalar_one_or_none()
+    if attachment is None or attachment.email.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+
+    mime = attachment.mime_type or ""
+    if not ("openxmlformats" in mime or mime == "application/vnd.ms-excel" or "csv" in mime):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Full-sheet preview is only available for spreadsheets")
+
+    try:
+        file_bytes = await read_file(attachment.storage_key)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment file not found") from exc
+
+    from app.services.xlsx_render import render_xlsx_to_html, render_xls_to_html, render_csv_to_html
+    rendered = None
+    if "openxmlformats" in mime or mime.endswith(".sheet"):
+        rendered = render_xlsx_to_html(file_bytes, bounded=False)
+    elif mime == "application/vnd.ms-excel":
+        rendered = render_xls_to_html(file_bytes, bounded=False)
+    elif "csv" in mime:
+        rendered = render_csv_to_html(file_bytes)
+    if rendered is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to render full sheet")
+    return {"html": rendered}
 
 
 @router.post("/timesheets/reapply-mappings", response_model=MappingReapplyResult)

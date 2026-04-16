@@ -446,6 +446,20 @@ export interface SkippedEmailOverview {
   emails: SkippedEmail[];
 }
 
+export interface SpreadsheetPreviewBlock {
+  rows: string[][];
+}
+
+export interface SpreadsheetPreviewSheet {
+  name: string;
+  rows: string[][];
+  blocks?: SpreadsheetPreviewBlock[];
+}
+
+export interface SpreadsheetPreview {
+  sheets: SpreadsheetPreviewSheet[];
+}
+
 export interface EmailAttachmentSummary {
   id: number;
   filename: string;
@@ -456,6 +470,8 @@ export interface EmailAttachmentSummary {
   extraction_status: string;
   extraction_error?: string | null;
   raw_extracted_text?: string | null;
+  spreadsheet_preview?: SpreadsheetPreview | null;
+  rendered_html?: string | null;
 }
 
 export interface IngestionEmailContext {

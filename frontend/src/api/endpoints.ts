@@ -472,6 +472,8 @@ export const ingestionAPI = {
     });
     return URL.createObjectURL(response.data);
   },
+  getAttachmentFullHtml: (attachmentId: number) =>
+    apiClient.get<{ html: string }>(`/api/ingestion/attachments/${attachmentId}/full-html`),
   listTimesheets: (params?: { status_filter?: string; client_id?: number; employee_id?: number; email_id?: number; search?: string; limit?: number; offset?: number }) =>
     apiClient.get<IngestionTimesheetSummary[]>('/api/ingestion/timesheets', { params }),
   getTimesheet: (id: number) => apiClient.get<IngestionTimesheetDetail>(`/api/ingestion/timesheets/${id}`),
