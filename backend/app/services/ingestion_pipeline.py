@@ -10,6 +10,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.client import Client
@@ -1374,19 +1375,52 @@ async def _resolve_or_create_extracted_employee_user(
             break
         suffix += 1
 
-    created_user = User(
-        tenant_id=tenant_id,
-        email=use_email,
-        username=candidate_username,
-        full_name=display_name,
-        hashed_password=get_password_hash("password"),
-        role=UserRole.EMPLOYEE,
-        is_active=True,
-        has_changed_password=False,
-        can_review=False,
-        is_external=True,
-        ingestion_created_by="extracted_employee_name",
+    # Insert with retry — two concurrent jobs can both pass the uniqueness
+    # checks above, then both try to INSERT with the same email/username. The
+    # losing insert raises IntegrityError. On conflict we:
+    #   1. Roll the savepoint back
+    #   2. Re-check if another worker just created the user we wanted (name match)
+    #   3. Otherwise generate a fresh placeholder email/username and retry.
+    hashed_password = get_password_hash("password")
+    for attempt in range(3):
+        try:
+            async with session.begin_nested():
+                created_user = User(
+                    tenant_id=tenant_id,
+                    email=use_email,
+                    username=candidate_username,
+                    full_name=display_name,
+                    hashed_password=hashed_password,
+                    role=UserRole.EMPLOYEE,
+                    is_active=True,
+                    has_changed_password=False,
+                    can_review=False,
+                    is_external=True,
+                    ingestion_created_by="extracted_employee_name",
+                )
+                session.add(created_user)
+                await session.flush()
+            return created_user.id
+        except IntegrityError:
+            # Another worker won the race. Either:
+            #   (a) they created the same person — find them by name and use that id
+            #   (b) the collision is on email/username only — generate fresh ones and retry
+            recheck = await session.execute(
+                select(User).where(
+                    (User.tenant_id == tenant_id)
+                    & (User.is_active == True)
+                )
+            )
+            for existing in recheck.scalars().all():
+                if _normalize_person_name(existing.full_name) == normalized_extracted_name:
+                    return existing.id
+            # Not the same person — force a fresh synthetic email/username and retry.
+            suffix = attempt + 1
+            use_email = f"{base_slug}.{tenant_id}_{suffix}_{int(datetime.now(timezone.utc).timestamp())}@ingestion.internal"
+            candidate_username = f"{base_slug}_{tenant_id}_{suffix}_{int(datetime.now(timezone.utc).timestamp())}"
+    # Gave up after retries.
+    logger.warning(
+        "Failed to create extracted-employee user after retries: name=%s tenant=%s",
+        display_name, tenant_id,
     )
-    session.add(created_user)
-    await session.flush()
-    return created_user.id
+    return None
