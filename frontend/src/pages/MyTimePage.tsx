@@ -922,13 +922,20 @@ export const MyTimePage: React.FC = () => {
   };
 
   const handleSubmitWeek = async () => {
-    const dueDate = new Date(weeklySubmitStatus?.due_date ?? new Date());
+    // Backend enforces full-week submission (unless the tenant allows partial).
+    // Send every DRAFT entry that falls inside the currently-anchored week so
+    // the submit payload matches what the server expects.
+    const weekStartDate = startOfWeek(weekAnchorDate, { weekStartsOn });
+    const weekEndDate = endOfWeek(weekAnchorDate, { weekStartsOn });
     const candidateIds = draftEntries
-      .filter((entry: TimeEntry) => new Date(entry.entry_date) <= dueDate)
+      .filter((entry: TimeEntry) => {
+        const d = parseISO(entry.entry_date);
+        return d >= weekStartDate && d <= weekEndDate;
+      })
       .map((entry: TimeEntry) => entry.id);
 
     if (candidateIds.length === 0) {
-      alert('No draft entries available for this submission window.');
+      alert('No draft entries for this week.');
       return;
     }
 

@@ -140,10 +140,15 @@ If you were not expecting this email, please ignore it.
 
 
 async def mark_email_verified(db: AsyncSession, user: User) -> None:
-    """Mark the user as verified and clear the token (caller must commit)."""
+    """Mark the user as verified (caller must commit).
+
+    We leave email_verification_token in place until it naturally expires so
+    page-refresh during the set-password step doesn't kick the user out with
+    an "invalid token" error. The token is still useless after verify — the
+    verify endpoint returns a no-op for already-verified users — but keeping
+    it around makes the flow idempotent.
+    """
     user.email_verified = True
     user.email_verified_at = datetime.now(timezone.utc)
-    user.email_verification_token = None
-    user.email_verification_token_expires_at = None
     user.has_changed_password = True
     db.add(user)

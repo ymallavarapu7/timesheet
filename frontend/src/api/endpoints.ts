@@ -116,12 +116,15 @@ export const usersAPI = {
     apiClient.post<MessageResponse>('/auth/change-password', data),
 
   changePasswordAfterVerification: async (tempPassword: string, newPassword: string, email: string) => {
+    // Trim temp password — users frequently copy-paste with trailing whitespace
+    // or a newline, which bcrypt compare rejects.
+    const temp = tempPassword.trim();
     // Log in with the temp password to get a short-lived token, then change password
-    const loginRes = await apiClient.post<TokenResponse>('/auth/login', { email, password: tempPassword });
+    const loginRes = await apiClient.post<TokenResponse>('/auth/login', { email, password: temp });
     const token = loginRes.data.access_token;
     return apiClient.post<MessageResponse>(
       '/users/me/password',
-      { current_password: tempPassword, new_password: newPassword },
+      { current_password: temp, new_password: newPassword },
       { headers: { Authorization: `Bearer ${token}` } },
     );
   },

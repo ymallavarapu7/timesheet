@@ -406,7 +406,9 @@ async def verify_email(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired verification token")
 
     if user.email_verified:
-        return {"message": "Email already verified"}
+        # Idempotent return — a user who hits refresh during the set-password
+        # step shouldn't be kicked out with an "invalid token" error.
+        return {"message": "Email already verified", "email": user.email}
 
     if user.email_verification_token_expires_at and user.email_verification_token_expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Verification link has expired. Please request a new one.")
