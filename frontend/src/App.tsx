@@ -152,7 +152,7 @@ export function App() {
   return (
     <ThemeProvider>
       <QueryClientProvider client={queryClient}>
-        <Router>
+        <Router basename={import.meta.env.BASE_URL}>
           <AuthProvider>
             <AppRoutes />
           </AuthProvider>
