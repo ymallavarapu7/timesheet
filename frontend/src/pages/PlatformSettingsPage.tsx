@@ -218,7 +218,7 @@ const SmtpSection: React.FC = () => {
             <div>
               <label className="block text-xs font-medium text-foreground mb-1">From Name</label>
               <input
-                placeholder="TimesheetIQ"
+                placeholder="Acufy AI"
                 className="field-input w-full"
                 value={smtpForm.smtp_from_name}
                 onChange={field('smtp_from_name')}

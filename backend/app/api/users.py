@@ -359,6 +359,54 @@ async def reset_user_password(
     return MessageResponse(message="Password reset successfully. User will be prompted to change it on next login.")
 
 
+@router.post("/{user_id}/resend-verification", response_model=MessageResponse)
+async def resend_verification_email_endpoint(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+) -> MessageResponse:
+    """Admin resends the verification email for an unverified user. Generates a
+    fresh temp password and a fresh verification token — the previous email is
+    invalidated. Blocked for already-verified users."""
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if user.tenant_id != current_user.tenant_id and current_user.role != UserRole.PLATFORM_ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    if user.email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User is already verified. Use Reset Password instead.",
+        )
+
+    from app.crud.user import _generate_default_password
+    from app.services.email_verification import set_verification_token, send_verification_email
+
+    new_temp_password = _generate_default_password()
+    user.hashed_password = get_password_hash(new_temp_password)
+    user.has_changed_password = False
+    token = set_verification_token(user)
+    db.add(user)
+    await db.commit()
+
+    tenant_name = None
+    if user.tenant_id is not None:
+        from app.crud.tenant import get_tenant
+        tenant = await get_tenant(db, user.tenant_id)
+        tenant_name = tenant.name if tenant else None
+
+    await send_verification_email(
+        user,
+        token,
+        temporary_password=new_temp_password,
+        tenant_name=tenant_name,
+        tenant_id=user.tenant_id,
+        resend=True,
+    )
+
+    return MessageResponse(message=f"Verification email resent to {user.email}.")
+
+
 @router.get("/{user_id}", response_model=UserResponse)
 async def get_user(
     user_id: int,

@@ -611,6 +611,12 @@ export const useResetUserPassword = () => {
   });
 };
 
+export const useResendVerification = () => {
+  return useMutation({
+    mutationFn: (id: number) => usersAPI.resendVerification(id).then(res => res.data),
+  });
+};
+
 export const useBulkDeleteUsers = () => {
   const queryClient = useQueryClient();
   return useMutation({

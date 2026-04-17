@@ -52,6 +52,7 @@ export {
   useCreateUser,
   useUpdateUser,
   useResetUserPassword,
+  useResendVerification,
   useDeleteUser,
   useBulkDeleteUsers,
   useNotifications,

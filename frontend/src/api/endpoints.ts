@@ -135,6 +135,8 @@ export const usersAPI = {
     apiClient.post<{ deleted: number }>('/users/bulk-delete', { user_ids: userIds }),
   resetPassword: (id: number, newPassword: string) =>
     apiClient.post<{ message: string }>(`/users/${id}/reset-password`, { new_password: newPassword }),
+  resendVerification: (id: number) =>
+    apiClient.post<{ message: string }>(`/users/${id}/resend-verification`, {}),
 };
 
 // Clients endpoints

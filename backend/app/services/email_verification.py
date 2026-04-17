@@ -49,6 +49,7 @@ async def send_verification_email(
     tenant_name: str | None = None,
     tenant_id: int | None = None,
     via_tenant_oauth: bool = False,
+    resend: bool = False,
 ) -> None:
     """
     Send (or log) the account verification email containing the temp password.
@@ -56,19 +57,29 @@ async def send_verification_email(
     task so the DB session doesn't need to stay open).
     tenant_name: display name of the tenant, shown in the email body.
     via_tenant_oauth: True when sent from the tenant's own OAuth mailbox.
+    resend: True when this is a re-invite. Subject gets a timestamp suffix so
+    Gmail doesn't thread it with the earlier (now-invalidated) email — otherwise
+    the original "Verify my account" button stays visible at top of thread and
+    the new email gets collapsed/hidden.
     """
     verify_url = build_verification_url(token)
     org = tenant_name or "your organisation"
 
     # Tenant OAuth → branded subject; platform SMTP → generic invite subject
     if via_tenant_oauth:
-        subject = f"{org} · You've been invited to TimesheetIQ"
+        subject = f"{org} · You've been invited to Acufy AI"
     else:
-        subject = f"{org} has invited you to TimesheetIQ"
+        subject = f"{org} has invited you to Acufy AI"
+
+    if resend:
+        # Unique suffix breaks Gmail threading so the newest email is the one
+        # the user sees first, with a functioning button.
+        from datetime import datetime as _dt
+        subject = f"[Re-invite {_dt.now().strftime('%b %d %H:%M')}] {subject}"
 
     body_text = f"""Hello {user.full_name},
 
-{org} has created a TimesheetIQ account for you.
+{org} has created a Acufy AI account for you.
 
 Your temporary password is: {temporary_password}
 
@@ -82,13 +93,13 @@ and choose a new password before you can access the application.
 
 If you were not expecting this email, please ignore it.
 
-— The TimesheetIQ Team
+— The Acufy AI Team
 """
 
     body_html = f"""
 <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;color:#1e293b;">
   <p>Hello {user.full_name},</p>
-  <p><strong>{org}</strong> has created a TimesheetIQ account for you.</p>
+  <p><strong>{org}</strong> has created a Acufy AI account for you.</p>
   <p>Your temporary password is:</p>
   <p style="font-family:monospace;font-size:16px;background:#f1f5f9;padding:10px 16px;border-radius:6px;display:inline-block;">{temporary_password}</p>
   <p>Click the button below to verify your account and set a permanent password:</p>
@@ -100,7 +111,7 @@ If you were not expecting this email, please ignore it.
   <p style="color:#64748b;font-size:13px;">This link expires in {TOKEN_EXPIRY_HOURS} hours.</p>
   <p style="color:#64748b;font-size:13px;">If you were not expecting this email, please ignore it.</p>
   <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0;">
-  <p style="color:#94a3b8;font-size:12px;">TimesheetIQ · Sent by {org}</p>
+  <p style="color:#94a3b8;font-size:12px;">Acufy AI · Sent by {org}</p>
 </div>
 """
 

@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import { format, startOfMonth, endOfMonth } from 'date-fns';
-import { PlusCircle, Pencil, Trash2, ShieldCheck, UserCircle, X, Clock, Paperclip, Building2 } from 'lucide-react';
+import { PlusCircle, Pencil, Trash2, ShieldCheck, UserCircle, X, Clock, Paperclip, Building2, MoreVertical, MailCheck } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
 import { Loading, Error, OrganizationalChart, SearchInput } from '@/components';
 import { BulkSelectBar } from '@/components/ui/BulkSelectBar';
-import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useResetUserPassword, useBulkDeleteUsers, useAuth, useIsPlatformAdmin, useProjects, useNotifications, useUnlockUserTimesheet, useDepartments, useCreateDepartment, useDeleteDepartment, useLeaveTypes, useCreateLeaveType, useUpdateLeaveType, useDeleteLeaveType } from '@/hooks';
+import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useResetUserPassword, useResendVerification, useBulkDeleteUsers, useAuth, useIsPlatformAdmin, useProjects, useNotifications, useUnlockUserTimesheet, useDepartments, useCreateDepartment, useDeleteDepartment, useLeaveTypes, useCreateLeaveType, useUpdateLeaveType, useDeleteLeaveType } from '@/hooks';
 import { KeyRound } from 'lucide-react';
 import { timeentriesAPI, ingestionAPI } from '@/api';
 import { IngestionTimesheetSummary, Project, TimeEntry, User, UserRole } from '@/types';
@@ -114,11 +114,13 @@ export const AdminPage: React.FC = () => {
   const updateUser = useUpdateUser();
   const deleteUser = useDeleteUser();
   const resetPassword = useResetUserPassword();
+  const resendVerification = useResendVerification();
   const bulkDeleteUsers = useBulkDeleteUsers();
   const { data: departments = [] } = useDepartments();
   const createDepartment = useCreateDepartment();
   const [selectedUserIds, setSelectedUserIds] = useState<Set<number>>(new Set());
   const [resetPasswordUserId, setResetPasswordUserId] = useState<number | null>(null);
+  const [actionMenuUserId, setActionMenuUserId] = useState<number | null>(null);
   const [resetPasswordValue, setResetPasswordValue] = useState('');
   const [resetPasswordError, setResetPasswordError] = useState('');
 
@@ -276,6 +278,16 @@ export const AdminPage: React.FC = () => {
       userListSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   }, [searchParams, isLoading, projectsLoading]);
+
+  React.useEffect(() => {
+    if (actionMenuUserId === null) return;
+    const close = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('[data-user-action-menu]')) setActionMenuUserId(null);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [actionMenuUserId]);
 
   if (isLoading || projectsLoading) return <Loading />;
   if (error || projectsError) return <Error message="Failed to load user management data" />;
@@ -515,6 +527,16 @@ export const AdminPage: React.FC = () => {
   const canEditUser = (u: User) => {
     if (isAdminUser) return true;
     return canManageEmployeeProjects && u.role !== 'ADMIN' && u.role !== 'PLATFORM_ADMIN';
+  };
+
+  const handleResendVerification = async (u: User) => {
+    setActionMenuUserId(null);
+    try {
+      await resendVerification.mutateAsync(u.id);
+      alert(`Verification email resent to ${u.email}.`);
+    } catch (err: unknown) {
+      alert(extractErrorMessage(err));
+    }
   };
 
   const isProjectOnlyEdit = Boolean(editingUser && !isAdminUser);
@@ -1236,34 +1258,55 @@ export const AdminPage: React.FC = () => {
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">{format(new Date(u.created_at), 'MMM d, yyyy')}</td>
                   <td className="px-4 py-3">
-                    <div className="flex justify-end gap-2">
-                      {canEditUser(u) && (
+                    <div className="flex justify-end" data-user-action-menu>
+                      <div className="relative">
                         <button
-                          onClick={() => openEdit(u)}
+                          onClick={() => setActionMenuUserId(actionMenuUserId === u.id ? null : u.id)}
                           className="p-1.5 rounded hover:bg-muted"
-                          title="Edit"
+                          title="Actions"
+                          aria-label="User actions"
                         >
-                          <Pencil className="w-4 h-4" />
+                          <MoreVertical className="w-4 h-4" />
                         </button>
-                      )}
-                      {isAdminUser && u.id !== currentUser?.id && (
-                        <button
-                          onClick={() => { setResetPasswordUserId(u.id); setResetPasswordValue(''); setResetPasswordError(''); }}
-                          className="p-1.5 rounded hover:bg-muted"
-                          title="Reset Password"
-                        >
-                          <KeyRound className="w-4 h-4" />
-                        </button>
-                      )}
-                      {isAdminUser && u.id !== currentUser?.id && (
-                        <button
-                          onClick={() => setConfirmDeleteId(u.id)}
-                          className="p-1.5 rounded hover:bg-red-50 text-red-600"
-                          title="Delete"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      )}
+                        {actionMenuUserId === u.id && (
+                          <div className="absolute right-0 top-full mt-1 z-20 min-w-[180px] rounded-lg border border-border bg-card shadow-lg py-1">
+                            {canEditUser(u) && (
+                              <button
+                                onClick={() => { setActionMenuUserId(null); openEdit(u); }}
+                                className="flex w-full items-center gap-2 px-3 py-2 text-sm text-foreground hover:bg-muted text-left"
+                              >
+                                <Pencil className="w-3.5 h-3.5" /> Edit
+                              </button>
+                            )}
+                            {isAdminUser && u.id !== currentUser?.id && (
+                              <button
+                                onClick={() => handleResendVerification(u)}
+                                disabled={u.email_verified || resendVerification.isPending}
+                                className="flex w-full items-center gap-2 px-3 py-2 text-sm text-foreground hover:bg-muted text-left disabled:opacity-40 disabled:cursor-not-allowed"
+                                title={u.email_verified ? 'User is already verified' : 'Send a fresh verification email with a new temp password'}
+                              >
+                                <MailCheck className="w-3.5 h-3.5" /> Resend verification
+                              </button>
+                            )}
+                            {isAdminUser && u.id !== currentUser?.id && (
+                              <button
+                                onClick={() => { setActionMenuUserId(null); setResetPasswordUserId(u.id); setResetPasswordValue(''); setResetPasswordError(''); }}
+                                className="flex w-full items-center gap-2 px-3 py-2 text-sm text-foreground hover:bg-muted text-left"
+                              >
+                                <KeyRound className="w-3.5 h-3.5" /> Reset password
+                              </button>
+                            )}
+                            {isAdminUser && u.id !== currentUser?.id && (
+                              <button
+                                onClick={() => { setActionMenuUserId(null); setConfirmDeleteId(u.id); }}
+                                className="flex w-full items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-destructive/10 text-left"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" /> Delete
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </td>
                 </tr>

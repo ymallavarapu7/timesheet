@@ -98,7 +98,7 @@ export const VerifyAccountPage: React.FC = () => {
             <svg width="32" height="32" viewBox="0 0 40 40" fill="none" aria-hidden="true">
               <path d="M10 6h20l10 14-10 14H10L0 20 10 6z" fill="#2563EB" fillOpacity="0.95" />
             </svg>
-            <h1 className="text-xl font-bold text-foreground">TimesheetIQ</h1>
+            <h1 className="text-xl font-bold text-foreground">Acufy AI</h1>
           </div>
 
           {stage === 'verifying' && (
