@@ -57,8 +57,8 @@ export interface ThemeVariant {
 
 // Prefix with the Vite base path so logo URLs resolve correctly when the app
 // is deployed under a sub-path (e.g. /app/timesheet). import.meta.env.BASE_URL
-// is set by Vite from vite.config.ts `base` and already ends with a trailing slash.
-const LOGO_BASE = `${import.meta.env.BASE_URL}logos`;
+// *usually* ends with a trailing slash but don't assume it — normalize explicitly.
+const LOGO_BASE = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/logos`;
 
 // ── Shared neutral dark base ───────────────────────────────────
 // Near-black neutral surfaces — no hue tint — so any accent color
