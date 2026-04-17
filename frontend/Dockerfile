@@ -17,4 +17,4 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf.template
 ARG VITE_BASE_PATH=/
 ENV VITE_BASE_PATH=$VITE_BASE_PATH
 EXPOSE 80
-CMD ["/bin/sh", "-c", "sed s|__BASE_PATH__|${VITE_BASE_PATH}|g /etc/nginx/conf.d/default.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
+CMD ["/bin/sh", "-c", "sed \"s|__BASE_PATH__|${VITE_BASE_PATH}|g\" /etc/nginx/conf.d/default.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
