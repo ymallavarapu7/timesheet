@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import select
 from app.db import AsyncSessionLocal
+from app.models.assignments import EmployeeManagerAssignment
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.models.time_entry import TimeEntry, TimeEntryStatus
@@ -19,6 +20,50 @@ DAY_NAME_TO_WEEKDAY = {
     "mon": 0, "tue": 1, "wed": 2, "thu": 3,
     "fri": 4, "sat": 5, "sun": 6,
 }
+
+
+async def _eligible_internal_reminder_recipients(
+    session,
+    tenant_id: int,
+    *,
+    user_ids: list[int] | None = None,
+    max_created_at: datetime | None = None,
+) -> list[User]:
+    """
+    EMPLOYEE users in ``tenant_id`` who can actually submit a timesheet.
+
+    Filters out users who would otherwise receive a reminder or auto-lock they
+    cannot act on: no active manager assignment (submissions would dead-end),
+    unverified email (haven't accepted the invite), already timesheet-locked,
+    or external contractors (they follow the monthly external reminder path,
+    not the weekly one). When ``max_created_at`` is supplied, also excludes
+    accounts created on/after that moment (used by the auto-lock path so
+    brand-new users aren't locked for a week they didn't exist during).
+    """
+    conditions = [
+        User.tenant_id == tenant_id,
+        User.role == UserRole.EMPLOYEE,
+        User.is_active.is_(True),
+        User.email_verified.is_(True),
+        User.timesheet_locked.is_(False),
+        User.is_external.is_(False),
+    ]
+    if user_ids is not None:
+        conditions.append(User.id.in_(user_ids))
+    if max_created_at is not None:
+        conditions.append(User.created_at < max_created_at)
+
+    stmt = (
+        select(User)
+        .join(
+            EmployeeManagerAssignment,
+            EmployeeManagerAssignment.employee_id == User.id,
+        )
+        .where(*conditions)
+        .distinct()
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
 
 
 async def check_and_send_reminders(ctx: dict) -> None:
@@ -87,33 +132,47 @@ async def _check_internal_reminders(
     if not (in_early_window or in_final_window or (lock_enabled and deadline_passed)):
         return
 
-    # Determine recipient list
-    recipients_setting = tenant_settings.get("reminder_internal_recipients", "all")
-    if recipients_setting == "all":
-        user_result = await session.execute(
-            select(User).where(
-                (User.tenant_id == tenant_id) &
-                (User.role == UserRole.EMPLOYEE) &
-                (User.is_active == True)  # noqa: E712
-            )
-        )
-        employees = user_result.scalars().all()
-    else:
-        try:
-            user_ids = [int(x.strip()) for x in recipients_setting.split(",") if x.strip()]
-        except ValueError:
-            return
-        user_result = await session.execute(
-            select(User).where(
-                (User.tenant_id == tenant_id) &
-                (User.id.in_(user_ids)) &
-                (User.is_active == True)  # noqa: E712
-            )
-        )
-        employees = user_result.scalars().all()
-
     # Current week start (Monday)
     week_start = now.date() - timedelta(days=now.weekday())
+    week_start_dt = datetime(
+        week_start.year, week_start.month, week_start.day, tzinfo=timezone.utc
+    )
+
+    # Determine recipient list. The auto-lock branch uses a stricter filter
+    # (accounts must predate week_start) so it's applied only when we're about
+    # to lock, not when we're sending reminders.
+    recipients_setting = tenant_settings.get("reminder_internal_recipients", "all")
+    restricted_user_ids: list[int] | None = None
+    if recipients_setting != "all":
+        try:
+            restricted_user_ids = [
+                int(x.strip()) for x in recipients_setting.split(",") if x.strip()
+            ]
+        except ValueError:
+            return
+
+    employees = await _eligible_internal_reminder_recipients(
+        session, tenant_id, user_ids=restricted_user_ids
+    )
+    logger.info(
+        "internal_reminder: %d recipients for tenant %s",
+        len(employees), tenant_id,
+    )
+
+    # Auto-lock uses the same eligibility plus an account-age guard.
+    lock_candidates: list[User] = []
+    if lock_enabled and deadline_passed:
+        lock_candidates = await _eligible_internal_reminder_recipients(
+            session,
+            tenant_id,
+            user_ids=restricted_user_ids,
+            max_created_at=week_start_dt,
+        )
+        logger.info(
+            "auto_lock: locking %d users in tenant %s for missed deadline %s",
+            len(lock_candidates), tenant_id, deadline_dt.isoformat(),
+        )
+    lock_candidate_ids = {u.id for u in lock_candidates}
 
     for employee in employees:
         # Check if they have any SUBMITTED entries this week
@@ -140,7 +199,12 @@ async def _check_internal_reminders(
                 await send_email(to_address=employee.email, subject=subject, body_text=body)
                 logger.info("Sent reminder to %s (tenant %s)", employee.email, tenant_id)
 
-            if lock_enabled and deadline_passed and not employee.timesheet_locked:
+            if (
+                lock_enabled
+                and deadline_passed
+                and not employee.timesheet_locked
+                and employee.id in lock_candidate_ids
+            ):
                 employee.timesheet_locked = True
                 employee.timesheet_locked_reason = f"Missed submission deadline ({deadline_day} {deadline_time_str})"
                 logger.info("Locked timesheet for %s (tenant %s)", employee.email, tenant_id)
