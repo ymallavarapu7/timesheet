@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query
@@ -24,6 +25,7 @@ from app.services.activity import (
 from sqlalchemy.exc import IntegrityError
 
 router = APIRouter(prefix="/users", tags=["users"])
+logger = logging.getLogger(__name__)
 
 MANAGER_CHAIN_ROLES = {UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO}
 
@@ -431,6 +433,11 @@ async def resend_verification_email_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User is already verified. Use Reset Password instead.",
         )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot send verification: user account is inactive",
+        )
 
     from app.crud.user import _generate_default_password
     from app.services.email_verification import set_verification_token, send_verification_email
@@ -560,7 +567,12 @@ async def create_new_user(
         if new_user.tenant_id is not None:
             from app.services.tenant_email_service import _get_active_oauth_mailbox
             via_tenant_oauth = await _get_active_oauth_mailbox(db, new_user.tenant_id) is not None
-        background_tasks.add_task(send_verification_email, new_user, token, temp_password, smtp_config, tenant_name, new_user.tenant_id, via_tenant_oauth)
+        if new_user.is_active:
+            background_tasks.add_task(send_verification_email, new_user, token, temp_password, smtp_config, tenant_name, new_user.tenant_id, via_tenant_oauth)
+        else:
+            logger.info(
+                "verification_email_skipped: user %s is inactive", new_user.email
+            )
 
         activity_events: list[dict] = []
         if new_user.tenant_id is not None:
