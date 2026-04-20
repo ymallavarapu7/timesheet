@@ -269,7 +269,7 @@ async def create_timesheet_entry(
     Employees can only create entries for themselves.
     """
     # Employees, managers, and system admins can create their own time entries
-    if current_user.role.value not in ["EMPLOYEE", "MANAGER", "ADMIN"]:
+    if current_user.role.value not in ["EMPLOYEE", "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN"]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Only employees, managers, and system admins can create time entries")
 
