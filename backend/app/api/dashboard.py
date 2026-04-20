@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Optional
 import time as time_module
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -288,21 +288,11 @@ async def get_team_daily_overview(
     has_time_remaining_until_deadline = now < submission_deadline_at
 
     if current_user.role not in [UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO, UserRole.ADMIN]:
-        return TeamDailyOverviewResponse(
-            date=target_date,
-            submission_deadline_at=submission_deadline_at,
-            has_time_remaining_until_deadline=has_time_remaining_until_deadline,
-            team_size=0,
-            submitted_yesterday_count=0,
-            submitted_yesterday=[],
-            draft_yesterday_count=0,
-            draft_yesterday=[],
-            missing_yesterday_count=0,
-            missing_yesterday=[],
-            pending_approvals_count=0,
-            pending_time_entries_count=0,
-            pending_time_off_count=0,
-            total_hours_logged_yesterday=Decimal("0"),
+        # Note: a local loop variable named ``status`` later in this function
+        # shadows the ``fastapi.status`` import, so use the numeric constant.
+        raise HTTPException(
+            status_code=403,
+            detail="This endpoint is not available for your role",
         )
 
     team_member_ids = await _get_scoped_employee_ids(db, current_user)
