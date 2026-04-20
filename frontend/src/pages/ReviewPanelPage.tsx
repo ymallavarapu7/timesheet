@@ -2,6 +2,7 @@ import React from 'react';
 import { format } from 'date-fns';
 import { ArrowLeft, Bot, Check, PauseCircle, Paperclip, Plus, RefreshCw, Save, Trash2, XCircle } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 
 import { ingestionAPI } from '@/api/endpoints';
 import { Badge, Card, CardContent, CardHeader, CardTitle, Loading, Modal } from '@/components';
@@ -203,6 +204,7 @@ export const ReviewPanelPage: React.FC = () => {
   const holdTimesheet = useHoldIngestionTimesheet();
   const draftComment = useDraftIngestionComment();
   const reprocessEmail = useReprocessIngestionEmail();
+  const queryClient = useQueryClient();
   const [reprocessJobId, setReprocessJobId] = React.useState<string | null>(null);
   const { data: reprocessStatus } = useFetchJobStatus(reprocessJobId, Boolean(reprocessJobId));
   const isReprocessing = Boolean(reprocessJobId && reprocessStatus && (reprocessStatus.status === 'queued' || reprocessStatus.status === 'in_progress'));
@@ -212,6 +214,27 @@ export const ReviewPanelPage: React.FC = () => {
   const revertTimesheetRejection = useRevertIngestionTimesheetRejection();
 
   const emailContext = timesheet?.email ?? storedEmail ?? null;
+
+  // When a reprocess job finishes, refresh data and (if needed) redirect.
+  // Reprocess deletes non-approved IngestionTimesheet rows and creates new
+  // ones with fresh IDs, so the current /ingestion/review/:timesheetId URL
+  // will 404. Redirect to the email view so the user lands on the new row.
+  React.useEffect(() => {
+    if (!reprocessJobId || !reprocessStatus) return;
+    if (reprocessStatus.status !== 'complete' && reprocessStatus.status !== 'failed') return;
+    if (reprocessStatus.status === 'complete') {
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheet'] });
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'email'] });
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'skipped-emails'] });
+      const targetEmailId = emailContext?.id ?? normalizedEmailId;
+      if (isTimesheetMode && targetEmailId) {
+        navigate(`/ingestion/email/${targetEmailId}`, { replace: true });
+      }
+    }
+    const timer = window.setTimeout(() => setReprocessJobId(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [reprocessJobId, reprocessStatus?.status, queryClient, isTimesheetMode, emailContext?.id, normalizedEmailId, navigate]);
   const emailId_forSiblings = emailContext?.id ?? null;
   const extractedName = ((timesheet?.extracted_employee_name ?? timesheet?.employee_name) ?? '').toLowerCase().trim();
   const attachmentId_forSiblings = timesheet?.attachment_id ?? null;
@@ -246,6 +269,17 @@ export const ReviewPanelPage: React.FC = () => {
       return av - bv;
     });
   }, [siblingData, attachmentId_forSiblings, extractedName, timesheet?.id]);
+
+  // In email mode, if exactly one timesheet exists for this email, jump
+  // directly to its timesheet view. This happens after a reprocess redirect
+  // so the user lands on the equivalent submission instead of the diagnostic.
+  React.useEffect(() => {
+    if (!isEmailMode) return;
+    if (!Array.isArray(siblingData) || siblingData.length === 0) return;
+    const first = siblingData[0];
+    if (first?.id) navigate(`/ingestion/review/${first.id}`, { replace: true });
+  }, [isEmailMode, siblingData, navigate]);
+
   const [summaryForm, setSummaryForm] = React.useState({ employee_id: '', client_id: '', period_start: '', period_end: '', total_hours: '', internal_notes: '' });
   const [reviewComment, setReviewComment] = React.useState('');
   const [rejectReason, setRejectReason] = React.useState('');
@@ -597,11 +631,8 @@ export const ReviewPanelPage: React.FC = () => {
           </div>
         )}
         {reprocessDone && (
-          <span className="flex items-center gap-2">
-            <span className={`text-xs font-medium ${reprocessStatus?.status === 'complete' ? 'text-emerald-600' : 'text-destructive'}`}>
-              {reprocessStatus?.status === 'complete' ? 'Reprocessing complete.' : 'Reprocessing failed.'}
-            </span>
-            <button type="button" onClick={() => setReprocessJobId(null)} className="text-xs text-muted-foreground hover:text-foreground">Dismiss</button>
+          <span className={`text-xs font-medium ${reprocessStatus?.status === 'complete' ? 'text-sky-600' : 'text-destructive'}`}>
+            {reprocessStatus?.status === 'complete' ? 'Reprocessing complete.' : 'Reprocessing failed.'}
           </span>
         )}
         <div className="flex shrink-0 gap-2">

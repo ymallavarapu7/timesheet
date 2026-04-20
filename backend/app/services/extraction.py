@@ -66,25 +66,39 @@ IMAGE_MIME_TYPES = {
 }
 
 # Vision prompt — copied exactly from extraction_service.ts
-VISION_PROMPT = (
-    "Extract all timesheet data from this image. "
-    "The image may contain one timesheet or multiple weekly/monthly timesheets. "
-    "For calendar-style weekly or monthly timesheets, treat the columns as "
-    "Monday through Sunday when the header shows Mo/Tu/We/Th/Fr/Sa/Su. "
-    "If the sheet shows only five working days with hours, map them to Monday "
-    "through Friday unless weekend hours are explicitly entered. "
-    "Do not create weekend line items when Saturday/Sunday cells show 0 or blank, "
-    "and do not move Friday hours onto Saturday or Sunday. "
-    "If the image is a summary or pivot sheet showing categories and totals "
-    "rather than daily dated entries, do not invent a repeated work_date for "
-    "each category row; instead infer the month/period from tokens like 2/26 "
-    "and return an empty line_items array. "
-    "Return only valid JSON with a top-level field timesheets, where timesheets "
-    "is an array of objects with fields: employee_name, client_name, "
-    "period_start (YYYY-MM-DD), period_end (YYYY-MM-DD), total_hours (number), "
-    "line_items (array of {work_date, hours, description, project_code}), "
-    "extraction_confidence (0-1), uncertain_fields (array of field names)."
-)
+def _build_vision_prompt(reference_date: str | None = None) -> str:
+    date_rule = ""
+    if reference_date:
+        date_rule = (
+            f"For context: this document was received around {reference_date}. "
+            "When the document shows a month and day but no explicit year, "
+            "assume the year is the one that makes the timesheet period fall "
+            "within ~90 days of the reference date — never default to an older "
+            "year. Prefer the current or most recent matching year. "
+        )
+    return (
+        "Extract all timesheet data from this image. "
+        "The image may contain one timesheet or multiple weekly/monthly timesheets. "
+        + date_rule +
+        "For calendar-style weekly or monthly timesheets, treat the columns as "
+        "Monday through Sunday when the header shows Mo/Tu/We/Th/Fr/Sa/Su. "
+        "If the sheet shows only five working days with hours, map them to Monday "
+        "through Friday unless weekend hours are explicitly entered. "
+        "Do not create weekend line items when Saturday/Sunday cells show 0 or blank, "
+        "and do not move Friday hours onto Saturday or Sunday. "
+        "If the image is a summary or pivot sheet showing categories and totals "
+        "rather than daily dated entries, do not invent a repeated work_date for "
+        "each category row; instead infer the month/period from tokens like 2/26 "
+        "and return an empty line_items array. "
+        "Return only valid JSON with a top-level field timesheets, where timesheets "
+        "is an array of objects with fields: employee_name, client_name, "
+        "period_start (YYYY-MM-DD), period_end (YYYY-MM-DD), total_hours (number), "
+        "line_items (array of {work_date, hours, description, project_code}), "
+        "extraction_confidence (0-1), uncertain_fields (array of field names)."
+    )
+
+
+VISION_PROMPT = _build_vision_prompt()
 
 
 def _validate_vision_timesheet(ts: dict) -> bool:
@@ -496,6 +510,7 @@ def _extract_vision_timesheets(payload: dict | list) -> list[dict]:
 async def _call_vision_api(
     image_bytes_list: list[bytes],
     mime_type: str = "image/png",
+    reference_date: str | None = None,
 ) -> ExtractionResult:
     """
     Call the Vision API with one or more page images.
@@ -524,7 +539,8 @@ async def _call_vision_api(
                 "type": "image_url",
                 "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
             })
-        content.append({"type": "text", "text": VISION_PROMPT})
+        prompt = _build_vision_prompt(reference_date) if reference_date else VISION_PROMPT
+        content.append({"type": "text", "text": prompt})
 
         response = await client.chat.completions.create(
             model="gpt-4o",
@@ -598,9 +614,18 @@ def _normalize_mime_type(filename: str, mime_type: str) -> str:
 
 # ─── Main extraction entry point ─────────────────────────────────────────────
 
-async def extract_text(content: bytes, filename: str, mime_type: str) -> ExtractionResult:
+async def extract_text(
+    content: bytes,
+    filename: str,
+    mime_type: str,
+    reference_date: str | None = None,
+) -> ExtractionResult:
     """
     Run the document extraction pipeline for a single attachment.
+
+    reference_date: ISO-formatted date (e.g. '2026-04-17'), typically the email's
+    received_at date. Passed to the Vision LLM so year-less dates in the document
+    resolve to the correct year instead of defaulting to an old training-data year.
 
     Extraction order (port of extraction_service.ts extractFromBuffer):
       Spreadsheet  → native parser → text
@@ -627,7 +652,7 @@ async def extract_text(content: bytes, filename: str, mime_type: str) -> Extract
         try:
             pages = await _rasterize_pdf(content)
             if pages:
-                vision_result = await _call_vision_api(pages)
+                vision_result = await _call_vision_api(pages, reference_date=reference_date)
                 if vision_result.success:
                     return vision_result
         except Exception as exc:
@@ -651,7 +676,7 @@ async def extract_text(content: bytes, filename: str, mime_type: str) -> Extract
         # 1. Vision API first (port of extraction_service.ts — Vision before Tesseract for images)
         logger.debug("Trying Vision API for image: %s", filename)
         try:
-            vision_result = await _call_vision_api([content], mime_type=normalized_mime)
+            vision_result = await _call_vision_api([content], mime_type=normalized_mime, reference_date=reference_date)
             if vision_result.success:
                 return vision_result
         except Exception as exc:

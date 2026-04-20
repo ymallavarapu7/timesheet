@@ -324,6 +324,7 @@ async def extract_timesheet_data(
     raw_text: str,
     filename_hint: str = "",
     likely_timesheet: bool = False,
+    reference_date: str | None = None,
 ) -> list[dict]:
     """
     Extract structured timesheet data from raw text.
@@ -332,11 +333,20 @@ async def extract_timesheet_data(
 
     Port of llm_service.ts extractTimesheetData exactly.
     """
-    system = """You are extracting structured timesheet data from raw text \
+    date_context = (
+        f"For context: this document was received around {reference_date}. "
+        "When the text shows a month and day but no explicit year, assume the "
+        "year that makes the timesheet period fall within ~90 days of that "
+        "reference date. Never default to older years when the document is ambiguous.\n"
+        if reference_date else ""
+    )
+
+    system = f"""You are extracting structured timesheet data from raw text \
 parsed from a document.
 The text may be messy, inconsistently formatted, or partially garbled from OCR.
 The document may contain one timesheet or multiple distinct weekly/monthly \
 timesheets in a single file.
+{date_context}\
 Extract every distinct timesheet period you can identify. Use ISO 8601 dates \
 (YYYY-MM-DD).
 For weekly or monthly calendar-style timesheets, treat headers like \
@@ -352,7 +362,7 @@ Respond only in valid JSON with a top-level field timesheets, where timesheets \
 is an array of objects with fields: employee_name, client_name (company or client \
 the timesheet is for), supervisor_name (the manager, supervisor, or approver name \
 if mentioned in the document), period_start, period_end, total_hours, line_items (array \
-of {work_date, hours, description, project_code}), extraction_confidence (0-1), \
+of {{work_date, hours, description, project_code}}), extraction_confidence (0-1), \
 uncertain_fields (array of strings).
 If there is only one timesheet, return an array with one object.
 Do not invent data. Use null for fields you cannot determine."""

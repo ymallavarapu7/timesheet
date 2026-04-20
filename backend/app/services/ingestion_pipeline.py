@@ -682,10 +682,19 @@ async def _process_timesheet_attachment(
     attachment_record.extraction_status = ExtractionStatus.processing
     attachment_record.extraction_error = None
 
+    # Pass the email's received date as reference so the Vision LLM resolves
+    # year-less dates (e.g. "Mar 29 - Apr 04" with no year visible) to the
+    # correct year rather than defaulting to an older training-data year.
+    ref_date = (
+        email_record.received_at.date().isoformat()
+        if email_record and email_record.received_at
+        else None
+    )
     extraction = await extract_text(
         content=attachment.content,
         filename=attachment.filename,
         mime_type=attachment.mime_type,
+        reference_date=ref_date,
     )
     attachment_record.raw_extracted_text = extraction.text
     attachment_record.spreadsheet_preview = extraction.spreadsheet_preview
@@ -732,6 +741,7 @@ async def _process_timesheet_attachment(
             extraction.text,
             filename_hint=attachment.filename,
             likely_timesheet=attachment.likely_timesheet,
+            reference_date=ref_date,
         )
 
     extracted_list = _dedupe_extracted_timesheets(extracted_list)
@@ -772,6 +782,26 @@ async def _process_timesheet_attachment(
             employee_id = _fuzzy_match_employee(
                 extracted_data.get("employee_name"), employees
             )
+
+        # Filename-derived fallback: if LLM returned no employee_name, try to
+        # recover one from the attachment filename (e.g. "Sridhar Kakulavaram
+        # March 2026.pdf"). We stamp it onto extracted_data so:
+        #   (a) fuzzy match against known employees picks it up below,
+        #   (b) downstream auto-create uses it when no match exists, and
+        #   (c) the review UI displays it as the "Extracted name" hint.
+        # Require >=2 tokens to avoid auto-creating junk users from generic
+        # filenames like "Timesheet.pdf" or "March.pdf".
+        if not (extracted_data.get("employee_name") or "").strip():
+            filename_name = _derive_name_from_filename(attachment.filename)
+            if filename_name and len(filename_name.split()) >= 2:
+                display_name = " ".join(w.capitalize() for w in filename_name.split())
+                extracted_data["employee_name"] = display_name
+                logger.info(
+                    "Filename-derived name fallback: %r (file=%s)",
+                    display_name, attachment.filename,
+                )
+                if employee_id is None:
+                    employee_id = _fuzzy_match_employee(filename_name, employees)
 
         # Only call LLM for client matching. Employee matching uses deterministic
         # fuzzy match only — LLM tends to hallucinate employee matches when the
@@ -1032,6 +1062,51 @@ def _normalize_person_name(value: str | None) -> str:
     return cleaned.lower().strip()
 
 
+_FILENAME_NAME_STOPWORDS = {
+    "timesheet", "timesheets", "time", "sheet", "sheets",
+    "weekly", "week", "monthly", "month", "biweekly",
+    "report", "hours", "log", "submission", "submitted",
+    "final", "draft", "copy", "updated", "revised",
+    "jan", "feb", "mar", "apr", "may", "jun",
+    "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+    "january", "february", "march", "april", "june",
+    "july", "august", "september", "october", "november", "december",
+    "mon", "tue", "tues", "wed", "thu", "thurs", "fri", "sat", "sun",
+    "invoice", "consulting", "staffing", "for", "of", "from", "to",
+}
+
+
+def _derive_name_from_filename(filename: str | None) -> str:
+    """
+    Extract a best-guess person name from a timesheet filename.
+    Example: 'Sridhar_Timesheet_March_2026.pdf' -> 'sridhar'
+             'John Doe - Week 14.xlsx'           -> 'john doe'
+    Returns an already-normalized (lowercased, trimmed) string, or ''.
+    """
+    if not filename:
+        return ""
+    stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+    # Split on common separators
+    raw_tokens = re.split(r"[\s_\-.,()\[\]]+", stem)
+    kept: list[str] = []
+    for tok in raw_tokens:
+        if not tok:
+            continue
+        lowered = tok.lower()
+        if lowered in _FILENAME_NAME_STOPWORDS:
+            continue
+        # Skip pure digits (years, week numbers) and alnum date-ish tokens
+        if not re.search(r"[A-Za-z]", tok):
+            continue
+        if re.fullmatch(r"\d{1,4}[A-Za-z]{1,4}\d{0,4}", tok):
+            continue
+        # Keep alphabetic-ish tokens
+        kept.append(lowered)
+        if len(kept) >= 3:
+            break
+    return " ".join(kept).strip()
+
+
 def _sender_employee_mapping_matches_extracted_name(
     sender_employee_id: int | None,
     extracted_employee_name: str | None,
@@ -1269,7 +1344,12 @@ async def _resolve_or_create_external_user(
             else:
                 return existing.id
         else:
-            return existing.id
+            # No extracted name and email matches an existing user. In a
+            # shared-sender setup (e.g. ap@webilent.com sending everyone's
+            # timesheets), silently assigning to the email owner is wrong —
+            # we'd attribute other people's work to them. Leave unassigned so
+            # a reviewer manually picks the right employee.
+            return None
 
     base_username = sender_email.split("@", 1)[0].lower().replace(".", "_")
     username = base_username

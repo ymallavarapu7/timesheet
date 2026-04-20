@@ -39,6 +39,86 @@ type UserMutationPayload = {
 const TENANT_ROLES: UserRole[] = ['EMPLOYEE', 'MANAGER', 'SENIOR_MANAGER', 'CEO', 'ADMIN'];
 const ALL_ROLES: UserRole[] = [...TENANT_ROLES, 'PLATFORM_ADMIN'];
 
+type UserActionMenuProps = {
+  isOpen: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  canEdit: boolean;
+  canManage: boolean;
+  isResendDisabled: boolean;
+  resendTooltip: string;
+  onEdit: () => void;
+  onResend: () => void;
+  onResetPassword: () => void;
+  onDelete: () => void;
+};
+
+// Row-level actions dropdown. Flips upward when opening near the viewport
+// bottom so the menu never gets clipped by the table's overflow-hidden wrapper.
+const UserActionMenu: React.FC<UserActionMenuProps> = ({
+  isOpen, onToggle, onClose, canEdit, canManage,
+  isResendDisabled, resendTooltip,
+  onEdit, onResend, onResetPassword, onDelete,
+}) => {
+  const buttonRef = React.useRef<HTMLButtonElement>(null);
+  const [openUp, setOpenUp] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!isOpen || !buttonRef.current) return;
+    const btnRect = buttonRef.current.getBoundingClientRect();
+    // Walk up to find the nearest overflow-clipped ancestor. That's what
+    // actually bounds the dropdown — not the viewport — because the user
+    // list container is overflow-hidden.
+    let bound = window.innerHeight;
+    let node: HTMLElement | null = buttonRef.current.parentElement;
+    while (node) {
+      const style = window.getComputedStyle(node);
+      if (style.overflowY !== 'visible' && style.overflowY !== 'clip' && node !== document.body) {
+        bound = Math.min(bound, node.getBoundingClientRect().bottom);
+      }
+      node = node.parentElement;
+    }
+    const spaceBelow = bound - btnRect.bottom;
+    const menuHeight = 200; // approx height for up to 4 items + padding
+    setOpenUp(spaceBelow < menuHeight && btnRect.top > menuHeight);
+  }, [isOpen]);
+
+  const item = (onClick: () => void, icon: React.ReactNode, label: string, extra?: { danger?: boolean; disabled?: boolean; title?: string }) => (
+    <button
+      onClick={() => { onClose(); onClick(); }}
+      disabled={extra?.disabled}
+      title={extra?.title}
+      className={`flex w-full items-center gap-2 px-3 py-2 text-sm text-left hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed ${extra?.danger ? 'text-destructive hover:bg-destructive/10' : 'text-foreground'}`}
+    >
+      {icon} {label}
+    </button>
+  );
+
+  return (
+    <div className="relative">
+      <button
+        ref={buttonRef}
+        onClick={onToggle}
+        className="p-1.5 rounded hover:bg-muted"
+        title="Actions"
+        aria-label="User actions"
+      >
+        <MoreVertical className="w-4 h-4" />
+      </button>
+      {isOpen && (
+        <div
+          className={`absolute right-0 z-20 min-w-[180px] rounded-lg border border-border bg-card shadow-lg py-1 ${openUp ? 'bottom-full mb-1' : 'top-full mt-1'}`}
+        >
+          {canEdit && item(onEdit, <Pencil className="w-3.5 h-3.5" />, 'Edit')}
+          {canManage && item(onResend, <MailCheck className="w-3.5 h-3.5" />, 'Resend verification', { disabled: isResendDisabled, title: resendTooltip })}
+          {canManage && item(onResetPassword, <KeyRound className="w-3.5 h-3.5" />, 'Reset password')}
+          {canManage && item(onDelete, <Trash2 className="w-3.5 h-3.5" />, 'Delete', { danger: true })}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const getAllowedSupervisorRoles = (role: UserRole): UserRole[] => {
   if (role === 'EMPLOYEE') return ['MANAGER', 'SENIOR_MANAGER', 'CEO', 'ADMIN'];
   if (role === 'MANAGER') return ['SENIOR_MANAGER', 'CEO'];
@@ -1259,54 +1339,19 @@ export const AdminPage: React.FC = () => {
                   <td className="px-4 py-3 text-muted-foreground">{format(new Date(u.created_at), 'MMM d, yyyy')}</td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end" data-user-action-menu>
-                      <div className="relative">
-                        <button
-                          onClick={() => setActionMenuUserId(actionMenuUserId === u.id ? null : u.id)}
-                          className="p-1.5 rounded hover:bg-muted"
-                          title="Actions"
-                          aria-label="User actions"
-                        >
-                          <MoreVertical className="w-4 h-4" />
-                        </button>
-                        {actionMenuUserId === u.id && (
-                          <div className="absolute right-0 top-full mt-1 z-20 min-w-[180px] rounded-lg border border-border bg-card shadow-lg py-1">
-                            {canEditUser(u) && (
-                              <button
-                                onClick={() => { setActionMenuUserId(null); openEdit(u); }}
-                                className="flex w-full items-center gap-2 px-3 py-2 text-sm text-foreground hover:bg-muted text-left"
-                              >
-                                <Pencil className="w-3.5 h-3.5" /> Edit
-                              </button>
-                            )}
-                            {isAdminUser && u.id !== currentUser?.id && (
-                              <button
-                                onClick={() => handleResendVerification(u)}
-                                disabled={u.email_verified || resendVerification.isPending}
-                                className="flex w-full items-center gap-2 px-3 py-2 text-sm text-foreground hover:bg-muted text-left disabled:opacity-40 disabled:cursor-not-allowed"
-                                title={u.email_verified ? 'User is already verified' : 'Send a fresh verification email with a new temp password'}
-                              >
-                                <MailCheck className="w-3.5 h-3.5" /> Resend verification
-                              </button>
-                            )}
-                            {isAdminUser && u.id !== currentUser?.id && (
-                              <button
-                                onClick={() => { setActionMenuUserId(null); setResetPasswordUserId(u.id); setResetPasswordValue(''); setResetPasswordError(''); }}
-                                className="flex w-full items-center gap-2 px-3 py-2 text-sm text-foreground hover:bg-muted text-left"
-                              >
-                                <KeyRound className="w-3.5 h-3.5" /> Reset password
-                              </button>
-                            )}
-                            {isAdminUser && u.id !== currentUser?.id && (
-                              <button
-                                onClick={() => { setActionMenuUserId(null); setConfirmDeleteId(u.id); }}
-                                className="flex w-full items-center gap-2 px-3 py-2 text-sm text-destructive hover:bg-destructive/10 text-left"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" /> Delete
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </div>
+                      <UserActionMenu
+                        isOpen={actionMenuUserId === u.id}
+                        onToggle={() => setActionMenuUserId(actionMenuUserId === u.id ? null : u.id)}
+                        onClose={() => setActionMenuUserId(null)}
+                        canEdit={canEditUser(u)}
+                        canManage={isAdminUser && u.id !== currentUser?.id}
+                        isResendDisabled={u.email_verified || resendVerification.isPending}
+                        resendTooltip={u.email_verified ? 'User is already verified' : 'Send a fresh verification email with a new temp password'}
+                        onEdit={() => openEdit(u)}
+                        onResend={() => handleResendVerification(u)}
+                        onResetPassword={() => { setResetPasswordUserId(u.id); setResetPasswordValue(''); setResetPasswordError(''); }}
+                        onDelete={() => setConfirmDeleteId(u.id)}
+                      />
                     </div>
                   </td>
                 </tr>

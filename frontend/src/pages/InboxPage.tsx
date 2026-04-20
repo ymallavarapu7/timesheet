@@ -131,6 +131,7 @@ const getStatusTone = (status: string): 'success' | 'danger' | 'warning' | 'info
   if (status === 'rejected') return 'danger';
   if (status === 'on_hold') return 'outline';
   if (status === 'under_review') return 'info';
+  if (status === 'skipped') return 'outline';
   return 'warning';
 };
 
@@ -151,6 +152,7 @@ const STATUS_OPTIONS = [
   { key: 'approved', label: 'Approved' },
   { key: 'rejected', label: 'Rejected' },
   { key: 'on_hold', label: 'On Hold' },
+  { key: 'skipped', label: 'Skipped' },
 ];
 
 const getStatusHeading = (tone: 'success' | 'danger' | 'info'): string => {
@@ -178,6 +180,46 @@ type TimesheetRowGroup = {
   periods: number;
   totalHours: number;
   anomalyCount: number;
+  kind?: 'timesheet' | 'skipped';
+  skipped?: SkippedEmail;
+};
+
+// Adapt a SkippedEmail into the same row-group shape used by the main table,
+// with status 'skipped' and placeholder fields for client/employee/week/hours.
+const buildSkippedRowGroup = (email: SkippedEmail): TimesheetRowGroup => {
+  const primary = {
+    id: 0,
+    email_id: email.id,
+    sender_email: email.sender_email,
+    sender_name: email.sender_name,
+    subject: email.subject,
+    received_at: email.received_at,
+    created_at: email.received_at,
+    mailbox_label: email.mailbox_label,
+    client_name: null,
+    employee_name: null,
+    extracted_employee_name: null,
+    employee_id: null,
+    client_id: null,
+    period_start: null,
+    period_end: null,
+    total_hours: null,
+    status: 'skipped',
+    attachment_id: email.reprocessable_attachments[0]?.id ?? null,
+    llm_anomalies: [],
+    is_likely_resubmission: false,
+  } as unknown as IngestionTimesheetSummary;
+  return {
+    key: `skipped-${email.id}`,
+    status: 'skipped',
+    timesheets: [primary],
+    primary,
+    periods: 1,
+    totalHours: 0,
+    anomalyCount: 0,
+    kind: 'skipped',
+    skipped: email,
+  };
 };
 
 const buildRowGroups = (timesheets: IngestionTimesheetSummary[]): TimesheetRowGroup[] => {
@@ -319,8 +361,38 @@ export const InboxPage: React.FC = () => {
   });
 
   const isPageLoading = isLoading || countsLoading || skippedLoading;
-  const allGroups = React.useMemo(() => buildRowGroups(allTimesheets), [allTimesheets]);
-  const groups = React.useMemo(() => buildRowGroups(timesheets), [timesheets]);
+  const actionableSkippedEmails = React.useMemo(() => {
+    const rows = skippedOverview?.emails ?? [];
+    return rows.filter(isActionableSkippedEmail);
+  }, [skippedOverview]);
+  const skippedGroups = React.useMemo(
+    () => actionableSkippedEmails.map(buildSkippedRowGroup),
+    [actionableSkippedEmails],
+  );
+  const allGroups = React.useMemo(
+    () => [...buildRowGroups(allTimesheets), ...skippedGroups],
+    [allTimesheets, skippedGroups],
+  );
+  const groups = React.useMemo(() => {
+    const baseGroups = buildRowGroups(timesheets);
+    // Skipped rows aren't filtered server-side, so mirror the client-side
+    // status/search/client filters here to keep the table consistent.
+    const searchLower = search.trim().toLowerCase();
+    const skippedVisible = skippedGroups.filter((group) => {
+      if (statusFilter && statusFilter !== 'skipped') return false;
+      if (clientId) return false; // skipped emails have no client
+      if (!searchLower) return true;
+      const email = group.skipped;
+      return (
+        (email?.subject ?? '').toLowerCase().includes(searchLower) ||
+        (email?.sender_email ?? '').toLowerCase().includes(searchLower) ||
+        (email?.sender_name ?? '').toLowerCase().includes(searchLower)
+      );
+    });
+    // When the 'skipped' tab is active, only show skipped rows.
+    if (statusFilter === 'skipped') return skippedVisible;
+    return [...baseGroups, ...skippedVisible];
+  }, [timesheets, skippedGroups, statusFilter, clientId, search]);
   const statusCounts = React.useMemo(() => countStatuses(allGroups), [allGroups]);
   const fetchDiagnostics = React.useMemo<FetchMessageDiagnostic[]>(() => {
     const diagnostics = fetchStatus?.result && typeof fetchStatus.result === 'object' && 'message_diagnostics' in fetchStatus.result
@@ -332,11 +404,6 @@ export const InboxPage: React.FC = () => {
       .filter(isActionableDiagnostic)
       .slice(0, 8);
   }, [fetchStatus]);
-
-  const actionableSkippedEmails = React.useMemo(() => {
-    const rows = skippedOverview?.emails ?? [];
-    return rows.filter(isActionableSkippedEmail);
-  }, [skippedOverview]);
 
   // Clear bulk selection when the underlying data refreshes
   React.useEffect(() => {
@@ -847,18 +914,25 @@ export const InboxPage: React.FC = () => {
               </thead>
               <tbody>
                 {groups.map((group) => {
+                  const isSkipped = group.kind === 'skipped';
                   const isMultiPeriod = group.periods > 1;
                   const rowTarget = group.primary;
-                  const canOpenReview = Number.isInteger(rowTarget.id) && rowTarget.id > 0;
+                  const canOpenReview = isSkipped
+                    ? Boolean(group.skipped?.id)
+                    : Number.isInteger(rowTarget.id) && rowTarget.id > 0;
+                  const openReview = () => {
+                    if (isSkipped && group.skipped) {
+                      navigate(`/ingestion/email/${group.skipped.id}`);
+                    } else if (canOpenReview) {
+                      navigate(`/ingestion/review/${rowTarget.id}`);
+                    }
+                  };
 
                   return (
                     <React.Fragment key={group.key}>
                       <tr
                         className={`group h-11 transition hover:bg-muted ${canOpenReview ? 'cursor-pointer' : 'cursor-default'}`}
-                        onClick={() => {
-                          if (!canOpenReview) return;
-                          navigate(`/ingestion/review/${rowTarget.id}`);
-                        }}
+                        onClick={() => openReview()}
                       >
                         <td className="w-10 px-2 py-5 align-top">
                           <input
@@ -906,6 +980,8 @@ export const InboxPage: React.FC = () => {
                             <span className="text-sm text-foreground">
                               {cleanEmployeeNameForDisplay(rowTarget.extracted_employee_name || rowTarget.employee_name)}
                             </span>
+                          ) : isSkipped ? (
+                            <span className="text-sm text-muted-foreground">--</span>
                           ) : (
                             <span className="text-sm italic text-muted-foreground">Unassigned</span>
                           )}
@@ -916,7 +992,7 @@ export const InboxPage: React.FC = () => {
                             : formatDateRange(rowTarget.period_start, rowTarget.period_end)}
                         </td>
                         <td className="px-4 py-5 align-top font-mono text-sm font-medium text-foreground">
-                          {formatHours(group.totalHours)}
+                          {isSkipped ? <span className="font-sans font-normal text-muted-foreground">--</span> : formatHours(group.totalHours)}
                         </td>
                         <td className="px-4 py-5 align-top">
                           <Badge tone={getStatusTone(group.status)} className="normal-case tracking-normal">
@@ -931,15 +1007,29 @@ export const InboxPage: React.FC = () => {
                         </td>
                         <td className="px-4 py-5 align-top text-right">
                           <div className="flex justify-end gap-2">
+                            {isSkipped && group.skipped ? (
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleReprocessEmail(group.skipped!.id);
+                                }}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-muted text-foreground transition hover:bg-muted/70"
+                                aria-label={`Reprocess email ${group.skipped.id}`}
+                                title="Reprocess"
+                                disabled={isBusy}
+                              >
+                                <RefreshCw className="h-4 w-4" />
+                              </button>
+                            ) : null}
                             <button
                               type="button"
                               onClick={(event) => {
                                 event.stopPropagation();
-                                if (!canOpenReview) return;
-                                navigate(`/ingestion/review/${rowTarget.id}`);
+                                openReview();
                               }}
                               className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-muted text-foreground transition hover:bg-muted/70"
-                              aria-label={`Open submission ${rowTarget.id}`}
+                              aria-label={isSkipped ? `Open email ${group.skipped?.id}` : `Open submission ${rowTarget.id}`}
                               title="Open"
                               disabled={!canOpenReview}
                             >
@@ -970,72 +1060,6 @@ export const InboxPage: React.FC = () => {
         </div>
       </section>
 
-      {actionableSkippedEmails.length > 0 ? (
-        <section className="surface-card px-5 py-5">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
-            <div>
-              <div className="flex items-center gap-3">
-                <p className="text-base font-semibold text-foreground">Skipped Emails</p>
-                <Badge tone="warning" className="normal-case tracking-normal">
-                  {actionableSkippedEmails.length}
-                </Badge>
-              </div>
-              <p className="mt-2 text-sm text-muted-foreground">
-                These emails look relevant but still need a manual reprocess or cleanup step.
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-4 space-y-3">
-            {actionableSkippedEmails.map((email) => (
-              <div key={email.id} className="rounded-md bg-muted/60 px-4 py-4">
-                <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                  <div className="space-y-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="font-medium text-foreground">{email.subject || 'No subject'}</p>
-                      {email.mailbox_label && <Badge tone="outline">{email.mailbox_label}</Badge>}
-                    </div>
-                    <p className="text-sm text-muted-foreground">
-                      {email.sender_name || email.sender_email} · {email.sender_email} · {formatShortDate(email.received_at)}
-                    </p>
-                    <div className="flex flex-wrap items-center gap-3 text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                      <span>{email.timesheet_attachment_count} candidate attachment{email.timesheet_attachment_count === 1 ? '' : 's'}</span>
-                      <span>{prettifySkipReason(email.skip_reason)}</span>
-                    </div>
-                    {email.skip_detail && <p className="text-sm text-muted-foreground">{email.skip_detail}</p>}
-                    {!!email.reprocessable_attachments.length && (
-                      <p className="text-sm text-muted-foreground">
-                        Attachments: {email.reprocessable_attachments.map((attachment) => attachment.filename).join(', ')}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="flex shrink-0 flex-wrap gap-3">
-                    <button
-                      type="button"
-                      onClick={() => handleReprocessEmail(email.id)}
-                      className="action-button-secondary"
-                      disabled={isBusy}
-                    >
-                      <RefreshCw className="mr-2 h-4 w-4" />
-                      Reprocess
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteEmail(email.id, email.subject)}
-                      className="action-button-secondary"
-                      disabled={isBusy}
-                    >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
     </div>
   );
 };
