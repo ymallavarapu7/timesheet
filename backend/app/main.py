@@ -15,7 +15,6 @@ from app.api import (
     ingestion,
     leave_types,
     mailboxes,
-    mappings,
     notifications,
     platform_settings,
     projects,
@@ -35,7 +34,6 @@ from app.models.ingestion_timesheet import (  # noqa: F401
     IngestionTimesheetLineItem,
     IngestionAuditLog,
 )
-from app.models.email_sender_mapping import EmailSenderMapping  # noqa: F401
 from app.models.tenant import Tenant  # noqa: F401 — registers Tenant with Base.metadata
 from app.models.tenant_settings import TenantSettings  # noqa: F401
 from app.models.platform_settings import PlatformSettings  # noqa: F401
@@ -106,7 +104,6 @@ app.include_router(platform_settings.router)
 app.include_router(sync.router)
 app.include_router(mailboxes.router, prefix="/api")
 app.include_router(mailboxes.oauth_router)
-app.include_router(mappings.router, prefix="/api")
 app.include_router(ingestion.router, prefix="/api")
 
 

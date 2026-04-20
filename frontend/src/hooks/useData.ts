@@ -13,7 +13,6 @@ import {
   tasksAPI,
   tenantsAPI,
   mailboxesAPI,
-  mappingsAPI,
   ingestionAPI,
   tenantSettingsAPI,
   departmentsAPI,
@@ -554,10 +553,18 @@ export const useMyProfile = () => {
 export const useUpdateMyProfile = () => {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: { full_name?: string; title?: string; department?: string; timezone?: string }) =>
-      usersAPI.updateMyProfile(data).then((res) => res.data),
+    mutationFn: (data: {
+      full_name?: string;
+      title?: string;
+      department?: string;
+      timezone?: string;
+      username?: string;
+      email?: string;
+    }) => usersAPI.updateMyProfile(data).then((res) => res.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users', 'me', 'profile'] });
+      queryClient.invalidateQueries({ queryKey: ['users', 'me'] });
+      queryClient.invalidateQueries({ queryKey: ['users'] });
     },
   });
 };
@@ -695,55 +702,6 @@ export const useResetMailboxCursor = () => {
     mutationFn: (id: number) => mailboxesAPI.resetCursor(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['mailboxes'] });
-    },
-  });
-};
-
-export const useMappings = (enabled: boolean = true) => {
-  return useQuery({
-    queryKey: ['mappings'],
-    queryFn: () => mappingsAPI.list().then((res) => res.data),
-    enabled,
-  });
-};
-
-export const useCreateMapping = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (data: Parameters<typeof mappingsAPI.create>[0]) => mappingsAPI.create(data).then((res) => res.data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['mappings'] });
-    },
-  });
-};
-
-export const useUpdateMapping = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, data }: { id: number; data: Parameters<typeof mappingsAPI.update>[1] }) =>
-      mappingsAPI.update(id, data).then((res) => res.data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['mappings'] });
-    },
-  });
-};
-
-export const useDeleteMapping = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (id: number) => mappingsAPI.delete(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['mappings'] });
-    },
-  });
-};
-
-export const useBulkDeleteMappings = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (mappingIds: number[]) => mappingsAPI.bulkDelete(mappingIds).then(res => res.data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['mappings'] });
     },
   });
 };

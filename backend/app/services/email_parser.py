@@ -148,6 +148,77 @@ class ParsedEmail(NamedTuple):
     has_attachments: bool
     raw_headers: dict
     attachments: list[ParsedAttachment]
+    # Populated only when the email is a recognizable forward AND we can
+    # extract the original sender from the forwarded block in the body.
+    # Otherwise both are None and callers should use sender_email/name.
+    forwarded_from_email: str | None = None
+    forwarded_from_name: str | None = None
+
+
+# Matches the common forward markers Outlook/Gmail/Apple Mail insert.
+_FORWARD_MARKERS = (
+    "-----forwarded message-----",
+    "---------- forwarded message ----------",
+    "--------forwarded message--------",
+    "begin forwarded message",
+    "-------- original message --------",
+    "----- original message -----",
+    "--------original message--------",
+)
+
+# Subject-line forward prefixes (case-insensitive).
+_FORWARD_SUBJECT_PREFIXES = ("fwd:", "fw:")
+
+
+def _subject_looks_forwarded(subject: str) -> bool:
+    if not subject:
+        return False
+    s = subject.strip().lower()
+    return any(s.startswith(p) for p in _FORWARD_SUBJECT_PREFIXES)
+
+
+def _body_has_forward_marker(body: str) -> bool:
+    if not body:
+        return False
+    lower = body.lower()
+    return any(marker in lower for marker in _FORWARD_MARKERS)
+
+
+def _extract_original_sender(body: str) -> tuple[str | None, str | None]:
+    """Parse the first 'From:' header line inside a forwarded block.
+
+    Returns (name, email) if a plausible address is found — name may be None.
+    Only called when we already know the email is forwarded, so a stray
+    'From:' line in signature copy won't falsely trigger here.
+    """
+    if not body:
+        return None, None
+    # Scan line-by-line for 'From: ...' — take the first one that parses.
+    addr_pattern = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+    name_email_pattern = re.compile(
+        r"^\s*From\s*:\s*(?P<rest>.+?)\s*$", re.IGNORECASE
+    )
+    for raw_line in body.splitlines()[:80]:  # cap scan — forward headers are near the top
+        match = name_email_pattern.match(raw_line)
+        if not match:
+            continue
+        rest = match.group("rest").strip()
+        # Try "Name <email@x>" first.
+        angle = re.match(r"^(?P<name>.+?)\s*<(?P<email>[^>]+)>\s*$", rest)
+        if angle:
+            email_found = angle.group("email").strip()
+            if addr_pattern.fullmatch(email_found):
+                name = angle.group("name").strip().strip('"').strip("'") or None
+                return name, email_found.lower()
+        # Fall back to a bare email with optional surrounding text.
+        addr_match = addr_pattern.search(rest)
+        if addr_match:
+            email_found = addr_match.group(0).lower()
+            # Anything before the email (and not the email itself) can serve as name.
+            before = rest[: addr_match.start()].strip().strip('"').strip("'")
+            name = before or None
+            return name, email_found
+    return None, None
 
 
 def _fallback_message_id(msg, body: str) -> str:
@@ -235,6 +306,24 @@ def parse_email(raw_bytes: bytes) -> ParsedEmail:
     if not message_id:
         message_id = _fallback_message_id(msg, body_text)
 
+    # Forwarded-email detection (strict): either the subject is prefixed
+    # Fwd:/FW: OR the body contains a recognizable forward marker block OR
+    # the body holds a parseable 'From:' line we can extract. If any trigger
+    # fires AND we can pull an original sender, surface it — otherwise leave
+    # both fields None and callers fall back to the outer sender.
+    forwarded_from_email: str | None = None
+    forwarded_from_name: str | None = None
+    subject_is_fwd = _subject_looks_forwarded(subject)
+    body_has_marker = _body_has_forward_marker(body_text)
+    if subject_is_fwd or body_has_marker:
+        forwarded_from_name, forwarded_from_email = _extract_original_sender(body_text)
+    if forwarded_from_email is None and forwarded_from_name is None:
+        # Third trigger: body has a parseable 'From: ...' line even without
+        # explicit markers. Only accept if we successfully extract an address.
+        maybe_name, maybe_email = _extract_original_sender(body_text)
+        if maybe_email:
+            forwarded_from_name, forwarded_from_email = maybe_name, maybe_email
+
     return ParsedEmail(
         message_id=message_id,
         subject=subject,
@@ -247,6 +336,8 @@ def parse_email(raw_bytes: bytes) -> ParsedEmail:
         has_attachments=bool(attachments),
         raw_headers=raw_headers,
         attachments=attachments,
+        forwarded_from_email=forwarded_from_email,
+        forwarded_from_name=forwarded_from_name,
     )
 
 

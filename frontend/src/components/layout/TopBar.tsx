@@ -30,7 +30,6 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenMobile }) => {
       '/approvals': 'Approvals',
       '/ingestion/inbox': 'Inbox',
       '/mailboxes': 'Mailboxes',
-      '/mappings': 'Sender Mappings',
       '/user-management': 'Users',
       '/client-management': 'Clients',
       '/profile': 'Profile',

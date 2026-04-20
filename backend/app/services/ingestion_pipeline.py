@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.client import Client
 from app.models.project import Project
 from app.models.email_attachment import EmailAttachment, ExtractionStatus
-from app.models.email_sender_mapping import EmailSenderMapping, SenderMatchType
 from app.models.ingested_email import IngestedEmail
 from app.models.ingestion_timesheet import (
     IngestionAuditActorType,
@@ -32,13 +31,10 @@ from app.services.llm_ingestion import (
     classify_email,
     detect_anomalies,
     extract_timesheet_data,
-    match_entities,
 )
 from app.services.storage import delete_file, read_file, save_file
 
 logger = logging.getLogger(__name__)
-
-AUTO_MATCH_CONFIDENCE_THRESHOLD = 0.85
 
 
 def _has_candidate_timesheet_attachment(
@@ -204,6 +200,8 @@ async def process_email(
         subject=parsed.subject,
         sender_email=parsed.sender_email,
         sender_name=parsed.sender_name,
+        forwarded_from_email=parsed.forwarded_from_email,
+        forwarded_from_name=parsed.forwarded_from_name,
         recipients={"to": parsed.recipients},
         body_text=parsed.body_text,
         body_html=parsed.body_html,
@@ -749,14 +747,19 @@ async def _process_timesheet_attachment(
     if not extracted_list:
         return 0
 
+    # Backfill contact_emails from the raw extracted text for any row where the
+    # LLM returned nothing — regex is cheap and covers signatures the LLM may
+    # have skipped.
+    raw_text_emails = _extract_emails_from_text(extraction.text)
+    for extracted_data in extracted_list:
+        if isinstance(extracted_data, dict):
+            existing = extracted_data.get("contact_emails")
+            if not isinstance(existing, list) or not existing:
+                extracted_data["contact_emails"] = raw_text_emails
+
     # ── Load known entities once for this attachment ──────────────────────────
     employees = await _load_known_employees(session, tenant_id)
     clients = await _load_known_clients(session, tenant_id)
-    sender_employee_id, sender_client_id = await _apply_sender_mappings(
-        sender_email=email_record.sender_email,
-        tenant_id=tenant_id,
-        session=session,
-    )
 
     created_count = 0
 
@@ -765,32 +768,21 @@ async def _process_timesheet_attachment(
         if not isinstance(extracted_data, dict):
             continue
 
-        # Entity matching — try deterministic first, then LLM
-        employee_id = (
-            sender_employee_id
-            if _sender_employee_mapping_matches_extracted_name(
-                sender_employee_id,
-                extracted_data.get("employee_name"),
-                employees,
-            )
-            else None
+        # ── Employee resolution ────────────────────────────────────────────
+        # Precedence (highest first):
+        # 1. Name on the timesheet body (LLM employee_name)
+        # 2. Name derived from the attachment filename
+        # 3. Name on the forwarded-from header (when forwarded)
+        # 4. Any email in the document body matching a known user's email
+        # 5. Outer/forwarded sender → _resolve_or_create_external_user later
+        employee_id = _fuzzy_match_employee(
+            extracted_data.get("employee_name"), employees
         )
-        client_id = sender_client_id
-
-        # Deterministic fuzzy match on employee name before LLM
-        if employee_id is None:
-            employee_id = _fuzzy_match_employee(
-                extracted_data.get("employee_name"), employees
-            )
 
         # Filename-derived fallback: if LLM returned no employee_name, try to
         # recover one from the attachment filename (e.g. "Sridhar Kakulavaram
-        # March 2026.pdf"). We stamp it onto extracted_data so:
-        #   (a) fuzzy match against known employees picks it up below,
-        #   (b) downstream auto-create uses it when no match exists, and
-        #   (c) the review UI displays it as the "Extracted name" hint.
-        # Require >=2 tokens to avoid auto-creating junk users from generic
-        # filenames like "Timesheet.pdf" or "March.pdf".
+        # March 2026.pdf"). Stamped onto extracted_data so downstream auto-
+        # create and the review UI both pick it up. Requires >=2 tokens.
         if not (extracted_data.get("employee_name") or "").strip():
             filename_name = _derive_name_from_filename(attachment.filename)
             if filename_name and len(filename_name.split()) >= 2:
@@ -803,29 +795,80 @@ async def _process_timesheet_attachment(
                 if employee_id is None:
                     employee_id = _fuzzy_match_employee(filename_name, employees)
 
-        # Only call LLM for client matching. Employee matching uses deterministic
-        # fuzzy match only — LLM tends to hallucinate employee matches when the
-        # name doesn't closely match any known user.
-        if client_id is None:
-            match_suggestions = await match_entities(
-                extracted_name=None,
-                extracted_client=(
-                    extracted_data.get("client_name") or extracted_data.get("client")
-                ),
-                known_employees=employees,
-                known_clients=clients,
+        # Forwarded-from name fallback: use the original-sender name from the
+        # forward block. Never overwrite the extracted name — it's only a
+        # signal for matching known users.
+        if employee_id is None and email_record.forwarded_from_name:
+            employee_id = _fuzzy_match_employee(
+                email_record.forwarded_from_name, employees
             )
-            client_id = _pick_suggested_id(match_suggestions.get("client"))
+            if employee_id is not None:
+                logger.info(
+                    "Resolved employee via forwarded-from name: %r",
+                    email_record.forwarded_from_name,
+                )
 
-        # Auto-create client if extracted but not matched
+        # Body-email fallback: if the document carries an email address whose
+        # exact value matches a known user's email, use that user.
+        if employee_id is None:
+            body_emails = extracted_data.get("contact_emails") or []
+            if isinstance(body_emails, list):
+                known_emails = {
+                    (emp.get("email") or "").strip().lower(): emp["id"]
+                    for emp in employees
+                    if emp.get("email")
+                }
+                for candidate_email in body_emails:
+                    normalized = str(candidate_email).strip().lower()
+                    if normalized in known_emails:
+                        employee_id = known_emails[normalized]
+                        logger.info(
+                            "Resolved employee via in-document email: %r",
+                            normalized,
+                        )
+                        break
+
+        # ── Client resolution (precedence) ─────────────────────────────────
+        # 1. User's default_client_id (if employee is resolved and pinned).
+        # 2. LLM-extracted client name → match to existing (no auto-create).
+        # 3. Email address in document body → domain → client.contact_email.
+        # 4. Outer sender email's domain → client.contact_email.
+        # 5. Leave None — reviewer picks.
+        client_id: int | None = None
+        if employee_id is not None:
+            for emp in employees:
+                if emp["id"] == employee_id and emp.get("default_client_id"):
+                    client_id = emp["default_client_id"]
+                    break
+
         if client_id is None:
             extracted_client_name = (
                 extracted_data.get("client_name") or extracted_data.get("client") or ""
-            ).strip()
-            if extracted_client_name:
-                client_id = await _auto_create_client(
-                    extracted_client_name, tenant_id, session
-                )
+            )
+            client_id = _find_existing_client_id(extracted_client_name, clients)
+
+        if client_id is None:
+            # Look for email addresses extracted from the document body.
+            body_emails = extracted_data.get("contact_emails") or []
+            if not isinstance(body_emails, list):
+                body_emails = []
+            for candidate_email in body_emails:
+                candidate_domain = _domain_of(str(candidate_email))
+                resolved = _client_id_for_domain(candidate_domain, clients)
+                if resolved is not None:
+                    client_id = resolved
+                    break
+
+        if client_id is None:
+            # Prefer the forwarded-from address when present, since the outer
+            # sender on a forwarded email is the forwarder's domain, not the
+            # contractor's.
+            effective_for_client = (
+                email_record.forwarded_from_email or email_record.sender_email or ""
+            )
+            client_id = _client_id_for_domain(
+                _domain_of(effective_for_client), clients
+            )
 
         # Normalize line items
         line_items_data = _normalize_line_items(
@@ -844,26 +887,34 @@ async def _process_timesheet_attachment(
             session=session,
         )
 
+        # Prefer the forwarded-from sender when we have one — the outer sender
+        # on a forwarded email is the forwarder, not the timesheet owner.
+        effective_sender_email = (
+            email_record.forwarded_from_email or email_record.sender_email
+        )
+        effective_sender_name = (
+            email_record.forwarded_from_name or email_record.sender_name
+        )
+
         # Auto-create an employee user from extracted name if no match exists.
         if employee_id is None:
             employee_id = await _resolve_or_create_extracted_employee_user(
                 extracted_employee_name=extracted_data.get("employee_name"),
-                sender_email=email_record.sender_email,
+                sender_email=effective_sender_email,
                 tenant_id=tenant_id,
                 session=session,
             )
 
         # External user fallback — only when we have a real sender email address
-        real_sender = email_record.sender_email
         if (
             employee_id is None
-            and real_sender
-            and real_sender != "unknown@unknown.com"
-            and "@" in real_sender
+            and effective_sender_email
+            and effective_sender_email != "unknown@unknown.com"
+            and "@" in effective_sender_email
         ):
             employee_id = await _resolve_or_create_external_user(
-                sender_email=real_sender,
-                sender_name=email_record.sender_name,
+                sender_email=effective_sender_email,
+                sender_name=effective_sender_name,
                 extracted_employee_name=extracted_data.get("employee_name"),
                 tenant_id=tenant_id,
                 session=session,
@@ -940,58 +991,99 @@ async def _process_timesheet_attachment(
 
 async def _load_known_employees(session: AsyncSession, tenant_id: int) -> list[dict]:
     result = await session.execute(
-        select(User.id, User.full_name, User.email).where(User.tenant_id == tenant_id)
+        select(User.id, User.full_name, User.email, User.default_client_id).where(
+            User.tenant_id == tenant_id
+        )
     )
     return [
-        {"id": row.id, "full_name": row.full_name, "email": row.email or ""}
+        {
+            "id": row.id,
+            "full_name": row.full_name,
+            "email": row.email or "",
+            "default_client_id": row.default_client_id,
+        }
         for row in result
     ]
 
 
 async def _load_known_clients(session: AsyncSession, tenant_id: int) -> list[dict]:
     result = await session.execute(
-        select(Client.id, Client.name).where(Client.tenant_id == tenant_id)
+        select(Client.id, Client.name, Client.contact_email).where(
+            Client.tenant_id == tenant_id
+        )
     )
-    return [{"id": row.id, "name": row.name} for row in result]
+    return [
+        {
+            "id": row.id,
+            "name": row.name,
+            "contact_email": (row.contact_email or "").strip().lower(),
+        }
+        for row in result
+    ]
 
 
-async def _auto_create_client(
-    extracted_client_name: str,
-    tenant_id: int,
-    session: AsyncSession,
+def _domain_of(email: str | None) -> str:
+    if not email or "@" not in email:
+        return ""
+    return email.split("@", 1)[1].strip().lower()
+
+
+def _client_id_for_domain(domain: str, clients: list[dict]) -> int | None:
+    """Look up a client whose contact_email domain matches. If multiple clients
+    share the same domain (e.g. two Toyota entities), return the one with the
+    smallest id as the deterministic 'default' — reviewer overrides if wrong."""
+    if not domain:
+        return None
+    matches = [c for c in clients if _domain_of(c.get("contact_email")) == domain]
+    if not matches:
+        return None
+    matches.sort(key=lambda c: c["id"])
+    return matches[0]["id"]
+
+
+def _extract_emails_from_text(text: str | None) -> list[str]:
+    """Pull email-shaped tokens from arbitrary text (signatures, document body)."""
+    if not text:
+        return []
+    matches = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
+    # Preserve order, de-dupe, lowercase.
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in matches:
+        lower = m.lower()
+        if lower not in seen:
+            seen.add(lower)
+            out.append(lower)
+    return out
+
+
+def _find_existing_client_id(
+    extracted_client_name: str | None,
+    clients: list[dict],
 ) -> int | None:
-    """
-    Auto-create a client from an extracted name if it doesn't already exist.
-    Uses fuzzy matching first to avoid duplicates from slight name variations.
-    """
+    """Exact/fuzzy match the extracted client name against existing clients.
+    Returns id if a strong match, else None. Does NOT create anything."""
     import difflib
 
     if not extracted_client_name:
         return None
-
     normalized = extracted_client_name.strip().lower()
+    if not normalized:
+        return None
 
-    # Check existing clients for fuzzy match
-    result = await session.execute(
-        select(Client).where(Client.tenant_id == tenant_id)
-    )
-    existing_clients = result.scalars().all()
-    for client in existing_clients:
-        if client.name.strip().lower() == normalized:
-            return client.id
-        ratio = difflib.SequenceMatcher(None, normalized, client.name.strip().lower()).ratio()
-        if ratio >= 0.85:
-            return client.id
-
-    # No match — create new client
-    new_client = Client(
-        tenant_id=tenant_id,
-        name=extracted_client_name.strip(),
-    )
-    session.add(new_client)
-    await session.flush()
-    logger.info("Auto-created client '%s' (id=%s) for tenant %s", new_client.name, new_client.id, tenant_id)
-    return new_client.id
+    best_id: int | None = None
+    best_ratio = 0.0
+    for client in clients:
+        existing = (client.get("name") or "").strip().lower()
+        if not existing:
+            continue
+        if existing == normalized:
+            return client["id"]
+        ratio = difflib.SequenceMatcher(None, normalized, existing).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_id = client["id"]
+    return best_id if best_ratio >= 0.85 else None
 
 
 def _fuzzy_match_employee(
@@ -1035,24 +1127,6 @@ def _fuzzy_match_employee(
         return best_id
 
     return None
-
-
-def _pick_suggested_id(suggestion: dict | None) -> int | None:
-    if not suggestion:
-        return None
-    try:
-        confidence_value = float(suggestion.get("confidence", 0) or 0)
-    except (TypeError, ValueError):
-        return None
-    if confidence_value < AUTO_MATCH_CONFIDENCE_THRESHOLD:
-        return None
-    raw_id = suggestion.get("suggested_id")
-    if raw_id is None:
-        return None
-    try:
-        return int(raw_id)
-    except (TypeError, ValueError):
-        return None
 
 
 def _normalize_person_name(value: str | None) -> str:
@@ -1107,29 +1181,6 @@ def _derive_name_from_filename(filename: str | None) -> str:
     return " ".join(kept).strip()
 
 
-def _sender_employee_mapping_matches_extracted_name(
-    sender_employee_id: int | None,
-    extracted_employee_name: str | None,
-    known_employees: list[dict],
-) -> bool:
-    if sender_employee_id is None:
-        return False
-
-    extracted_name = _normalize_person_name(extracted_employee_name)
-    if not extracted_name or not extracted_name.strip():
-        return False
-
-    mapped_employee = next(
-        (employee for employee in known_employees if employee.get("id") == sender_employee_id),
-        None,
-    )
-    if mapped_employee is None:
-        return False
-
-    mapped_name = _normalize_person_name(mapped_employee.get("full_name"))
-    return mapped_name == extracted_name
-
-
 def _parse_iso_date(value: str | None) -> date | None:
     if not value:
         return None
@@ -1157,39 +1208,6 @@ def _resolve_total_hours(extracted_data: dict, line_items_data: list[dict]) -> D
                 total += hours
         return total
     return _to_decimal(extracted_data.get("total_hours"))
-
-
-async def _apply_sender_mappings(
-    sender_email: str,
-    tenant_id: int,
-    session: AsyncSession,
-) -> tuple[int | None, int | None]:
-    sender_email = (sender_email or "").lower().strip()
-    domain = sender_email.split("@", 1)[1] if "@" in sender_email else ""
-
-    result = await session.execute(
-        select(EmailSenderMapping).where(
-            (EmailSenderMapping.tenant_id == tenant_id)
-            & (EmailSenderMapping.match_type == SenderMatchType.email)
-            & (EmailSenderMapping.match_value == sender_email)
-        )
-    )
-    mapping = result.scalar_one_or_none()
-
-    if mapping is None and domain:
-        result = await session.execute(
-            select(EmailSenderMapping).where(
-                (EmailSenderMapping.tenant_id == tenant_id)
-                & (EmailSenderMapping.match_type == SenderMatchType.domain)
-                & (EmailSenderMapping.match_value == domain.lower())
-            )
-        )
-        mapping = result.scalar_one_or_none()
-
-    if mapping:
-        return mapping.employee_id, mapping.client_id
-
-    return None, None
 
 
 async def _resolve_db_entities(

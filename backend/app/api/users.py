@@ -182,9 +182,61 @@ async def update_my_profile(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> User:
-    """Allow any authenticated user to update their own name, title, and department."""
-    update = UserUpdate(**payload.model_dump(exclude_unset=True))
-    return await update_user(db, current_user, update)
+    """Self-update profile. Regular users can edit name/title/timezone/username.
+    Platform admins can also edit their email."""
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy import select as sa_select
+
+    data = payload.model_dump(exclude_unset=True)
+
+    # Only platform admins can change their own email.
+    if "email" in data and current_user.role != UserRole.PLATFORM_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only platform administrators can change their own email.",
+        )
+
+    # Pre-check username uniqueness to surface a friendly error instead of 500.
+    if "username" in data and data["username"] is not None:
+        next_username = data["username"].strip().lower()
+        if not next_username:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Username cannot be blank.",
+            )
+        if next_username != current_user.username:
+            taken = await db.execute(
+                sa_select(User.id).where(User.username == next_username)
+            )
+            if taken.scalar_one_or_none() is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="That username is already taken.",
+                )
+        data["username"] = next_username
+
+    # Pre-check email uniqueness for platform admin self-edits.
+    if "email" in data and data["email"] is not None:
+        next_email = data["email"].strip().lower()
+        if next_email != current_user.email:
+            taken = await db.execute(
+                sa_select(User.id).where(User.email == next_email)
+            )
+            if taken.scalar_one_or_none() is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="That email is already in use.",
+                )
+        data["email"] = next_email
+
+    update = UserUpdate(**data)
+    try:
+        return await update_user(db, current_user, update)
+    except IntegrityError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="That username or email is already in use.",
+        )
 
 
 @router.post("/me/password", response_model=MessageResponse)
@@ -594,12 +646,18 @@ async def update_user_endpoint(
             and was_active is True
         )
 
+        from sqlalchemy.exc import IntegrityError
         try:
             updated_user = await update_user(db, user, user_update)
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(exc),
+            )
+        except IntegrityError:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="That username or email is already in use.",
             )
 
         if deactivated:

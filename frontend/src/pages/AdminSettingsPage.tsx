@@ -374,7 +374,7 @@ export const AdminSettingsPage: React.FC = () => {
           <div className="flex items-center justify-between mb-4">
             <div>
               <h3 className="text-base font-semibold">External Contractor Reminders</h3>
-              <p className="text-sm text-muted-foreground mt-0.5">Send monthly reminders to contractors with sender mappings</p>
+              <p className="text-sm text-muted-foreground mt-0.5">Send monthly reminders to external contractors who haven't submitted this month</p>
             </div>
             <label className="relative inline-flex items-center cursor-pointer">
               <input type="checkbox" className="sr-only peer" checked={externalEnabled} onChange={(e) => setExternalEnabled(e.target.checked)} />

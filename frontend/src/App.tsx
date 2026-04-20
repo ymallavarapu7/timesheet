@@ -17,7 +17,6 @@ import {
   InboxPage,
   LoginPage,
   MailboxesPage,
-  MappingsPage,
   MyTimePage,
   PlatformAdminPage,
   PlatformSettingsPage,
@@ -131,7 +130,6 @@ function AppRoutes() {
           <Route element={<IngestionEnabledGuard />}>
             <Route element={<TenantAdminGuard />}>
               <Route path="/mailboxes" element={<MailboxesPage />} />
-              <Route path="/mappings" element={<MappingsPage />} />
             </Route>
 
             <Route element={<ReviewGuard />}>

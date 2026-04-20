@@ -19,7 +19,6 @@ from app.crud.ingestion_timesheet import (
 from app.db import get_db
 from app.models.client import Client
 from app.models.email_attachment import EmailAttachment
-from app.models.email_sender_mapping import EmailSenderMapping, SenderMatchType
 from app.models.ingested_email import IngestedEmail
 from app.models.ingestion_timesheet import (
     IngestionAuditLog,
@@ -102,13 +101,6 @@ def _timesheet_to_summary(timesheet: IngestionTimesheet, rejected_sender_set: se
         "created_at": timesheet.created_at,
         "is_likely_resubmission": is_likely_resubmission,
     }
-
-
-def _normalize_match_value(match_type: SenderMatchType, value: str) -> str:
-    value = value.strip().lower()
-    if match_type == SenderMatchType.domain and "@" in value:
-        return value.split("@", 1)[1]
-    return value
 
 
 def _infer_skipped_email_reason(
@@ -328,6 +320,8 @@ def _stored_email_to_detail(email: IngestedEmail, attachments: list[EmailAttachm
         "subject": email.subject,
         "sender_email": email.sender_email,
         "sender_name": email.sender_name,
+        "forwarded_from_email": email.forwarded_from_email,
+        "forwarded_from_name": email.forwarded_from_name,
         "recipients": email.recipients,
         "body_text": email.body_text,
         "body_html": email.body_html,
@@ -963,25 +957,39 @@ async def get_attachment_full_html(
 
 
 @router.post("/timesheets/reapply-mappings", response_model=MappingReapplyResult)
-async def reapply_sender_mappings(
+async def reapply_client_routing(
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
-    mappings_result = await session.execute(
-        select(EmailSenderMapping).where(EmailSenderMapping.tenant_id == current_user.tenant_id)
-    )
-    mappings = list(mappings_result.scalars().all())
-
+    """
+    Re-run client + employee resolution on timesheets where either field is
+    still unresolved. Uses the new precedence: user's default_client_id →
+    extracted client name → in-document email domain → sender domain.
+    """
     users_result = await session.execute(
         select(User).where(User.tenant_id == current_user.tenant_id)
     )
     users = list(users_result.scalars().all())
+    users_by_id = {u.id: u for u in users}
 
     clients_result = await session.execute(
         select(Client).where(Client.tenant_id == current_user.tenant_id)
     )
     clients = list(clients_result.scalars().all())
+
+    def _domain(email: str | None) -> str:
+        if not email or "@" not in email:
+            return ""
+        return email.split("@", 1)[1].strip().lower()
+
+    def _client_for_domain(domain: str):
+        if not domain:
+            return None
+        matches = [c for c in clients if _domain(c.contact_email) == domain]
+        if not matches:
+            return None
+        return sorted(matches, key=lambda c: c.id)[0]
 
     unresolved_result = await session.execute(
         select(IngestionTimesheet)
@@ -996,64 +1004,51 @@ async def reapply_sender_mappings(
     )
     unresolved_timesheets = list(unresolved_result.scalars().all())
 
-    def _find_mapping(sender_email: str) -> EmailSenderMapping | None:
-        normalized_email = sender_email.strip().lower()
-        domain = normalized_email.split("@", 1)[1] if "@" in normalized_email else ""
-        for mapping in mappings:
-            normalized_value = _normalize_match_value(mapping.match_type, mapping.match_value)
-            if mapping.match_type == SenderMatchType.email and normalized_value == normalized_email:
-                return mapping
-        for mapping in mappings:
-            normalized_value = _normalize_match_value(mapping.match_type, mapping.match_value)
-            if mapping.match_type == SenderMatchType.domain and normalized_value == domain:
-                return mapping
-        return None
-
     updated = 0
     for timesheet in unresolved_timesheets:
         sender_email = timesheet.email.sender_email if timesheet.email else ""
-        mapping = _find_mapping(sender_email) if sender_email else None
         extracted_data = timesheet.extracted_data or {}
-        llm_suggestions = timesheet.llm_match_suggestions or {}
 
         employee_id = timesheet.employee_id
         client_id = timesheet.client_id
 
-        if employee_id is None:
-            if mapping and mapping.employee_id:
-                employee_id = mapping.employee_id
-            else:
-                employee_suggestion = llm_suggestions.get("employee") or {}
-                if float(employee_suggestion.get("confidence", 0) or 0) >= 0.85:
-                    employee_id = employee_suggestion.get("suggested_id")
-                elif extracted_data.get("employee_name"):
-                    normalized_name = extracted_data["employee_name"].strip().lower()
-                    matched_user = next(
-                        (user for user in users if user.full_name.strip().lower() == normalized_name),
-                        None,
-                    )
-                    if matched_user:
-                        employee_id = matched_user.id
+        # Employee: exact full_name match against known users.
+        if employee_id is None and extracted_data.get("employee_name"):
+            normalized_name = extracted_data["employee_name"].strip().lower()
+            matched_user = next(
+                (u for u in users if u.full_name.strip().lower() == normalized_name),
+                None,
+            )
+            if matched_user:
+                employee_id = matched_user.id
 
+        # Client: same precedence as the ingestion pipeline.
         if client_id is None:
-            if mapping and mapping.client_id:
-                client_id = mapping.client_id
-            else:
-                client_suggestion = llm_suggestions.get("client") or {}
-                if float(client_suggestion.get("confidence", 0) or 0) >= 0.85:
-                    client_id = client_suggestion.get("suggested_id")
-                elif extracted_data.get("client_name") or extracted_data.get("client"):
-                    extracted_client_name = (
-                        extracted_data.get("client_name")
-                        or extracted_data.get("client")
-                        or ""
-                    ).strip().lower()
-                    matched_client = next(
-                        (client for client in clients if client.name.strip().lower() == extracted_client_name),
-                        None,
-                    )
-                    if matched_client:
-                        client_id = matched_client.id
+            if employee_id is not None:
+                emp = users_by_id.get(employee_id)
+                if emp and emp.default_client_id:
+                    client_id = emp.default_client_id
+        if client_id is None:
+            extracted_client_name = (
+                extracted_data.get("client_name") or extracted_data.get("client") or ""
+            ).strip().lower()
+            if extracted_client_name:
+                matched = next(
+                    (c for c in clients if c.name.strip().lower() == extracted_client_name),
+                    None,
+                )
+                if matched:
+                    client_id = matched.id
+        if client_id is None:
+            for candidate in (extracted_data.get("contact_emails") or []):
+                match = _client_for_domain(_domain(str(candidate)))
+                if match:
+                    client_id = match.id
+                    break
+        if client_id is None and sender_email:
+            match = _client_for_domain(_domain(sender_email))
+            if match:
+                client_id = match.id
 
         if employee_id != timesheet.employee_id or client_id != timesheet.client_id:
             timesheet.employee_id = employee_id

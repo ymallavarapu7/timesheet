@@ -361,7 +361,9 @@ If a field is uncertain, include it in uncertain_fields.
 Respond only in valid JSON with a top-level field timesheets, where timesheets \
 is an array of objects with fields: employee_name, client_name (company or client \
 the timesheet is for), supervisor_name (the manager, supervisor, or approver name \
-if mentioned in the document), period_start, period_end, total_hours, line_items (array \
+if mentioned in the document), contact_emails (array of any email addresses found \
+in the document body such as signatures, approver contacts, or client reps — use an \
+empty array if none), period_start, period_end, total_hours, line_items (array \
 of {{work_date, hours, description, project_code}}), extraction_confidence (0-1), \
 uncertain_fields (array of strings).
 If there is only one timesheet, return an array with one object.

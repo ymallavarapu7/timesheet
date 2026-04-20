@@ -1,15 +1,17 @@
 import React, { useState, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { format } from 'date-fns';
 import { useSearchParams } from 'react-router-dom';
 import {
   PlusCircle, Pencil, X, Building2, CheckCircle, XCircle,
   PauseCircle, ShieldAlert, Trash2, UserCog, ChevronDown, ChevronRight, Bot, KeyRound,
+  MoreVertical, MailCheck,
 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { tenantsAPI } from '@/api';
-import { useUsers, useCreateUser, useUpdateUser, useDeleteUser } from '@/hooks';
-import { ServiceToken, ServiceTokenCreated, Tenant, TenantStatus, UserRole } from '@/types';
+import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useResetUserPassword, useResendVerification } from '@/hooks';
+import { ServiceToken, ServiceTokenCreated, Tenant, TenantStatus, User, UserRole } from '@/types';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -40,8 +42,117 @@ const emptyTenantForm = (): TenantFormState => ({ name: '', slug: '', status: 'a
 type AdminFormState = { full_name: string; email: string; username: string; password: string };
 const emptyAdminForm = (): AdminFormState => ({ full_name: '', email: '', username: '', password: 'password' });
 
+type AdminEditFormState = { full_name: string; email: string; username: string; is_active: boolean };
+const emptyAdminEditForm = (): AdminEditFormState => ({ full_name: '', email: '', username: '', is_active: true });
+
+type AdminResetPasswordState = { userId: number; value: string; error: string } | null;
+
 type TokenFormState = { name: string; issuer: string };
 const emptyTokenForm = (): TokenFormState => ({ name: '', issuer: '' });
+
+// ─── Admin row action menu (flips upward when near container bottom) ──────
+
+type AdminActionMenuProps = {
+  isOpen: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  canResend: boolean;
+  resendTooltip: string;
+  adminLabel: string;
+  onEdit: () => void;
+  onResend: () => void;
+  onResetPassword: () => void;
+  onDelete: () => void;
+};
+
+const AdminActionMenu: React.FC<AdminActionMenuProps> = ({
+  isOpen, onToggle, onClose, canResend, resendTooltip, adminLabel,
+  onEdit, onResend, onResetPassword, onDelete,
+}) => {
+  const buttonRef = React.useRef<HTMLButtonElement>(null);
+  // Dropdown is rendered into document.body via a portal so parent containers
+  // with overflow-hidden (e.g. the tenant panel) don't clip it. We compute
+  // absolute coords from the trigger button each time the menu opens and on
+  // window resize.
+  const [position, setPosition] = React.useState<{ top: number; left: number; openUp: boolean } | null>(null);
+
+  const recompute = React.useCallback(() => {
+    if (!buttonRef.current) return;
+    const rect = buttonRef.current.getBoundingClientRect();
+    const menuHeight = 200;
+    const menuWidth = 180;
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const openUp = spaceBelow < menuHeight && rect.top > menuHeight;
+    const top = openUp ? rect.top - menuHeight - 4 : rect.bottom + 4;
+    // Align right edge of menu with right edge of button.
+    const left = Math.max(8, rect.right - menuWidth);
+    setPosition({ top, left, openUp });
+  }, []);
+
+  React.useEffect(() => {
+    if (!isOpen) {
+      setPosition(null);
+      return;
+    }
+    recompute();
+    const onResize = () => recompute();
+    window.addEventListener('resize', onResize);
+    window.addEventListener('scroll', onResize, true);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('scroll', onResize, true);
+    };
+  }, [isOpen, recompute]);
+
+  return (
+    <div className="relative inline-block" data-admin-action-menu>
+      <button
+        ref={buttonRef}
+        onClick={onToggle}
+        className="p-1 rounded hover:bg-slate-100 text-slate-500"
+        title="Actions"
+        aria-label={`Actions for ${adminLabel}`}
+      >
+        <MoreVertical className="w-4 h-4" />
+      </button>
+      {isOpen && position && createPortal(
+        <div
+          data-admin-action-menu
+          style={{ position: 'fixed', top: position.top, left: position.left, width: 180 }}
+          className="z-50 rounded-lg border border-slate-200 bg-white shadow-lg py-1"
+        >
+          <button
+            onClick={() => { onClose(); onEdit(); }}
+            className="flex w-full items-center gap-2 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 text-left"
+          >
+            <Pencil className="w-3.5 h-3.5" /> Edit
+          </button>
+          <button
+            onClick={() => { if (!canResend) return; onClose(); onResend(); }}
+            disabled={!canResend}
+            className="flex w-full items-center gap-2 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 text-left disabled:opacity-40 disabled:cursor-not-allowed"
+            title={resendTooltip}
+          >
+            <MailCheck className="w-3.5 h-3.5" /> Resend verification
+          </button>
+          <button
+            onClick={() => { onClose(); onResetPassword(); }}
+            className="flex w-full items-center gap-2 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 text-left"
+          >
+            <KeyRound className="w-3.5 h-3.5" /> Reset password
+          </button>
+          <button
+            onClick={() => { onClose(); onDelete(); }}
+            className="flex w-full items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 text-left"
+          >
+            <Trash2 className="w-3.5 h-3.5" /> Delete
+          </button>
+        </div>,
+        document.body,
+      )}
+    </div>
+  );
+};
 
 // ─── Component ─────────────────────────────────────────────────────────────
 
@@ -150,6 +261,94 @@ export const PlatformAdminPage: React.FC = () => {
   const [adminForm, setAdminForm] = useState<AdminFormState>(emptyAdminForm());
   const [adminFormError, setAdminFormError] = useState('');
   const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<number | null>(null);
+
+  // ── Edit admin state ──────────────────────────────────────────────────────
+  const [editingAdmin, setEditingAdmin] = useState<User | null>(null);
+  const [editAdminForm, setEditAdminForm] = useState<AdminEditFormState>(emptyAdminEditForm());
+  const [editAdminError, setEditAdminError] = useState('');
+  const [adminActionMenuId, setAdminActionMenuId] = useState<number | null>(null);
+  const [adminResetPassword, setAdminResetPassword] = useState<AdminResetPasswordState>(null);
+  const resetUserPassword = useResetUserPassword();
+  const resendVerification = useResendVerification();
+
+  const openEditAdmin = (admin: User) => {
+    setEditingAdmin(admin);
+    setEditAdminForm({
+      full_name: admin.full_name,
+      email: admin.email,
+      username: admin.username ?? '',
+      is_active: admin.is_active,
+    });
+    setEditAdminError('');
+    setAdminActionMenuId(null);
+  };
+  const closeEditAdmin = () => {
+    setEditingAdmin(null);
+    setEditAdminForm(emptyAdminEditForm());
+    setEditAdminError('');
+  };
+  const handleEditAdminSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingAdmin) return;
+    setEditAdminError('');
+    const full_name = editAdminForm.full_name.trim();
+    const email = editAdminForm.email.trim().toLowerCase();
+    const username = editAdminForm.username.trim().toLowerCase();
+    if (!full_name || !email || !username) {
+      setEditAdminError('Name, email, and username are required.');
+      return;
+    }
+    if (username.length < 3) {
+      setEditAdminError('Username must be at least 3 characters.');
+      return;
+    }
+    try {
+      await updateUserMutation.mutateAsync({
+        id: editingAdmin.id,
+        data: { full_name, email, username, is_active: editAdminForm.is_active },
+      });
+      closeEditAdmin();
+    } catch (err) {
+      setEditAdminError(apiError(err));
+    }
+  };
+
+  const handleResendAdminVerification = async (admin: User) => {
+    setAdminActionMenuId(null);
+    try {
+      await resendVerification.mutateAsync(admin.id);
+    } catch {
+      // Toast-less page — fall back to a simple alert so it isn't silent.
+      window.alert('Could not resend verification. Please try again.');
+    }
+  };
+
+  const handleResetAdminPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!adminResetPassword) return;
+    const value = adminResetPassword.value;
+    if (value.length < 8) {
+      setAdminResetPassword({ ...adminResetPassword, error: 'Password must be at least 8 characters.' });
+      return;
+    }
+    try {
+      await resetUserPassword.mutateAsync({ id: adminResetPassword.userId, newPassword: value });
+      setAdminResetPassword(null);
+    } catch (err) {
+      setAdminResetPassword({ ...adminResetPassword, error: apiError(err) });
+    }
+  };
+
+  // Close action menu on outside click
+  React.useEffect(() => {
+    if (adminActionMenuId === null) return;
+    const onClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target?.closest('[data-admin-action-menu]')) setAdminActionMenuId(null);
+    };
+    document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, [adminActionMenuId]);
   const highlightedAdminUserId = useMemo(() => {
     const raw = searchParams.get('adminUserId');
     const parsed = raw ? Number(raw) : NaN;
@@ -441,27 +640,32 @@ export const PlatformAdminPage: React.FC = () => {
                                           <td className="px-4 py-2.5 font-medium text-slate-900">{admin.full_name}</td>
                                           <td className="px-4 py-2.5 text-slate-500 text-xs">{admin.email}</td>
                                           <td className="px-4 py-2.5">
-                                            <button
-                                              onClick={() => updateUserMutation.mutate({ id: admin.id, data: { is_active: !admin.is_active } })}
-                                              className={`text-xs font-semibold px-2 py-0.5 rounded-full transition ${
+                                            <span
+                                              className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${
                                                 admin.is_active
-                                                  ? 'bg-green-100 text-green-800 hover:bg-green-200'
-                                                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                                                  ? 'bg-green-100 text-green-800'
+                                                  : 'bg-gray-100 text-gray-600'
                                               }`}
                                             >
                                               {admin.is_active ? 'Active' : 'Inactive'}
-                                            </button>
+                                            </span>
                                           </td>
                                           <td className="px-4 py-2.5 text-slate-400 text-xs">
                                             {format(new Date(admin.created_at), 'MMM d, yyyy')}
                                           </td>
                                           <td className="px-4 py-2.5 text-right">
-                                            <button
-                                              onClick={() => setConfirmDeleteUserId(admin.id)}
-                                              className="p-1 rounded hover:bg-red-50 text-red-400 hover:text-red-600"
-                                            >
-                                              <Trash2 className="w-3.5 h-3.5" />
-                                            </button>
+                                            <AdminActionMenu
+                                              isOpen={adminActionMenuId === admin.id}
+                                              onToggle={() => setAdminActionMenuId(adminActionMenuId === admin.id ? null : admin.id)}
+                                              onClose={() => setAdminActionMenuId(null)}
+                                              canResend={!admin.email_verified && !resendVerification.isPending}
+                                              resendTooltip={admin.email_verified ? 'User is already verified' : 'Send a fresh verification email'}
+                                              adminLabel={admin.full_name}
+                                              onEdit={() => openEditAdmin(admin)}
+                                              onResend={() => handleResendAdminVerification(admin)}
+                                              onResetPassword={() => setAdminResetPassword({ userId: admin.id, value: '', error: '' })}
+                                              onDelete={() => setConfirmDeleteUserId(admin.id)}
+                                            />
                                           </td>
                                         </tr>
                                       ))}
@@ -710,6 +914,112 @@ export const PlatformAdminPage: React.FC = () => {
                 Remove
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Edit Admin Modal ──────────────────────────────────────────────── */}
+      {editingAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b px-5 py-4">
+              <h2 className="text-base font-semibold text-slate-900">Edit Admin · {editingAdmin.full_name}</h2>
+              <button onClick={closeEditAdmin} className="rounded p-1 hover:bg-slate-100">
+                <X className="w-4 h-4 text-slate-500" />
+              </button>
+            </div>
+            <form onSubmit={handleEditAdminSubmit} className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-medium uppercase tracking-wide text-slate-500 mb-1">Full Name</label>
+                <input
+                  value={editAdminForm.full_name}
+                  onChange={(e) => setEditAdminForm((f) => ({ ...f, full_name: e.target.value }))}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium uppercase tracking-wide text-slate-500 mb-1">Email</label>
+                <input
+                  type="email"
+                  value={editAdminForm.email}
+                  onChange={(e) => setEditAdminForm((f) => ({ ...f, email: e.target.value }))}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium uppercase tracking-wide text-slate-500 mb-1">Username</label>
+                <input
+                  value={editAdminForm.username}
+                  onChange={(e) => setEditAdminForm((f) => ({ ...f, username: e.target.value }))}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                  minLength={3}
+                  required
+                />
+              </div>
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={editAdminForm.is_active}
+                  onChange={(e) => setEditAdminForm((f) => ({ ...f, is_active: e.target.checked }))}
+                />
+                Active
+              </label>
+              {editAdminError && <p className="text-sm text-red-600 bg-red-50 rounded px-3 py-2">{editAdminError}</p>}
+              <div className="flex justify-end gap-2 pt-1">
+                <button type="button" onClick={closeEditAdmin} className="rounded-lg border px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">Cancel</button>
+                <button
+                  type="submit"
+                  disabled={updateUserMutation.isPending}
+                  className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/90 disabled:opacity-60"
+                >
+                  {updateUserMutation.isPending ? 'Saving…' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Reset Admin Password Modal ───────────────────────────────────── */}
+      {adminResetPassword && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded-xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b px-5 py-4">
+              <h2 className="text-base font-semibold text-slate-900">Reset Password</h2>
+              <button onClick={() => setAdminResetPassword(null)} className="rounded p-1 hover:bg-slate-100">
+                <X className="w-4 h-4 text-slate-500" />
+              </button>
+            </div>
+            <form onSubmit={handleResetAdminPasswordSubmit} className="p-5 space-y-4">
+              <p className="text-sm text-slate-500">
+                Set a new password for <strong>{allUsers.find((u) => u.id === adminResetPassword.userId)?.full_name}</strong>. They will need to use this password at next login.
+              </p>
+              <div>
+                <label className="block text-xs font-medium uppercase tracking-wide text-slate-500 mb-1">New Password</label>
+                <input
+                  type="password"
+                  autoFocus
+                  value={adminResetPassword.value}
+                  onChange={(e) => setAdminResetPassword({ ...adminResetPassword, value: e.target.value, error: '' })}
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                  minLength={8}
+                  required
+                />
+              </div>
+              {adminResetPassword.error && <p className="text-sm text-red-600 bg-red-50 rounded px-3 py-2">{adminResetPassword.error}</p>}
+              <div className="flex justify-end gap-2 pt-1">
+                <button type="button" onClick={() => setAdminResetPassword(null)} className="rounded-lg border px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">Cancel</button>
+                <button
+                  type="submit"
+                  disabled={resetUserPassword.isPending}
+                  className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/90 disabled:opacity-60"
+                >
+                  {resetUserPassword.isPending ? 'Saving…' : 'Reset Password'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

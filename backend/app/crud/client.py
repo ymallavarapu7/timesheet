@@ -23,9 +23,18 @@ async def get_client_by_name(db: AsyncSession, name: str, tenant_id: int) -> Opt
     return result.scalars().first()
 
 
+def _normalize_contact_email(value):
+    if value is None:
+        return None
+    cleaned = str(value).strip().lower()
+    return cleaned or None
+
+
 async def create_client(db: AsyncSession, client_create: ClientCreate, tenant_id: int) -> Client:
     """Create a new client."""
-    db_client = Client(**client_create.model_dump(), tenant_id=tenant_id)
+    payload = client_create.model_dump()
+    payload["contact_email"] = _normalize_contact_email(payload.get("contact_email"))
+    db_client = Client(**payload, tenant_id=tenant_id)
     db.add(db_client)
     try:
         await db.commit()
@@ -39,6 +48,8 @@ async def create_client(db: AsyncSession, client_create: ClientCreate, tenant_id
 async def update_client(db: AsyncSession, client: Client, client_update: ClientUpdate) -> Client:
     """Update client fields."""
     update_data = client_update.model_dump(exclude_unset=True)
+    if "contact_email" in update_data:
+        update_data["contact_email"] = _normalize_contact_email(update_data["contact_email"])
     for field, value in update_data.items():
         setattr(client, field, value)
 

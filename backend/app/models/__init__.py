@@ -18,7 +18,6 @@ from .ingestion_timesheet import (
     IngestionTimesheetLineItem,
     IngestionAuditLog,
 )
-from .email_sender_mapping import EmailSenderMapping
 from .refresh_token import RefreshToken
 from .department import Department
 from .leave_type import LeaveType
@@ -27,4 +26,4 @@ __all__ = ["Tenant", "User", "Client", "Project", "Task", "TimeEntry",
            "TimeOffRequest", "EmployeeManagerAssignment", "UserProjectAccess", "UserNotificationState", "UserNotificationDismissal", "TimeEntryEditHistory",
            "SyncLog", "SyncDirection", "SyncEntityType", "SyncStatus", "ServiceToken", "ActivityLog",
            "Mailbox", "IngestedEmail", "EmailAttachment", "IngestionTimesheet",
-           "IngestionTimesheetLineItem", "IngestionAuditLog", "EmailSenderMapping", "RefreshToken", "Department", "LeaveType"]
+           "IngestionTimesheetLineItem", "IngestionAuditLog", "RefreshToken", "Department", "LeaveType"]

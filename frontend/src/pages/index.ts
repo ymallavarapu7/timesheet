@@ -11,7 +11,6 @@ export { ClientManagementPage } from './ClientManagementPage';
 export { ProfilePage } from './ProfilePage';
 export { PlatformAdminPage } from './PlatformAdminPage';
 export { MailboxesPage } from './MailboxesPage';
-export { MappingsPage } from './MappingsPage';
 export { InboxPage } from './InboxPage';
 export { ReviewPanelPage } from './ReviewPanelPage';
 export { VerifyAccountPage } from './VerifyAccountPage';

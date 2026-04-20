@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 
 import { Loading, Error, OrganizationalChart, SearchInput } from '@/components';
 import { BulkSelectBar } from '@/components/ui/BulkSelectBar';
-import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useResetUserPassword, useResendVerification, useBulkDeleteUsers, useAuth, useIsPlatformAdmin, useProjects, useNotifications, useUnlockUserTimesheet, useDepartments, useCreateDepartment, useDeleteDepartment, useLeaveTypes, useCreateLeaveType, useUpdateLeaveType, useDeleteLeaveType } from '@/hooks';
+import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useResetUserPassword, useResendVerification, useBulkDeleteUsers, useAuth, useIsPlatformAdmin, useProjects, useNotifications, useUnlockUserTimesheet, useDepartments, useCreateDepartment, useDeleteDepartment, useLeaveTypes, useCreateLeaveType, useUpdateLeaveType, useDeleteLeaveType, useClients } from '@/hooks';
 import { KeyRound } from 'lucide-react';
 import { timeentriesAPI, ingestionAPI } from '@/api';
 import { IngestionTimesheetSummary, Project, TimeEntry, User, UserRole } from '@/types';
@@ -34,6 +34,7 @@ type UserMutationPayload = {
   is_external: boolean;
   manager_id?: number | null;
   project_ids?: number[];
+  default_client_id?: number | null;
 };
 
 const TENANT_ROLES: UserRole[] = ['EMPLOYEE', 'MANAGER', 'SENIOR_MANAGER', 'CEO', 'ADMIN'];
@@ -168,6 +169,7 @@ type FormState = {
   is_external: boolean;
   manager_id: number | null;
   project_ids: number[];
+  default_client_id: number | null;
 };
 
 const emptyForm = (): FormState => ({
@@ -182,6 +184,7 @@ const emptyForm = (): FormState => ({
   is_external: false,
   manager_id: null,
   project_ids: [],
+  default_client_id: null,
 });
 
 export const AdminPage: React.FC = () => {
@@ -197,6 +200,7 @@ export const AdminPage: React.FC = () => {
   const resendVerification = useResendVerification();
   const bulkDeleteUsers = useBulkDeleteUsers();
   const { data: departments = [] } = useDepartments();
+  const { data: clientsList = [] } = useClients();
   const createDepartment = useCreateDepartment();
   const [selectedUserIds, setSelectedUserIds] = useState<Set<number>>(new Set());
   const [resetPasswordUserId, setResetPasswordUserId] = useState<number | null>(null);
@@ -476,6 +480,7 @@ export const AdminPage: React.FC = () => {
       is_external: u.is_external ?? false,
       manager_id: normalizedManagerId,
       project_ids: u.project_ids ?? [],
+      default_client_id: u.default_client_id ?? null,
     });
     setFormError('');
     setShowModal(true);
@@ -547,6 +552,7 @@ export const AdminPage: React.FC = () => {
           is_external: form.is_external,
           manager_id: form.manager_id,
           project_ids: form.role === 'EMPLOYEE' ? form.project_ids : [],
+          default_client_id: form.default_client_id,
         };
         await updateUser.mutateAsync({ id: editingUser.id, data: payload });
       } else {
@@ -565,6 +571,7 @@ export const AdminPage: React.FC = () => {
           is_external: form.is_external,
           manager_id: form.manager_id,
           project_ids: form.role === 'EMPLOYEE' ? form.project_ids : [],
+          default_client_id: form.default_client_id,
         });
         // Confirm to the admin that the verification email is on its way.
         void result; // temporary_password is intentionally not surfaced — the user sets their own via the verification link.
@@ -1513,6 +1520,20 @@ export const AdminPage: React.FC = () => {
                             <option key={supervisor.id} value={supervisor.id}>{supervisor.full_name}</option>
                           ))}
                       </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Default Client</label>
+                      <select
+                        value={form.default_client_id ?? ''}
+                        onChange={(e) => setForm((f) => ({ ...f, default_client_id: e.target.value ? Number(e.target.value) : null }))}
+                        className="w-full px-3 py-2 border rounded"
+                      >
+                        <option value="">— No default —</option>
+                        {clientsList.map((client: { id: number; name: string }) => (
+                          <option key={client.id} value={client.id}>{client.name}</option>
+                        ))}
+                      </select>
+                      <p className="mt-1 text-xs text-muted-foreground">Optional. When set, incoming timesheets resolved to this user auto-route to this client.</p>
                     </div>
                   </>
                 )}

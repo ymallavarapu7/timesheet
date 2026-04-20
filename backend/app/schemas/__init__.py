@@ -53,6 +53,7 @@ class UserBase(BaseModel):
     is_active: bool = True
     manager_id: Optional[int] = None
     project_ids: List[int] = Field(default_factory=list)
+    default_client_id: Optional[int] = None
 
 
 class UserCreate(UserBase):
@@ -68,12 +69,19 @@ class UserSelfUpdate(BaseModel):
     full_name: Optional[str] = None
     title: Optional[str] = None
     timezone: Optional[str] = None
+    # Username is self-editable for any role, subject to uniqueness.
+    username: Optional[str] = Field(None, min_length=3, max_length=255)
+    # Email is self-editable only for platform admins. The endpoint enforces
+    # that restriction at runtime — schema-accepting it avoids 422s when the
+    # client sends the field, but regular users get a 403 from the handler.
+    email: Optional[EmailStr] = None
     # Note: department is intentionally not self-editable; only admins can
     # change it via the user management screen.
 
 
 class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
+    username: Optional[str] = Field(None, min_length=3, max_length=255)
     full_name: Optional[str] = None
     title: Optional[str] = None
     department: Optional[str] = None
@@ -84,6 +92,7 @@ class UserUpdate(BaseModel):
     is_external: Optional[bool] = None
     manager_id: Optional[int] = None
     project_ids: Optional[List[int]] = None
+    default_client_id: Optional[int] = None
 
 
 class UserResponse(UserBase):
@@ -126,6 +135,7 @@ class UserSummaryResponse(BaseModel):
 class UserProfileResponse(BaseModel):
     id: int
     email: EmailStr
+    username: str
     full_name: str
     title: Optional[str] = None
     department: Optional[str] = None
@@ -159,6 +169,9 @@ class MessageResponse(BaseModel):
 class ClientBase(BaseModel):
     name: str
     quickbooks_customer_id: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_email: Optional[EmailStr] = None
+    contact_phone: Optional[str] = None
 
 
 class ClientCreate(ClientBase):
@@ -168,6 +181,9 @@ class ClientCreate(ClientBase):
 class ClientUpdate(BaseModel):
     name: Optional[str] = None
     quickbooks_customer_id: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_email: Optional[EmailStr] = None
+    contact_phone: Optional[str] = None
 
 
 class ClientResponse(ClientBase):

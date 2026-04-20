@@ -31,6 +31,8 @@ export const ProfilePage: React.FC = () => {
   const [title, setTitle] = useState('');
   const [department, setDepartment] = useState('');  // read-only on this page; admin manages via user management
   const [timezone, setTimezone] = useState('UTC');
+  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [profileError, setProfileError] = useState('');
   const [profileSuccess, setProfileSuccess] = useState('');
 
@@ -46,8 +48,12 @@ export const ProfilePage: React.FC = () => {
       setTitle(profile.title ?? '');
       setDepartment(profile.department ?? '');
       setTimezone(profile.timezone ?? 'UTC');
+      setUsername(profile.username ?? '');
+      setEmail(profile.email ?? '');
     }
   }, [profile]);
+
+  const isPlatformAdmin = profile?.role === 'PLATFORM_ADMIN';
 
   const handleProfileSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -57,12 +63,30 @@ export const ProfilePage: React.FC = () => {
       setProfileError('Full name is required');
       return;
     }
+    const trimmedUsername = username.trim();
+    if (!trimmedUsername || trimmedUsername.length < 3) {
+      setProfileError('Username must be at least 3 characters');
+      return;
+    }
+    const payload: {
+      full_name: string;
+      title?: string;
+      timezone?: string;
+      username?: string;
+      email?: string;
+    } = {
+      full_name: fullName.trim(),
+      title: title.trim() || undefined,
+      timezone: timezone || undefined,
+    };
+    if (profile && trimmedUsername !== profile.username) {
+      payload.username = trimmedUsername;
+    }
+    if (isPlatformAdmin && profile && email.trim() && email.trim() !== profile.email) {
+      payload.email = email.trim();
+    }
     try {
-      await updateProfileMutation.mutateAsync({
-        full_name: fullName.trim(),
-        title: title.trim() || undefined,
-        timezone: timezone || undefined,
-      });
+      await updateProfileMutation.mutateAsync(payload);
       setProfileSuccess('Profile updated successfully');
     } catch (err: unknown) {
       const detail = getRequestErrorDetail(err);
@@ -134,10 +158,31 @@ export const ProfilePage: React.FC = () => {
                 />
               </div>
               <div>
+                <label className="block text-sm font-medium mb-1">Username</label>
+                <input
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  className="w-full px-3 py-2 border rounded"
+                  minLength={3}
+                  required
+                />
+                <p className="mt-1 text-xs text-muted-foreground">Must be unique across the platform.</p>
+              </div>
+              <div>
                 <label className="block text-sm font-medium mb-1">Email</label>
-                <div className="w-full px-3 py-2 border rounded bg-muted/40 text-foreground">
-                  {profile?.email || <span className="text-muted-foreground">Not set</span>}
-                </div>
+                {isPlatformAdmin ? (
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full px-3 py-2 border rounded"
+                    required
+                  />
+                ) : (
+                  <div className="w-full px-3 py-2 border rounded bg-muted/40 text-foreground">
+                    {profile?.email || <span className="text-muted-foreground">Not set</span>}
+                  </div>
+                )}
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Title</label>

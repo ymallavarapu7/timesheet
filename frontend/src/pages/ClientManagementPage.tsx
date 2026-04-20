@@ -10,11 +10,17 @@ import { Client, Project, Task } from '@/types';
 type ClientFormState = {
   name: string;
   quickbooks_customer_id: string;
+  contact_name: string;
+  contact_email: string;
+  contact_phone: string;
 };
 
 const emptyClientForm = (): ClientFormState => ({
   name: '',
   quickbooks_customer_id: '',
+  contact_name: '',
+  contact_email: '',
+  contact_phone: '',
 });
 
 type ProjectFormState = {
@@ -225,6 +231,9 @@ export const ClientManagementPage: React.FC = () => {
     setClientForm({
       name: client.name,
       quickbooks_customer_id: client.quickbooks_customer_id || '',
+      contact_name: client.contact_name || '',
+      contact_email: client.contact_email || '',
+      contact_phone: client.contact_phone || '',
     });
     setClientError('');
     setShowClientModal(true);
@@ -351,19 +360,20 @@ export const ClientManagementPage: React.FC = () => {
     }
 
     try {
+      const payload = {
+        name: clientForm.name.trim(),
+        quickbooks_customer_id: clientForm.quickbooks_customer_id.trim() || undefined,
+        contact_name: clientForm.contact_name.trim() || undefined,
+        contact_email: clientForm.contact_email.trim() || undefined,
+        contact_phone: clientForm.contact_phone.trim() || undefined,
+      };
       if (editingClient) {
         await updateClient.mutateAsync({
           id: editingClient.id,
-          data: {
-            name: clientForm.name.trim(),
-            quickbooks_customer_id: clientForm.quickbooks_customer_id.trim() || undefined,
-          },
+          data: payload,
         });
       } else {
-        await createClient.mutateAsync({
-          name: clientForm.name.trim(),
-          quickbooks_customer_id: clientForm.quickbooks_customer_id.trim() || undefined,
-        });
+        await createClient.mutateAsync(payload);
       }
       closeClientModal();
     } catch (err: unknown) {
@@ -962,6 +972,43 @@ export const ClientManagementPage: React.FC = () => {
                   className="w-full px-3 py-2 border rounded"
                   placeholder="Optional"
                 />
+              </div>
+
+              <div className="pt-2">
+                <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-3">Primary contact (optional)</p>
+                <p className="text-xs text-muted-foreground mb-3">
+                  The domain on the contact email is used to auto-route incoming timesheets to this client.
+                </p>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Contact Name</label>
+                    <input
+                      value={clientForm.contact_name}
+                      onChange={(e) => setClientForm((current) => ({ ...current, contact_name: e.target.value }))}
+                      className="w-full px-3 py-2 border rounded"
+                      placeholder="Jane Doe"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Contact Email</label>
+                    <input
+                      type="email"
+                      value={clientForm.contact_email}
+                      onChange={(e) => setClientForm((current) => ({ ...current, contact_email: e.target.value }))}
+                      className="w-full px-3 py-2 border rounded"
+                      placeholder="jane@acme.com"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Contact Phone</label>
+                    <input
+                      value={clientForm.contact_phone}
+                      onChange={(e) => setClientForm((current) => ({ ...current, contact_phone: e.target.value }))}
+                      className="w-full px-3 py-2 border rounded"
+                      placeholder="+1 555 000 0000"
+                    />
+                  </div>
+                </div>
               </div>
 
               {clientError && (

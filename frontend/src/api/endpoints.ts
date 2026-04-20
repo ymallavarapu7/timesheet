@@ -44,8 +44,6 @@ import {
   MappingReapplyResult,
   Mailbox,
   MailboxPayload,
-  Mapping,
-  MappingPayload,
   MessageResponse,
   NotificationActionResponse,
   NotificationSummary,
@@ -109,8 +107,14 @@ export const usersAPI = {
   meProfile: () =>
     apiClient.get<UserProfile>('/users/me/profile'),
 
-  updateMyProfile: (data: { full_name?: string; title?: string; department?: string; timezone?: string }) =>
-    apiClient.patch<User>('/users/me/profile', data),
+  updateMyProfile: (data: {
+    full_name?: string;
+    title?: string;
+    department?: string;
+    timezone?: string;
+    username?: string;
+    email?: string;
+  }) => apiClient.patch<User>('/users/me/profile', data),
 
   changePassword: (data: ChangePasswordRequest) =>
     apiClient.post<MessageResponse>('/auth/change-password', data),
@@ -463,16 +467,6 @@ export const mailboxesAPI = {
   test: (id: number) => apiClient.post<{ success: boolean; error: string | null; latency_ms: number; message_count: number }>(`/api/mailboxes/${id}/test`, {}),
   resetCursor: (id: number) => apiClient.post(`/api/mailboxes/${id}/reset-cursor`, {}),
   oauthConnect: (provider: 'google' | 'microsoft') => apiClient.get<{ auth_url: string }>(`/api/mailboxes/oauth/connect/${provider}`),
-};
-
-export const mappingsAPI = {
-  list: () => apiClient.get<Mapping[]>('/api/mappings'),
-  create: (data: Required<Pick<MappingPayload, 'match_type' | 'match_value' | 'client_id'>> & { employee_id?: number | null }) =>
-    apiClient.post<Mapping>('/api/mappings', data),
-  update: (id: number, data: MappingPayload) => apiClient.patch<Mapping>(`/api/mappings/${id}`, data),
-  delete: (id: number) => apiClient.delete(`/api/mappings/${id}`),
-  bulkDelete: (mappingIds: number[]) =>
-    apiClient.post<{ deleted: number }>('/api/mappings/bulk-delete', { mapping_ids: mappingIds }),
 };
 
 export const ingestionAPI = {

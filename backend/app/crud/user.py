@@ -178,6 +178,7 @@ async def create_user(db: AsyncSession, user_create: UserCreate) -> tuple["User"
         is_active=user_create.is_active,
         can_review=user_create.can_review,
         is_external=user_create.is_external,
+        default_client_id=user_create.default_client_id,
     )
     db.add(db_user)
     try:
@@ -212,6 +213,9 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
     if "email" in update_data and update_data["email"] is not None:
         update_data["email"] = update_data["email"].strip().lower()
 
+    if "username" in update_data and update_data["username"] is not None:
+        update_data["username"] = update_data["username"].strip().lower()
+
     if "full_name" in update_data and update_data["full_name"] is not None:
         update_data["full_name"] = update_data["full_name"].strip()
 
@@ -230,6 +234,15 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
     next_title = update_data.get("title", user.title)
     next_department = update_data.get("department", user.department)
     _validate_role_profile(next_role, next_title, next_department)
+
+    if "default_client_id" in update_data and update_data["default_client_id"] is not None:
+        from app.models.client import Client
+        client_result = await db.execute(
+            select(Client).where(Client.id == update_data["default_client_id"])
+        )
+        client_row = client_result.scalar_one_or_none()
+        if client_row is None or (user.tenant_id is not None and client_row.tenant_id != user.tenant_id):
+            raise ValueError("default_client_id references a client from a different tenant or it doesn't exist")
 
     if not manager_id_supplied:
         manager_id = user.manager_id
@@ -303,7 +316,6 @@ async def delete_user(db: AsyncSession, user_id: int) -> bool:
             # These tables may or may not have CASCADE/SET NULL constraints depending
             # on whether DB migrations were applied, so clear them explicitly.
             from app.models.ingestion_timesheet import IngestionTimesheet
-            from app.models.email_sender_mapping import EmailSenderMapping
             from app.models.activity_log import ActivityLog
 
             await db.execute(
@@ -315,11 +327,6 @@ async def delete_user(db: AsyncSession, user_id: int) -> bool:
                 update(IngestionTimesheet)
                 .where(IngestionTimesheet.reviewer_id == user_id)
                 .values(reviewer_id=None)
-            )
-            await db.execute(
-                update(EmailSenderMapping)
-                .where(EmailSenderMapping.employee_id == user_id)
-                .values(employee_id=None)
             )
             await db.execute(
                 update(ActivityLog)

@@ -4,7 +4,6 @@ from typing import Any
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from app.models.email_sender_mapping import SenderMatchType
 from app.models.ingestion_timesheet import IngestionTimesheetStatus
 from app.models.mailbox import MailboxAuthType, MailboxProtocol, OAuthProvider
 
@@ -88,31 +87,6 @@ class ConnectionTestResult(BaseModel):
     error: str | None = None
     latency_ms: int
     message_count: int = 0
-
-
-class MappingCreate(BaseModel):
-    match_type: SenderMatchType
-    match_value: str = Field(..., min_length=1, max_length=255)
-    client_id: int
-    employee_id: int | None = None
-
-
-class MappingUpdate(BaseModel):
-    match_value: str | None = None
-    client_id: int | None = None
-    employee_id: int | None = None
-
-
-class MappingRead(BaseModel):
-    id: int
-    tenant_id: int
-    match_type: str
-    match_value: str
-    client_id: int
-    employee_id: int | None
-    created_at: datetime
-
-    model_config = {"from_attributes": True}
 
 
 class FetchJobResponse(BaseModel):
@@ -246,6 +220,8 @@ class EmailContextRead(BaseModel):
     subject: str | None
     sender_email: str
     sender_name: str | None
+    forwarded_from_email: str | None = None
+    forwarded_from_name: str | None = None
     recipients: Any | None
     body_text: str | None
     body_html: str | None
@@ -260,6 +236,8 @@ class StoredEmailDetail(BaseModel):
     subject: str | None
     sender_email: str
     sender_name: str | None
+    forwarded_from_email: str | None = None
+    forwarded_from_name: str | None = None
     recipients: Any | None
     body_text: str | None
     body_html: str | None

@@ -21,6 +21,13 @@ class Client(Base, TimestampMixin):
         String(36), nullable=True, unique=True, index=True
     )
 
+    # Primary contact — the person the employer talks to about engagement
+    # details. The domain part of contact_email doubles as the routing signal
+    # for ingestion (sender domain / in-document email → client).
+    contact_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    contact_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    contact_phone: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     # Relationships
     tenant: Mapped["Tenant"] = relationship("Tenant", back_populates="clients")
     projects: Mapped[List["Project"]] = relationship(

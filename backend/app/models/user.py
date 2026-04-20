@@ -85,6 +85,12 @@ class User(Base, TimestampMixin):
         String(255), nullable=True
     )
 
+    # Optional pinning — if set, ingestion auto-assigns this client on any
+    # timesheet resolved to this user without needing to match client signals.
+    default_client_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("clients.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
     # Relationships
     tenant: Mapped[Optional["Tenant"]] = relationship("Tenant", back_populates="users")
     manager_assignment: Mapped[Optional["EmployeeManagerAssignment"]] = relationship(

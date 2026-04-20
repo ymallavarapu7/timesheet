@@ -10,6 +10,7 @@ import {
   useAddIngestionLineItem,
   useApproveIngestionTimesheet,
   useClients,
+  useCreateClient,
   useDeleteIngestionLineItem,
   useDraftIngestionComment,
   useFetchJobStatus,
@@ -194,6 +195,7 @@ export const ReviewPanelPage: React.FC = () => {
   } = useIngestionEmail(normalizedEmailId, isEmailMode);
   const { data: users = [] } = useUsers();
   const { data: clients = [] } = useClients();
+  const createClient = useCreateClient();
   const { data: projects = [] } = useProjects({ active_only: true, limit: 500 });
   const updateTimesheet = useUpdateIngestionTimesheetData();
   const addLineItem = useAddIngestionLineItem();
@@ -373,6 +375,16 @@ export const ReviewPanelPage: React.FC = () => {
     ? String((structured as Record<string, unknown>).employee_name)
     : '';
   const extractedEmployeeHint = ((timesheet?.extracted_employee_name || fromStructured || '') as string).trim();
+  const extractedClientHint = (() => {
+    if (!structured || typeof structured !== 'object') return '';
+    const record = structured as Record<string, unknown>;
+    const value = record.client_name ?? record.client;
+    return typeof value === 'string' ? value.trim() : '';
+  })();
+  const extractedClientMatchesExisting = extractedClientHint
+    ? clients.some((c: { id: number; name: string }) =>
+        c.name.trim().toLowerCase() === extractedClientHint.toLowerCase())
+    : false;
   const normalizedHint = normalizeEmployeeNameForMatch(extractedEmployeeHint);
   const extractedEmployeeMatch = normalizedHint
     ? users.find((user) => {
@@ -604,7 +616,14 @@ export const ReviewPanelPage: React.FC = () => {
             <span className="truncate text-[15px] font-semibold text-foreground">
               {emailContext?.subject || 'No subject'}
             </span>
-            <span className="text-sm text-muted-foreground">from {emailContext?.sender_name || emailContext?.sender_email || 'Unknown'}</span>
+            <span className="text-sm text-muted-foreground">
+              from {emailContext?.sender_name || emailContext?.sender_email || 'Unknown'}
+              {emailContext?.forwarded_from_email && (
+                <span className="ml-1.5 inline-flex items-center gap-1 rounded bg-sky-50 px-1.5 py-0.5 text-xs font-medium text-sky-700">
+                  Forwarded · originally from {emailContext.forwarded_from_name || emailContext.forwarded_from_email}
+                </span>
+              )}
+            </span>
           </div>
         </div>
         {timesheet
@@ -698,6 +717,9 @@ export const ReviewPanelPage: React.FC = () => {
             {/* Email header */}
             <div className="mb-4 space-y-1.5 border-b border-border/60 pb-4 text-sm">
               <p><span className="w-16 inline-block text-muted-foreground">From</span> <span className="text-foreground">{emailContext?.sender_name ? `${emailContext.sender_name} <${emailContext.sender_email}>` : emailContext?.sender_email || '--'}</span></p>
+              {emailContext?.forwarded_from_email && (
+                <p><span className="w-16 inline-block text-muted-foreground">Originally from</span> <span className="text-foreground">{emailContext.forwarded_from_name ? `${emailContext.forwarded_from_name} <${emailContext.forwarded_from_email}>` : emailContext.forwarded_from_email}</span></p>
+              )}
               <p><span className="w-16 inline-block text-muted-foreground">Date</span> <span className="text-foreground">{formatDateTime(emailContext?.received_at)}</span></p>
             </div>
 
@@ -842,6 +864,28 @@ export const ReviewPanelPage: React.FC = () => {
                       <option value="">Select client</option>
                       {clients.map((client: { id: number; name: string }) => <option key={client.id} value={client.id}>{client.name}</option>)}
                     </select>
+                    {extractedClientHint && !extractedClientMatchesExisting && !summaryForm.client_id && (
+                      <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-border/60 bg-muted/30 px-3 py-2">
+                        <p className="text-xs text-muted-foreground">
+                          Extracted client: <span className="font-medium text-foreground">{extractedClientHint}</span> — not in your client list.
+                        </p>
+                        <button
+                          type="button"
+                          disabled={createClient.isPending}
+                          onClick={async () => {
+                            try {
+                              const created = await createClient.mutateAsync({ name: extractedClientHint });
+                              setSummaryForm((c) => ({ ...c, client_id: String(created.id) }));
+                            } catch {
+                              // Surface via generic error handling; leave the form as-is.
+                            }
+                          }}
+                          className="text-xs font-medium text-primary hover:underline disabled:opacity-60"
+                        >
+                          {createClient.isPending ? 'Creating…' : `Create "${extractedClientHint}"`}
+                        </button>
+                      </div>
+                    )}
                   </div>
                   <div>
                     <label className="mb-1.5 block text-sm font-medium text-foreground">Employee</label>

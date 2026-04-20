@@ -10,7 +10,6 @@ from app.db import AsyncSessionLocal
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.models.time_entry import TimeEntry, TimeEntryStatus
-from app.models.email_sender_mapping import EmailSenderMapping
 from app.models.ingested_email import IngestedEmail
 from app.services.email_service import send_email
 
@@ -183,24 +182,27 @@ async def _check_external_reminders(
     if not (in_2day_window or in_3h_window):
         return
 
-    # Load all active sender mappings for this tenant
-    mapping_result = await session.execute(
-        select(EmailSenderMapping).where(
-            EmailSenderMapping.tenant_id == tenant_id
+    # External contractors are modeled as users with is_external=True. Remind
+    # anyone whose email hasn't produced an ingested email this calendar month.
+    external_result = await session.execute(
+        select(User).where(
+            (User.tenant_id == tenant_id)
+            & (User.is_external == True)  # noqa: E712
+            & (User.is_active == True)  # noqa: E712
         )
     )
-    mappings = mapping_result.scalars().all()
+    externals = external_result.scalars().all()
 
     month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
 
-    for mapping in mappings:
-        if not mapping.sender_email:
+    for external in externals:
+        if not external.email or external.email.endswith("@ingestion.internal"):
             continue
         # Check if any email arrived from this sender this month
         email_result = await session.execute(
             select(IngestedEmail.id).where(
                 (IngestedEmail.tenant_id == tenant_id) &
-                (IngestedEmail.sender_email == mapping.sender_email) &
+                (IngestedEmail.sender_email == external.email) &
                 (IngestedEmail.received_at >= month_start)
             ).limit(1)
         )
@@ -215,8 +217,8 @@ async def _check_external_reminders(
                 f"Please submit your timesheet before the deadline.\n\n"
                 f"Regards,\nAcufy Platform"
             )
-            await send_email(to_address=mapping.sender_email, subject=subject, body_text=body)
-            logger.info("Sent contractor reminder to %s (tenant %s)", mapping.sender_email, tenant_id)
+            await send_email(to_address=external.email, subject=subject, body_text=body)
+            logger.info("Sent contractor reminder to %s (tenant %s)", external.email, tenant_id)
 
 
 async def _load_tenant_settings(tenant_id: int, session) -> dict:

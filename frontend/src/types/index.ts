@@ -18,6 +18,7 @@ export interface User {
   tenant_id: number | null;
   manager_id?: number | null;
   project_ids?: number[];
+  default_client_id?: number | null;
   timesheet_locked?: boolean;
   timesheet_locked_reason?: string | null;
   created_at: string;
@@ -59,6 +60,9 @@ export interface Client {
   id: number;
   name: string;
   quickbooks_customer_id: string | null;
+  contact_name: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -336,7 +340,6 @@ export interface AuthState {
 export type MailboxProtocol = 'imap' | 'pop3' | 'graph';
 export type MailboxAuthType = 'basic' | 'oauth2';
 export type OAuthProvider = 'google' | 'microsoft';
-export type MappingMatchType = 'email' | 'domain';
 export type IngestionStatus = 'pending' | 'under_review' | 'approved' | 'rejected' | 'on_hold';
 
 export interface Mailbox {
@@ -378,23 +381,6 @@ export interface MailboxPayload {
   smtp_password?: string | null;
   linked_client_id?: number | null;
   is_active?: boolean;
-}
-
-export interface Mapping {
-  id: number;
-  tenant_id: number;
-  match_type: MappingMatchType | string;
-  match_value: string;
-  client_id: number;
-  employee_id: number | null;
-  created_at: string;
-}
-
-export interface MappingPayload {
-  match_type?: MappingMatchType | string;
-  match_value?: string;
-  client_id?: number;
-  employee_id?: number | null;
 }
 
 export interface FetchJobResponse {
@@ -501,6 +487,8 @@ export interface IngestionEmailContext {
   subject: string | null;
   sender_email: string;
   sender_name: string | null;
+  forwarded_from_email: string | null;
+  forwarded_from_name: string | null;
   recipients: unknown;
   body_text: string | null;
   body_html: string | null;
@@ -513,6 +501,8 @@ export interface StoredEmailDetail {
   subject: string | null;
   sender_email: string;
   sender_name: string | null;
+  forwarded_from_email: string | null;
+  forwarded_from_name: string | null;
   recipients: unknown;
   body_text: string | null;
   body_html: string | null;

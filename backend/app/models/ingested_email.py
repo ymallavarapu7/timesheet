@@ -31,6 +31,11 @@ class IngestedEmail(Base):
     subject: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     sender_email: Mapped[str] = mapped_column(String(255), nullable=False)
     sender_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Populated when the incoming email was recognized as a forward and the
+    # original sender was successfully extracted from the body. Otherwise
+    # both are NULL and the outer sender_email/sender_name applies.
+    forwarded_from_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    forwarded_from_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     recipients: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     body_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     body_html: Mapped[str | None] = mapped_column(Text, nullable=True)

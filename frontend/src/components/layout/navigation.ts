@@ -5,7 +5,6 @@ import {
   CalendarDays,
   ClipboardCheck,
   Clock3,
-  FolderCog,
   Home,
   Inbox,
   Mail,
@@ -60,7 +59,6 @@ export const buildNavigation = (user: User | null, ingestionEnabled: boolean): N
       title: 'Emails',
       items: [
         { label: 'Mailboxes', to: '/mailboxes', icon: Mail, visible: ingestionEnabled && isAdmin(user) },
-        { label: 'Mappings', to: '/mappings', icon: FolderCog, visible: ingestionEnabled && isAdmin(user) },
         { label: 'Inbox', to: '/ingestion/inbox', icon: Inbox, visible: ingestionEnabled && canReview(user), match: ['/ingestion/inbox', '/ingestion/review'] },
       ],
     },
