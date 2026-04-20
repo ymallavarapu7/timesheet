@@ -164,6 +164,7 @@ async def get_my_profile(
     return {
         "id": current_user.id,
         "email": current_user.email,
+        "username": current_user.username,
         "full_name": current_user.full_name,
         "title": current_user.title,
         "department": current_user.department,
