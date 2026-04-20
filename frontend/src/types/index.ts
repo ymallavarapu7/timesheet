@@ -124,6 +124,8 @@ export interface TimeEntry {
   entry_date: string;
   hours: string | number;
   description: string;
+  /** Private free-text notes for the entry owner. Not shown in approvals/exports. */
+  notes?: string | null;
   is_billable: boolean;
   status: TimeEntryStatus;
   submitted_at: string | null;

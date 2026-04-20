@@ -286,6 +286,9 @@ class TimeEntryBase(BaseModel):
     entry_date: date
     hours: Decimal = Field(..., gt=0, le=24)
     description: str
+    # Private free-text notes for the entry owner. Never surfaced in approval
+    # queues, exports, or client-facing views.
+    notes: Optional[str] = None
     is_billable: bool = True
 
 
@@ -299,6 +302,7 @@ class TimeEntryUpdate(BaseModel):
     entry_date: Optional[date] = None
     hours: Optional[Decimal] = Field(None, gt=0, le=24)
     description: Optional[str] = None
+    notes: Optional[str] = None
     is_billable: Optional[bool] = None
     edit_reason: Optional[str] = Field(None, max_length=2000)
     history_summary: Optional[str] = Field(None, max_length=2000)

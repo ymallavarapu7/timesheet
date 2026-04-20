@@ -256,6 +256,7 @@ export const timeentriesAPI = {
     entry_date: string;
     hours: number;
     description: string;
+    notes?: string | null;
     is_billable?: boolean;
   }) =>
     apiClient.post('/timesheets', data),

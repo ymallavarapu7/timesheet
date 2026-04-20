@@ -15,6 +15,7 @@ type EntryFormData = {
   entry_date: string;
   hours: number;
   description: string;
+  notes: string;
   is_billable: boolean;
   edit_reason?: string;
   history_summary?: string;
@@ -26,6 +27,8 @@ type GridRow = {
   taskId: number;
   hours: Record<string, string>;
   description: string;
+  /** Private free-text notes attached to all entries created from this row. */
+  notes: string;
   isBillable: boolean;
 };
 
@@ -183,6 +186,8 @@ export const MyTimePage: React.FC = () => {
       entry_date: string;
       hours: number | null;
       description: string;
+      /** Private notes — never populated by the LLM, only by user edits in the preview. */
+      notes: string;
       is_billable: boolean;
       error: string | null;
       alternatives: Array<{ project_id: number; project_name: string; task_id: number; task_name: string }>;
@@ -223,7 +228,7 @@ export const MyTimePage: React.FC = () => {
   const markNotificationReadMutation = useMarkNotificationRead();
 
   const [gridRows, setGridRows] = useState<GridRow[]>([
-    { id: 1, projectId: 0, taskId: 0, hours: {}, description: '', isBillable: true },
+    { id: 1, projectId: 0, taskId: 0, hours: {}, description: '', notes: '', isBillable: true },
   ]);
 
   const [editFormData, setEditFormData] = useState<EntryFormData | null>(null);
@@ -273,6 +278,7 @@ export const MyTimePage: React.FC = () => {
       entry_date: targetEntry.entry_date,
       hours: typeof targetEntry.hours === 'string' ? parseFloat(targetEntry.hours) : targetEntry.hours,
       description: targetEntry.description,
+      notes: targetEntry.notes ?? '',
       is_billable: targetEntry.is_billable ?? true,
       edit_reason: '',
       history_summary: '',
@@ -406,6 +412,7 @@ export const MyTimePage: React.FC = () => {
             [dateKey]: (entryHours || 0).toString(),
           },
           description: '',
+          notes: entry.notes ?? '',
           isBillable: entry.is_billable ?? true,
         });
         return;
@@ -421,7 +428,7 @@ export const MyTimePage: React.FC = () => {
       return;
     }
 
-    setGridRows([{ id: 1, projectId: 0, taskId: 0, hours: {}, description: '', isBillable: true }]);
+    setGridRows([{ id: 1, projectId: 0, taskId: 0, hours: {}, description: '', notes: '', isBillable: true }]);
   }, [weekStartKey, weekEndKey, regularWeeklyGridEntries]);
 
 
@@ -576,7 +583,12 @@ export const MyTimePage: React.FC = () => {
         setNlResult({ entries: [], error: result.error });
         return;
       }
-      setNlResult(result);
+      // Seed an empty `notes` field on each parsed entry so the preview form
+      // has a place to store user-authored notes.
+      setNlResult({
+        ...result,
+        entries: result.entries.map((e) => ({ ...e, notes: '' })),
+      });
     } catch {
       setNlResult({ entries: [], error: 'Failed to parse. Please try again.' });
     }
@@ -602,11 +614,17 @@ export const MyTimePage: React.FC = () => {
     );
 
     if (existingRowIdx >= 0) {
-      // Update existing row's hours for this date
+      // Update existing row's hours for this date. If the user typed notes on
+      // the preview, carry them over — otherwise keep whatever the row had.
       setGridRows((rows) =>
         rows.map((r, idx) =>
           idx === existingRowIdx
-            ? { ...r, hours: { ...r.hours, [dateKey]: String(entry.hours) }, description: entry.description || r.description }
+            ? {
+                ...r,
+                hours: { ...r.hours, [dateKey]: String(entry.hours) },
+                description: entry.description || r.description,
+                notes: entry.notes ? entry.notes : r.notes,
+              }
             : r,
         ),
       );
@@ -621,6 +639,7 @@ export const MyTimePage: React.FC = () => {
           taskId: entry.task_id || 0,
           hours: { [dateKey]: String(entry.hours) },
           description: entry.description || '',
+          notes: entry.notes || '',
           isBillable: entry.is_billable,
         },
       ]);
@@ -635,6 +654,25 @@ export const MyTimePage: React.FC = () => {
     }
     setNlInput('');
     setNlResult(null);
+  };
+
+  /** Patch a single parsed entry in ``nlResult`` by index. The preview card
+   *  is rendered as an editable form so users can correct project/task/date/
+   *  hours/description/billability before applying, and can attach a private
+   *  notes string that does not appear in approvals/exports. */
+  const updateNlEntry = (
+    idx: number,
+    patch: Partial<NonNullable<typeof nlResult>['entries'][number]>,
+  ) => {
+    setNlResult((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        entries: current.entries.map((entry, i) =>
+          i === idx ? { ...entry, ...patch } : entry,
+        ),
+      };
+    });
   };
 
   const handleCopyLastWeek = (copyHours: boolean) => {
@@ -656,6 +694,7 @@ export const MyTimePage: React.FC = () => {
           taskId: entry.task_id || 0,
           hours: {},
           description: '',
+          notes: '',
           isBillable: entry.is_billable ?? true,
         });
       }
@@ -679,7 +718,7 @@ export const MyTimePage: React.FC = () => {
     const newId = Math.max(...gridRows.map((r) => r.id), 0) + 1;
     setGridRows((current) => [
       ...current,
-      { id: newId, projectId: 0, taskId: 0, hours: {}, description: '', isBillable: true },
+      { id: newId, projectId: 0, taskId: 0, hours: {}, description: '', notes: '', isBillable: true },
     ]);
   };
 
@@ -811,6 +850,7 @@ export const MyTimePage: React.FC = () => {
             entry_date: dateKey,
             hours: dayHours,
             description: row.description.trim() || gridDescription.trim() || 'Worked on project tasks',
+            notes: row.notes.trim() || null,
             is_billable: row.isBillable,
           })
         ),
@@ -820,7 +860,7 @@ export const MyTimePage: React.FC = () => {
       const successes = mutationResults.length - failures.length;
 
       if (failures.length === 0) {
-        setGridRows([{ id: 1, projectId: 0, taskId: 0, hours: {}, description: '', isBillable: true }]);
+        setGridRows([{ id: 1, projectId: 0, taskId: 0, hours: {}, description: '', notes: '', isBillable: true }]);
         setGridDescription('');
         await queryClient.invalidateQueries({ queryKey: ['timeentries'] });
         await queryClient.invalidateQueries({ queryKey: ['notifications'] });
@@ -866,6 +906,7 @@ export const MyTimePage: React.FC = () => {
       entry_date: entry.entry_date,
       hours: typeof entry.hours === 'string' ? parseFloat(entry.hours) : entry.hours,
       description: entry.description,
+      notes: entry.notes ?? '',
       is_billable: entry.is_billable ?? true,
       edit_reason: '',
       history_summary: '',
@@ -892,6 +933,7 @@ export const MyTimePage: React.FC = () => {
         entry_date: editFormData.entry_date,
         hours: editFormData.hours,
         description: editFormData.description,
+        notes: editFormData.notes.trim() || null,
         is_billable: editFormData.is_billable,
         edit_reason: editFormData.edit_reason,
         history_summary: editFormData.history_summary,
@@ -1065,44 +1107,164 @@ export const MyTimePage: React.FC = () => {
               </div>
             )}
 
-            {/* Parsed entries */}
+            {/* Parsed entries — editable preview */}
             {nlResult && nlResult.entries.length > 0 && (
-              <div className="mt-3 space-y-2">
-                <p className="text-xs font-medium text-muted-foreground">Parsed entries — review and apply to your grid:</p>
-                {nlResult.entries.map((entry, idx) => (
-                  <div
-                    key={idx}
-                    className={`rounded-lg border p-3 text-sm ${entry.error ? 'border-destructive/30 bg-destructive/5' : 'border-primary/20 bg-primary/5'}`}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex-1 space-y-1">
-                        {entry.error ? (
-                          <p className="font-medium text-destructive">{entry.error}</p>
-                        ) : (
-                          <>
-                            <p className="font-medium text-foreground">
-                              {[entry.client_name, entry.project_name, entry.task_name].filter(Boolean).join(' → ')}
-                            </p>
-                            <p className="text-muted-foreground">
-                              {entry.entry_date} · {entry.hours}h · {entry.is_billable ? 'Billable' : 'Non-billable'}
-                            </p>
-                            {entry.description && (
-                              <p className="text-muted-foreground italic">"{entry.description}"</p>
-                            )}
-                          </>
-                        )}
-                        {entry.alternatives && entry.alternatives.length > 0 && (
-                          <div className="mt-1">
-                            <p className="text-xs text-muted-foreground">Did you mean:</p>
-                            {entry.alternatives.map((alt, ai) => (
-                              <span key={ai} className="mr-2 text-xs text-primary">{[alt.project_name, alt.task_name].filter(Boolean).join(' → ')}</span>
-                            ))}
+              <div className="mt-3 space-y-3">
+                <p className="text-xs font-medium text-muted-foreground">
+                  Parsed entries — edit any field before applying to your grid. Notes are private and never appear in approvals or exports.
+                </p>
+                {nlResult.entries.map((entry, idx) => {
+                  const rowTasks = entry.project_id
+                    ? tasksByProject.get(entry.project_id) ?? []
+                    : [];
+                  return (
+                    <div
+                      key={idx}
+                      className={`rounded-lg border p-3 text-sm ${entry.error ? 'border-destructive/30 bg-destructive/5' : 'border-primary/20 bg-primary/5'}`}
+                    >
+                      {entry.error ? (
+                        <p className="font-medium text-destructive">{entry.error}</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {/* Row 1: Project + Task */}
+                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                            <label className="flex flex-col gap-1">
+                              <span className="text-xs text-muted-foreground">Project</span>
+                              <select
+                                className="h-8 rounded border bg-background px-2 text-sm"
+                                value={entry.project_id ?? ''}
+                                onChange={(e) => {
+                                  const pid = e.target.value ? Number(e.target.value) : null;
+                                  const proj = selectableProjects.find((p: Project) => p.id === pid);
+                                  updateNlEntry(idx, {
+                                    project_id: pid,
+                                    project_name: proj?.name ?? '',
+                                    // Reset task when project changes — the previous task
+                                    // almost certainly doesn't belong to the new project.
+                                    task_id: null,
+                                    task_name: '',
+                                  });
+                                }}
+                              >
+                                <option value="">Select project…</option>
+                                {selectableProjects.map((p: Project) => (
+                                  <option key={p.id} value={p.id}>{p.name}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="flex flex-col gap-1">
+                              <span className="text-xs text-muted-foreground">Task</span>
+                              <select
+                                className="h-8 rounded border bg-background px-2 text-sm"
+                                value={entry.task_id ?? ''}
+                                disabled={!entry.project_id}
+                                onChange={(e) => {
+                                  const tid = e.target.value ? Number(e.target.value) : null;
+                                  const t = rowTasks.find((rt: Task) => rt.id === tid);
+                                  updateNlEntry(idx, {
+                                    task_id: tid,
+                                    task_name: t?.name ?? '',
+                                  });
+                                }}
+                              >
+                                <option value="">No task</option>
+                                {rowTasks.map((t: Task) => (
+                                  <option key={t.id} value={t.id}>{t.name}</option>
+                                ))}
+                              </select>
+                            </label>
                           </div>
-                        )}
-                      </div>
+
+                          {/* Row 2: Date + Hours + Billable */}
+                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                            <label className="flex flex-col gap-1">
+                              <span className="text-xs text-muted-foreground">Date</span>
+                              <input
+                                type="date"
+                                className="h-8 rounded border bg-background px-2 text-sm"
+                                value={entry.entry_date}
+                                onChange={(e) => updateNlEntry(idx, { entry_date: e.target.value })}
+                              />
+                            </label>
+                            <label className="flex flex-col gap-1">
+                              <span className="text-xs text-muted-foreground">Hours</span>
+                              <input
+                                type="number"
+                                step="0.25"
+                                min="0"
+                                max="24"
+                                className="h-8 rounded border bg-background px-2 text-sm"
+                                value={entry.hours ?? ''}
+                                onChange={(e) => {
+                                  const raw = e.target.value;
+                                  updateNlEntry(idx, {
+                                    hours: raw === '' ? null : Number(raw),
+                                  });
+                                }}
+                              />
+                            </label>
+                            <label className="flex items-center gap-2 pt-5 text-xs text-muted-foreground">
+                              <input
+                                type="checkbox"
+                                checked={entry.is_billable}
+                                onChange={(e) => updateNlEntry(idx, { is_billable: e.target.checked })}
+                              />
+                              Billable
+                            </label>
+                          </div>
+
+                          {/* Row 3: Description */}
+                          <label className="flex flex-col gap-1">
+                            <span className="text-xs text-muted-foreground">Description</span>
+                            <input
+                              type="text"
+                              className="h-8 rounded border bg-background px-2 text-sm"
+                              value={entry.description}
+                              onChange={(e) => updateNlEntry(idx, { description: e.target.value })}
+                              placeholder="Shown in approvals and exports"
+                            />
+                          </label>
+
+                          {/* Row 4: Notes (private) */}
+                          <label className="flex flex-col gap-1">
+                            <span className="text-xs text-muted-foreground">
+                              Notes <span className="italic">(private — only you see these)</span>
+                            </span>
+                            <textarea
+                              className="min-h-[56px] rounded border bg-background px-2 py-1.5 text-sm"
+                              value={entry.notes}
+                              onChange={(e) => updateNlEntry(idx, { notes: e.target.value })}
+                              placeholder="Blockers, context, reminders — won't appear in approvals."
+                            />
+                          </label>
+                        </div>
+                      )}
+
+                      {entry.alternatives && entry.alternatives.length > 0 && (
+                        <div className="mt-2">
+                          <p className="text-xs text-muted-foreground">Did you mean:</p>
+                          {entry.alternatives.map((alt, ai) => (
+                            <button
+                              key={ai}
+                              type="button"
+                              className="mr-2 text-xs text-primary underline"
+                              onClick={() =>
+                                updateNlEntry(idx, {
+                                  project_id: alt.project_id,
+                                  project_name: alt.project_name,
+                                  task_id: alt.task_id,
+                                  task_name: alt.task_name,
+                                })
+                              }
+                            >
+                              {[alt.project_name, alt.task_name].filter(Boolean).join(' → ')}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {(() => {
                   const valid = nlResult.entries.filter((e) => !e.error && e.project_id && e.hours);
                   if (valid.length === 0) {
@@ -1540,6 +1702,18 @@ export const MyTimePage: React.FC = () => {
                 rows={3}
                 value={editFormData.description}
                 onChange={(e) => setEditFormData((f) => f ? { ...f, description: e.target.value } : f)}
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-sm font-medium">
+                Notes <span className="font-normal italic text-muted-foreground">(private — only you see these)</span>
+              </label>
+              <textarea
+                className="field-textarea"
+                rows={2}
+                value={editFormData.notes}
+                onChange={(e) => setEditFormData((f) => f ? { ...f, notes: e.target.value } : f)}
+                placeholder="Blockers, context, reminders — won't appear in approvals."
               />
             </div>
             <div>

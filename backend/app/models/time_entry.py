@@ -39,6 +39,10 @@ class TimeEntry(Base, TimestampMixin):
     hours: Mapped[Decimal] = mapped_column(
         Numeric(5, 2), nullable=False)  # 0.00 to 999.99
     description: Mapped[str] = mapped_column(Text, nullable=False)
+    # Private free-text notes authored by the entry owner. Distinct from
+    # ``description``: notes do not appear in approval views, exports, or
+    # client-facing invoices — they are the owner's personal scratchpad.
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_billable: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True)
     status: Mapped[TimeEntryStatus] = mapped_column(SQLEnum(
