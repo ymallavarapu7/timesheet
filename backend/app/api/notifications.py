@@ -79,14 +79,14 @@ async def _get_pending_timesheet_week_stats(
     tenant_id: int,
     employee_ids: list[int] | None = None,
 ) -> tuple[int, datetime | None]:
+    assert tenant_id is not None, "tenant_id is required for pending timesheet stats"
     from app.crud.time_entry import _tenant_week_start_day
     wsd = await _tenant_week_start_day(db, tenant_id)
     query = select(TimeEntry.user_id, TimeEntry.entry_date, TimeEntry.submitted_at).where(
-        TimeEntry.status == TimeEntryStatus.SUBMITTED
+        (TimeEntry.tenant_id == tenant_id)
+        & (TimeEntry.status == TimeEntryStatus.SUBMITTED)
     )
     if employee_ids is not None:
-        if not employee_ids:
-            return 0, None
         query = query.where(TimeEntry.user_id.in_(employee_ids))
 
     result = await db.execute(query)
@@ -101,6 +101,25 @@ async def _get_pending_timesheet_week_stats(
         default=None,
     )
     return len(pending_weeks), latest_submitted_at
+
+
+async def _get_pending_time_off_stats(
+    db: AsyncSession,
+    tenant_id: int,
+    employee_ids: list[int] | None = None,
+) -> tuple[int, datetime | None]:
+    assert tenant_id is not None, "tenant_id is required for pending time-off stats"
+    query = select(
+        func.count(TimeOffRequest.id), func.max(TimeOffRequest.submitted_at)
+    ).where(
+        (TimeOffRequest.tenant_id == tenant_id)
+        & (TimeOffRequest.status == TimeOffStatus.SUBMITTED)
+    )
+    if employee_ids is not None:
+        query = query.where(TimeOffRequest.user_id.in_(employee_ids))
+
+    count, latest = (await db.execute(query)).one()
+    return int(count or 0), latest
 
 
 @router.get("/summary", response_model=NotificationSummaryResponse)
@@ -127,6 +146,16 @@ async def _build_notification_summary(
     db: AsyncSession,
     current_user: User,
 ) -> NotificationSummaryResponse:
+    # PLATFORM_ADMIN has no tenant; every tile in this function is tenant-scoped,
+    # so short-circuit to an empty response rather than emitting queries with a
+    # NULL tenant filter (which would match rows across the whole database).
+    if current_user.tenant_id is None:
+        return NotificationSummaryResponse(
+            total_count=0,
+            route_counts=NotificationRouteCounts(),
+            items=[],
+        )
+
     items: list[NotificationItem] = []
     route_counts = NotificationRouteCounts()
     now = datetime.now(timezone.utc)
@@ -151,6 +180,7 @@ async def _build_notification_summary(
         await db.execute(
             select(func.count(TimeEntry.id), func.max(TimeEntry.updated_at)).where(
                 (TimeEntry.user_id == current_user.id) & (
+                    TimeEntry.tenant_id == current_user.tenant_id) & (
                     TimeEntry.status == TimeEntryStatus.REJECTED) & (
                     TimeEntry.entry_date >= year_start) & (
                     TimeEntry.entry_date <= today)
@@ -172,6 +202,7 @@ async def _build_notification_summary(
         await db.execute(
             select(func.count(TimeEntry.id), func.max(TimeEntry.updated_at)).where(
                 (TimeEntry.user_id == current_user.id) & (
+                    TimeEntry.tenant_id == current_user.tenant_id) & (
                     TimeEntry.status == TimeEntryStatus.DRAFT) & (
                     TimeEntry.entry_date >= year_start) & (
                     TimeEntry.entry_date <= today)
@@ -193,6 +224,7 @@ async def _build_notification_summary(
         await db.execute(
             select(func.count(TimeOffRequest.id), func.max(TimeOffRequest.updated_at)).where(
                 (TimeOffRequest.user_id == current_user.id) & (
+                    TimeOffRequest.tenant_id == current_user.tenant_id) & (
                     TimeOffRequest.status == TimeOffStatus.REJECTED) & (
                     TimeOffRequest.request_date >= year_start) & (
                     TimeOffRequest.request_date <= today)
@@ -214,6 +246,7 @@ async def _build_notification_summary(
         await db.execute(
             select(func.count(TimeOffRequest.id), func.max(TimeOffRequest.updated_at)).where(
                 (TimeOffRequest.user_id == current_user.id) & (
+                    TimeOffRequest.tenant_id == current_user.tenant_id) & (
                     TimeOffRequest.status == TimeOffStatus.DRAFT) & (
                     TimeOffRequest.request_date >= year_start) & (
                     TimeOffRequest.request_date <= today)
@@ -237,6 +270,7 @@ async def _build_notification_summary(
     previous_day_entry_count = await db.scalar(
         select(func.count(TimeEntry.id)).where(
             (TimeEntry.user_id == current_user.id)
+            & (TimeEntry.tenant_id == current_user.tenant_id)
             & (TimeEntry.entry_date == previous_work_day)
         )
     )
@@ -256,6 +290,7 @@ async def _build_notification_summary(
     current_week_entry_count = await db.scalar(
         select(func.count(TimeEntry.id)).where(
             (TimeEntry.user_id == current_user.id)
+            & (TimeEntry.tenant_id == current_user.tenant_id)
             & (TimeEntry.entry_date >= week_start)
             & (TimeEntry.status.in_([TimeEntryStatus.DRAFT, TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]))
         )
@@ -273,24 +308,40 @@ async def _build_notification_summary(
             created_at=week_anchor,
         )
 
-    if current_user.role in [UserRole.MANAGER, UserRole.SENIOR_MANAGER]:
-        assigned_employee_ids = await _get_managed_employee_ids(db, current_user.id)
-        managed_employee_ids = assigned_employee_ids or None
-
-        pending_time_off_query = select(func.count(TimeOffRequest.id), func.max(TimeOffRequest.submitted_at)).where(
-            TimeOffRequest.status == TimeOffStatus.SUBMITTED
-        )
-
-        pending_time_entries_count, pending_time_entries_latest = await _get_pending_timesheet_week_stats(
-            db,
-            current_user.tenant_id,
-            managed_employee_ids,
-        )
-        if managed_employee_ids is not None:
-            pending_time_off_query = pending_time_off_query.where(
-                TimeOffRequest.user_id.in_(managed_employee_ids))
-
-        pending_time_off_count, pending_time_off_latest = (await db.execute(pending_time_off_query)).one()
+    scoped_roles = (UserRole.MANAGER, UserRole.SENIOR_MANAGER)
+    tenant_wide_roles = (UserRole.CEO, UserRole.ADMIN)
+    if current_user.role in scoped_roles + tenant_wide_roles:
+        if current_user.role in scoped_roles:
+            assigned_employee_ids = await _get_managed_employee_ids(db, current_user.id)
+            if not assigned_employee_ids:
+                # Scoped role with no direct reports: nothing to approve. Skip the
+                # helper call entirely — passing None here would remove the
+                # employee filter and leak counts from the whole tenant.
+                pending_time_entries_count, pending_time_entries_latest = 0, None
+                pending_time_off_count, pending_time_off_latest = 0, None
+            else:
+                pending_time_entries_count, pending_time_entries_latest = await _get_pending_timesheet_week_stats(
+                    db,
+                    current_user.tenant_id,
+                    assigned_employee_ids,
+                )
+                pending_time_off_count, pending_time_off_latest = await _get_pending_time_off_stats(
+                    db,
+                    current_user.tenant_id,
+                    assigned_employee_ids,
+                )
+        else:
+            # Tenant-wide roles: no employee filter, but tenant filter still applies.
+            pending_time_entries_count, pending_time_entries_latest = await _get_pending_timesheet_week_stats(
+                db,
+                current_user.tenant_id,
+                None,
+            )
+            pending_time_off_count, pending_time_off_latest = await _get_pending_time_off_stats(
+                db,
+                current_user.tenant_id,
+                None,
+            )
 
         _add_notification(
             items,
@@ -313,7 +364,7 @@ async def _build_notification_summary(
             created_at=pending_time_off_latest,
         )
 
-        if current_time >= time(hour=14):
+        if current_user.role in scoped_roles and current_time >= time(hour=14):
             employee_scope_ids: list[int] = []
             assigned_employee_ids = await _get_managed_employee_ids(db, current_user.id)
             employee_scope_ids = assigned_employee_ids

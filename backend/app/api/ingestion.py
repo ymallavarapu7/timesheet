@@ -892,11 +892,14 @@ async def get_attachment_file(
 ) -> Response:
     attachment_result = await session.execute(
         select(EmailAttachment)
-        .where(EmailAttachment.id == attachment_id)
-        .options(selectinload(EmailAttachment.email))
+        .join(IngestedEmail, EmailAttachment.email_id == IngestedEmail.id)
+        .where(
+            (EmailAttachment.id == attachment_id)
+            & (IngestedEmail.tenant_id == current_user.tenant_id)
+        )
     )
     attachment = attachment_result.scalar_one_or_none()
-    if attachment is None or attachment.email.tenant_id != current_user.tenant_id:
+    if attachment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
 
     try:
@@ -927,11 +930,14 @@ async def get_attachment_full_html(
     """
     attachment_result = await session.execute(
         select(EmailAttachment)
-        .where(EmailAttachment.id == attachment_id)
-        .options(selectinload(EmailAttachment.email))
+        .join(IngestedEmail, EmailAttachment.email_id == IngestedEmail.id)
+        .where(
+            (EmailAttachment.id == attachment_id)
+            & (IngestedEmail.tenant_id == current_user.tenant_id)
+        )
     )
     attachment = attachment_result.scalar_one_or_none()
-    if attachment is None or attachment.email.tenant_id != current_user.tenant_id:
+    if attachment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
 
     mime = attachment.mime_type or ""
