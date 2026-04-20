@@ -200,7 +200,7 @@ export const TopNavBar: React.FC = () => {
         className="sticky top-0 z-50 border-b bg-card/90 backdrop-blur-xl"
         style={{ borderColor: 'var(--glass-border)' }}
       >
-        <div className="mx-auto flex h-[60px] max-w-[1800px] items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto flex h-[76px] max-w-[1800px] items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
           {/* ── Left: Logo ── */}
           <Link to="/dashboard" className="shrink-0">
             <AcufyLogo variant="full" />
