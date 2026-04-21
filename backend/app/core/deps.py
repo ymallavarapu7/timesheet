@@ -14,6 +14,7 @@ security = HTTPBearer()
 
 
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: AsyncSession = Depends(get_db),
 ) -> User:
@@ -95,6 +96,7 @@ async def get_current_user(
             )
 
         logger.debug("User validated successfully")
+        request.state.current_user = user
         return user
     except HTTPException:
         raise

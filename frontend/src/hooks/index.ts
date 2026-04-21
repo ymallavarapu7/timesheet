@@ -47,6 +47,7 @@ export {
   useAuditTrail,
   useUsers,
   useMyProfile,
+  useMyPermissions,
   useUpdateMyProfile,
   useChangePassword,
   useCreateUser,

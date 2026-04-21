@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.deps import get_current_user, require_role
+from app.core.permissions import shadow_check
 from app.core.timezone_utils import combine_tenant, now_for_tenant
 from app.db import get_db
 from app.models.assignments import EmployeeManagerAssignment
@@ -656,6 +657,14 @@ async def get_audit_trail(
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> list[DashboardRecentActivityItem]:
     """Full audit trail for admins. Supports pagination, filtering by type, and text search."""
+    await shadow_check(
+        db,
+        current_user,
+        "audit.read",
+        old_decision=True,
+        context="GET /dashboard/audit-trail",
+    )
+
     if current_user.role == UserRole.PLATFORM_ADMIN:
         query = select(ActivityLog).where(ActivityLog.visibility_scope == "PLATFORM_ADMIN")
     else:

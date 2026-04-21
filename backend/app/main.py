@@ -1,11 +1,14 @@
+import logging
+
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.core.config import settings
+from app.core.permissions import shadow_check
 from app.core.rate_limit import limiter
-from app.db import init_db, close_db
+from app.db import AsyncSessionLocal, init_db, close_db
 from app.api import (
     approvals,
     auth,
@@ -37,6 +40,9 @@ from app.models.ingestion_timesheet import (  # noqa: F401
 from app.models.tenant import Tenant  # noqa: F401 — registers Tenant with Base.metadata
 from app.models.tenant_settings import TenantSettings  # noqa: F401
 from app.models.platform_settings import PlatformSettings  # noqa: F401
+from app.models.user import UserRole
+
+logger = logging.getLogger(__name__)
 
 # Lifespan handler for startup/shutdown
 
@@ -83,6 +89,39 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     if not settings.debug:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
+@app.middleware("http")
+async def shadow_pending_approvals_permission_check(request: Request, call_next):
+    response: Response = await call_next(request)
+
+    if request.method != "GET" or request.url.path != "/approvals/pending":
+        return response
+    if response.status_code >= 400:
+        return response
+
+    current_user = getattr(request.state, "current_user", None)
+    if current_user is None:
+        return response
+
+    permission = (
+        "time_entry.approve_any"
+        if current_user.role == UserRole.CEO
+        else "time_entry.approve"
+    )
+    try:
+        async with AsyncSessionLocal() as db:
+            await shadow_check(
+                db,
+                current_user,
+                permission,
+                old_decision=True,
+                context="GET /approvals/pending",
+            )
+    except Exception as exc:  # pragma: no cover - defensive only
+        logger.error("shadow middleware failed for approvals pending: %s", exc)
+
     return response
 
 # Include routers

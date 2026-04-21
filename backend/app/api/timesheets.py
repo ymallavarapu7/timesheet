@@ -17,6 +17,7 @@ from app.crud.time_entry import (
 from app.crud.project import user_has_project_access, get_project_by_id
 from app.crud.task import get_task_by_id
 from app.core.deps import get_current_user
+from app.core.permissions import shadow_check
 from app.models.user import User, UserRole
 from app.models.time_entry import TimeEntryStatus
 from datetime import date
@@ -269,7 +270,16 @@ async def create_timesheet_entry(
     Employees can only create entries for themselves.
     """
     # Employees, managers, and system admins can create their own time entries
-    if current_user.role.value not in ["EMPLOYEE", "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN"]:
+    old_decision = current_user.role.value in ["EMPLOYEE", "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN"]
+    await shadow_check(
+        db,
+        current_user,
+        "time_entry.write_own",
+        old_decision=old_decision,
+        context="POST /timesheets",
+    )
+
+    if not old_decision:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Only employees, managers, and system admins can create time entries")
 

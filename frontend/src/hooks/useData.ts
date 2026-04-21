@@ -1,4 +1,5 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { apiClient } from '@/api/client';
 import type { HistoryGroup, SettingValue } from '@/api/endpoints';
 import {
   timeentriesAPI,
@@ -547,6 +548,17 @@ export const useMyProfile = () => {
   return useQuery({
     queryKey: ['users', 'me', 'profile'],
     queryFn: () => usersAPI.meProfile().then((res) => res.data),
+  });
+};
+
+export const useMyPermissions = () => {
+  return useQuery({
+    queryKey: ['my-permissions'],
+    queryFn: () =>
+      apiClient
+        .get<{ permissions: string[] }>('/users/me/permissions')
+        .then((res) => res.data.permissions),
+    staleTime: 30_000,
   });
 };
 

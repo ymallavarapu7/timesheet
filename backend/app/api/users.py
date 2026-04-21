@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.schemas import UserResponse, UserCreate, UserUpdate, UserSelfUpdate, UserProfileResponse, ChangePasswordRequest, MessageResponse, UserCreateResponse, AdminPasswordResetRequest
 from app.crud.user import get_user_by_id, create_user, update_user, delete_user, list_users
+from app.core.permissions import get_user_permissions, shadow_check
 from app.core.deps import get_current_user, require_role, require_same_tenant
 from app.models.user import User
 from app.models.assignments import EmployeeManagerAssignment
@@ -107,6 +108,21 @@ async def list_all_users(
     - Admin: all users within their tenant
     - Manager chain roles: employees in their reporting tree (within their tenant)
     """
+    old_decision = current_user.role in {
+        UserRole.PLATFORM_ADMIN,
+        UserRole.ADMIN,
+        UserRole.MANAGER,
+        UserRole.SENIOR_MANAGER,
+        UserRole.CEO,
+    }
+    await shadow_check(
+        db,
+        current_user,
+        "user.read",
+        old_decision=old_decision,
+        context="GET /users",
+    )
+
     if current_user.role == UserRole.PLATFORM_ADMIN:
         result = await db.execute(
             select(User)
@@ -131,6 +147,15 @@ async def list_all_users(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Access denied",
     )
+
+
+@router.get("/me/permissions")
+async def get_my_permissions(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    perms = await get_user_permissions(db, current_user)
+    return {"permissions": sorted(perms)}
 
 
 @router.get("/me/profile", response_model=UserProfileResponse)
@@ -336,6 +361,14 @@ async def update_tenant_settings(
     key is validated against the ``setting_definitions`` catalog before
     write; unknown keys or values that fail validation return 422."""
     from app.core.tenant_settings import set_setting
+
+    await shadow_check(
+        db,
+        current_user,
+        "tenant.settings.update",
+        old_decision=True,
+        context="PATCH /users/tenant-settings",
+    )
 
     if current_user.tenant_id is None:
         raise HTTPException(
