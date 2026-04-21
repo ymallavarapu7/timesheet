@@ -5,7 +5,9 @@ emails to employees/contractors who are behind on submissions.
 """
 import logging
 from datetime import datetime, timezone, timedelta
+from typing import Optional
 from sqlalchemy import select
+from app.core.timezone_utils import now_for_tenant
 from app.db import AsyncSessionLocal
 from app.models.assignments import EmployeeManagerAssignment
 from app.models.tenant import Tenant
@@ -76,7 +78,10 @@ async def check_and_send_reminders(ctx: dict) -> None:
 
         for tenant in tenants:
             try:
-                await _process_tenant_reminders(tenant.id, session)
+                # Pass the full tenant so the per-tenant timezone is available
+                # to downstream deadline math. NULL tenant.timezone falls back
+                # to UTC inside ``now_for_tenant``.
+                await _process_tenant_reminders(tenant, session)
             except Exception as exc:
                 logger.error(
                     "Reminder check failed for tenant %s: %s",
@@ -84,25 +89,40 @@ async def check_and_send_reminders(ctx: dict) -> None:
                 )
 
 
-async def _process_tenant_reminders(tenant_id: int, session) -> None:
+async def _process_tenant_reminders(tenant: Tenant, session) -> None:
+    tenant_id = tenant.id
+    tenant_timezone = tenant.timezone
     tenant_settings = await _load_tenant_settings(tenant_id, session)
-    now = datetime.now(timezone.utc)
+    now = now_for_tenant(tenant_timezone)
 
     if tenant_settings.get("reminder_internal_enabled") == "true":
-        await _check_internal_reminders(tenant_id, tenant_settings, now, session)
+        await _check_internal_reminders(
+            tenant_id, tenant_settings, tenant_timezone, now, session
+        )
 
     if tenant_settings.get("reminder_external_enabled") == "true":
-        await _check_external_reminders(tenant_id, tenant_settings, now, session)
+        await _check_external_reminders(
+            tenant_id, tenant_settings, tenant_timezone, now, session
+        )
 
 
 async def _check_internal_reminders(
-    tenant_id: int, tenant_settings: dict, now: datetime, session
+    tenant_id: int,
+    tenant_settings: dict,
+    tenant_timezone: Optional[str],
+    now: datetime,
+    session,
 ) -> None:
     """
     Send reminder to employees who have not submitted for the current week.
     Triggered at: (deadline_time - 3h) and at (deadline_time).
     If locking is enabled and deadline has passed, lock the user.
+
+    ``tenant_timezone`` is accepted for parity with the external path and to
+    document the contract — ``now`` is already tz-aware, so downstream math
+    uses ``now.tzinfo`` directly.
     """
+    del tenant_timezone  # already encoded in ``now.tzinfo``
     deadline_day = tenant_settings.get("reminder_internal_deadline_day", "friday").lower()
     deadline_time_str = tenant_settings.get("reminder_internal_deadline_time", "17:00")
     lock_enabled = tenant_settings.get("reminder_internal_lock_enabled") == "true"
@@ -114,12 +134,16 @@ async def _check_internal_reminders(
     except (ValueError, AttributeError):
         dh, dm = 17, 0
 
-    # Find the most recent occurrence of deadline_day
+    # Find the most recent occurrence of deadline_day. ``now`` is already in
+    # the tenant's timezone; compute the deadline in the same tz so the
+    # wall-clock comparison (``Friday 17:00``) fires at the right moment for
+    # tenants in non-UTC zones.
+    tz = now.tzinfo or timezone.utc
     days_since = (now.weekday() - weekday) % 7
     deadline_date = now.date() - timedelta(days=days_since)
     deadline_dt = datetime(
         deadline_date.year, deadline_date.month, deadline_date.day,
-        dh, dm, tzinfo=timezone.utc
+        dh, dm, tzinfo=tz
     )
 
     # Trigger windows: at (deadline - 3h) and at deadline (within 15-min window)
@@ -132,10 +156,10 @@ async def _check_internal_reminders(
     if not (in_early_window or in_final_window or (lock_enabled and deadline_passed)):
         return
 
-    # Current week start (Monday)
+    # Current week start (Monday) in the tenant's timezone.
     week_start = now.date() - timedelta(days=now.weekday())
     week_start_dt = datetime(
-        week_start.year, week_start.month, week_start.day, tzinfo=timezone.utc
+        week_start.year, week_start.month, week_start.day, tzinfo=tz
     )
 
     # Determine recipient list. The auto-lock branch uses a stricter filter
@@ -213,12 +237,21 @@ async def _check_internal_reminders(
 
 
 async def _check_external_reminders(
-    tenant_id: int, tenant_settings: dict, now: datetime, session
+    tenant_id: int,
+    tenant_settings: dict,
+    tenant_timezone: Optional[str],
+    now: datetime,
+    session,
 ) -> None:
     """
     Send reminder to contractors who have not submitted a timesheet this month.
     Triggered at: (deadline - 2 days) and (deadline - 3h).
+
+    ``tenant_timezone`` is accepted for parity with the internal path and to
+    document the contract — ``now`` is already tz-aware, so downstream math
+    uses ``now.tzinfo`` directly.
     """
+    del tenant_timezone  # already encoded in ``now.tzinfo``
     day_of_month_str = tenant_settings.get("reminder_external_deadline_day_of_month", "-2")
     deadline_time_str = tenant_settings.get("reminder_external_deadline_time", "17:00")
 
@@ -236,7 +269,10 @@ async def _check_external_reminders(
         target_day = day_offset
     target_day = max(1, min(target_day, last_day))
 
-    deadline_dt = datetime(now.year, now.month, target_day, dh, dm, tzinfo=timezone.utc)
+    # Build deadline in the tenant's timezone so the wall-clock match fires
+    # at the correct moment for non-UTC tenants.
+    tz = now.tzinfo or timezone.utc
+    deadline_dt = datetime(now.year, now.month, target_day, dh, dm, tzinfo=tz)
     window_2day = deadline_dt - timedelta(days=2)
     window_3h = deadline_dt - timedelta(hours=3)
 
@@ -264,7 +300,7 @@ async def _check_external_reminders(
         len(externals), tenant_id,
     )
 
-    month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    month_start = datetime(now.year, now.month, 1, tzinfo=tz)
 
     for external in externals:
         if not external.email or external.email.endswith("@ingestion.internal"):

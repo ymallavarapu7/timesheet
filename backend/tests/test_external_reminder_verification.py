@@ -20,6 +20,7 @@ def _compile_jsonb_sqlite(element, compiler, **kw):  # pragma: no cover - test s
 
 
 from app.core.security import get_password_hash
+from app.core.timezone_utils import resolve_tz
 from app.models.base import Base
 from app.models.tenant import Tenant, TenantStatus
 from app.models.tenant_settings import TenantSettings
@@ -46,22 +47,15 @@ async def db_session(tmp_path) -> AsyncSession:
     await engine.dispose()
 
 
-class _FrozenDatetime(datetime):
-    """Freeze ``datetime.now(tz)`` inside ``reminder_worker`` so the test
-    lands inside the 3-hour-before-deadline window."""
-
-    _frozen: datetime = datetime(2026, 4, 28, 14, 0, tzinfo=timezone.utc)
-
-    @classmethod
-    def now(cls, tz=None):  # type: ignore[override]
-        if tz is None:
-            return cls._frozen.replace(tzinfo=None)
-        return cls._frozen.astimezone(tz)
-
-
 def _freeze_worker_now(when: datetime):
-    _FrozenDatetime._frozen = when
-    return patch.object(reminder_worker, "datetime", _FrozenDatetime)
+    def _frozen_now_for_tenant(tenant_timezone: str | None) -> datetime:
+        return when.astimezone(resolve_tz(tenant_timezone))
+
+    return patch.object(
+        reminder_worker,
+        "now_for_tenant",
+        side_effect=_frozen_now_for_tenant,
+    )
 
 
 async def _make_tenant(session: AsyncSession) -> Tenant:
@@ -140,7 +134,7 @@ async def test_external_reminder_skips_unverified_contractor(
     with _freeze_worker_now(TWO_DAY_WINDOW_NOW), patch.object(
         reminder_worker, "send_email", sender
     ):
-        await _process_tenant_reminders(tenant.id, db_session)
+        await _process_tenant_reminders(tenant, db_session)
 
     sender.assert_not_awaited()
 
@@ -161,7 +155,7 @@ async def test_external_reminder_sends_to_verified_contractor(
     with _freeze_worker_now(TWO_DAY_WINDOW_NOW), patch.object(
         reminder_worker, "send_email", sender
     ):
-        await _process_tenant_reminders(tenant.id, db_session)
+        await _process_tenant_reminders(tenant, db_session)
 
     sender.assert_awaited()
     addressees = [call.kwargs.get("to_address") for call in sender.await_args_list]
@@ -184,6 +178,38 @@ async def test_external_reminder_skips_inactive_contractor(
     with _freeze_worker_now(TWO_DAY_WINDOW_NOW), patch.object(
         reminder_worker, "send_email", sender
     ):
-        await _process_tenant_reminders(tenant.id, db_session)
+        await _process_tenant_reminders(tenant, db_session)
+
+    sender.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_external_reminder_window_uses_tenant_timezone(
+    db_session: AsyncSession,
+):
+    """
+    2026-04-28 17:05 UTC is 13:05 in America/New_York.
+
+    For a 17:00 local deadline on the last day of the month, that is before
+    the tenant's 2-day reminder window opens, so nothing should send yet.
+    """
+    tenant = await _make_tenant(db_session)
+    tenant.timezone = "America/New_York"
+    await _enable_external_reminders(db_session, tenant.id)
+    await _make_external(
+        db_session,
+        tenant,
+        "ny-contractor@example.com",
+        is_active=True,
+        email_verified=True,
+    )
+    await db_session.commit()
+
+    sender = AsyncMock()
+    pre_local_window_utc = datetime(2026, 4, 28, 17, 5, tzinfo=timezone.utc)
+    with _freeze_worker_now(pre_local_window_utc), patch.object(
+        reminder_worker, "send_email", sender
+    ):
+        await _process_tenant_reminders(tenant, db_session)
 
     sender.assert_not_awaited()

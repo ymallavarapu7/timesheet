@@ -639,7 +639,12 @@ async def scheduled_fetch_emails(ctx: dict) -> None:
 
         # Use configured timezone for fetch window checks.
         # Reads TZ env var (e.g. "America/Chicago") or falls back to UTC.
-        # TODO: Add per-tenant timezone support.
+        # TODO: Migrate to per-tenant timezone (``tenant.timezone`` added in
+        # migration 029 / ``app.core.timezone_utils.now_for_tenant``). Left
+        # intentionally on the env-var path in this PR so behavior is
+        # identical when ``tenant.timezone`` is NULL — follow-up PR flips
+        # this to ``now_for_tenant(tenant.timezone)`` inside the per-tenant
+        # loop below.
         import os, zoneinfo
         try:
             tz = zoneinfo.ZoneInfo(os.environ.get("TZ", "UTC"))
