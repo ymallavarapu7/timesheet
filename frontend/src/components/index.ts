@@ -3,6 +3,7 @@ export { Loading, Error, EmptyState } from './Layout';
 export { Header } from './Header';
 export { TimeEntryForm, TimeEntryRow } from './TimeEntry';
 export { OrganizationalChart } from './OrganizationalChart';
+export { TenantSettingsForm } from './TenantSettingsForm';
 export { ChangePasswordModal } from './ChangePasswordModal';
 export { DateRangePickerCalendar } from './DateRangePickerCalendar';
 export { SearchInput } from './SearchInput';

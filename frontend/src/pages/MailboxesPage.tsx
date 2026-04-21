@@ -96,11 +96,18 @@ export const MailboxesPage: React.FC = () => {
 
   React.useEffect(() => {
     if (!tenantSettings || Object.keys(tenantSettings).length === 0) return;
-    if (tenantSettings.fetch_emails_enabled) setFetchEnabled(tenantSettings.fetch_emails_enabled === 'true');
-    if (tenantSettings.fetch_emails_interval_minutes) setFetchInterval(tenantSettings.fetch_emails_interval_minutes);
-    if (tenantSettings.fetch_emails_days) setFetchDays(tenantSettings.fetch_emails_days);
-    if (tenantSettings.fetch_emails_start_time) setFetchStartTime(tenantSettings.fetch_emails_start_time);
-    if (tenantSettings.fetch_emails_end_time) setFetchEndTime(tenantSettings.fetch_emails_end_time);
+    // Post-catalog endpoints return typed values (bool/int/string) instead
+    // of always-strings. Coerce everything to the types this form expects.
+    if (tenantSettings.fetch_emails_enabled != null)
+      setFetchEnabled(tenantSettings.fetch_emails_enabled === true || tenantSettings.fetch_emails_enabled === 'true');
+    if (tenantSettings.fetch_emails_interval_minutes != null)
+      setFetchInterval(String(tenantSettings.fetch_emails_interval_minutes));
+    if (tenantSettings.fetch_emails_days != null)
+      setFetchDays(String(tenantSettings.fetch_emails_days));
+    if (tenantSettings.fetch_emails_start_time != null)
+      setFetchStartTime(String(tenantSettings.fetch_emails_start_time));
+    if (tenantSettings.fetch_emails_end_time != null)
+      setFetchEndTime(String(tenantSettings.fetch_emails_end_time));
   }, [tenantSettings]);
 
   const [isPanelOpen, setIsPanelOpen] = React.useState(false);

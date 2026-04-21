@@ -1,5 +1,5 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { HistoryGroup } from '@/api/endpoints';
+import type { HistoryGroup, SettingValue } from '@/api/endpoints';
 import {
   timeentriesAPI,
   approvalsAPI,
@@ -999,21 +999,32 @@ export const useTenantPublicSettings = () => {
   });
 };
 
-/** Resolve tenant week start day as a date-fns compatible 0|1. Defaults to 0 (Sunday). */
+/** Resolve tenant week start day as a date-fns compatible 0|1. Defaults to 0 (Sunday).
+ *  Accepts both the legacy string payload (``"1"``) and the typed int (``1``)
+ *  returned by the catalog-backed settings endpoint. */
 export const useWeekStartsOn = (): 0 | 1 => {
   const { data } = useTenantPublicSettings();
-  return data?.week_start_day === '1' ? 1 : 0;
+  const raw = data?.week_start_day;
+  return raw === 1 || raw === '1' ? 1 : 0;
 };
 
 export const useUpdateTenantSettings = () => {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (data: Record<string, string | null>) =>
+    mutationFn: (data: Record<string, SettingValue>) =>
       tenantSettingsAPI.update(data).then((res) => res.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tenant-settings'] });
       queryClient.invalidateQueries({ queryKey: ['tenant-settings', 'public'] });
     },
+  });
+};
+
+export const useTenantSettingsCatalog = () => {
+  return useQuery({
+    queryKey: ['tenant-settings', 'catalog'],
+    queryFn: () => tenantSettingsAPI.getCatalog().then((res) => res.data),
+    staleTime: 60_000,
   });
 };
 

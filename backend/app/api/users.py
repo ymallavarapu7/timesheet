@@ -290,32 +290,27 @@ async def get_tenant_settings(
     current_user: User = Depends(require_role("ADMIN")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Get all settings for the current user's tenant."""
-    from app.models.tenant_settings import TenantSettings
-    result = await db.execute(
-        select(TenantSettings).where(TenantSettings.tenant_id == current_user.tenant_id)
-    )
-    rows = result.scalars().all()
-    return {row.key: row.value for row in rows}
+    """Get all settings for the current user's tenant. Returns every key
+    from the ``setting_definitions`` catalog, typed, with the catalog
+    default filled in for any key the tenant hasn't overridden."""
+    from app.core.tenant_settings import get_all_settings
+
+    if current_user.tenant_id is None:
+        return {}
+    return await get_all_settings(db, current_user.tenant_id)
 
 
-# Keys readable by any authenticated user in the tenant. These drive client-side
-# UI behavior that every submitter needs to know about (e.g. date picker caps).
-PUBLIC_TENANT_SETTING_KEYS = {
-    "time_entry_past_days",
-    "time_entry_future_days",
-    "max_hours_per_entry",
-    "max_hours_per_day",
-    "max_hours_per_week",
-    "min_submit_weekly_hours",
-    "allow_partial_week_submit",
-    "week_start_day",
-    "time_off_past_days",
-    "time_off_future_days",
-    "time_off_advance_notice_days",
-    "time_off_max_consecutive_days",
-    "allow_overlapping_time_off",
-}
+@router.get("/tenant-settings/catalog", response_model=list)
+async def get_tenant_settings_catalog(
+    current_user: User = Depends(require_role("ADMIN")),
+    db: AsyncSession = Depends(get_db),
+) -> list:
+    """Return the full setting-definition catalog — type, label, description,
+    validation rules, category, sort order. Drives the catalog-based admin
+    settings form on the frontend."""
+    from app.core.tenant_settings import get_catalog
+
+    return await get_catalog(db)
 
 
 @router.get("/tenant-settings/public", response_model=dict)
@@ -324,16 +319,11 @@ async def get_public_tenant_settings(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Whitelisted tenant settings readable by any authenticated user."""
-    from app.models.tenant_settings import TenantSettings
+    from app.core.tenant_settings import get_public_settings
+
     if current_user.tenant_id is None:
         return {}
-    result = await db.execute(
-        select(TenantSettings).where(
-            TenantSettings.tenant_id == current_user.tenant_id,
-            TenantSettings.key.in_(PUBLIC_TENANT_SETTING_KEYS),
-        )
-    )
-    return {row.key: row.value for row in result.scalars().all()}
+    return await get_public_settings(db, current_user.tenant_id)
 
 
 @router.patch("/tenant-settings", response_model=dict)
@@ -342,25 +332,39 @@ async def update_tenant_settings(
     current_user: User = Depends(require_role("ADMIN")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Upsert one or more settings for the current user's tenant."""
-    from app.models.tenant_settings import TenantSettings
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-    now = datetime.now(timezone.utc)
-    for key, value in body.items():
-        str_value = str(value) if value is not None else None
-        stmt = pg_insert(TenantSettings).values(
-            tenant_id=current_user.tenant_id,
-            key=key,
-            value=str_value,
-            created_at=now,
-            updated_at=now,
-        ).on_conflict_do_update(
-            constraint="uq_tenant_settings_tenant_key",
-            set_={"value": str_value, "updated_at": now},
+    """Upsert one or more settings for the current user's tenant. Each
+    key is validated against the ``setting_definitions`` catalog before
+    write; unknown keys or values that fail validation return 422."""
+    from app.core.tenant_settings import set_setting
+
+    if current_user.tenant_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="PLATFORM_ADMIN has no tenant-scoped settings",
         )
-        await db.execute(stmt)
+
+    result: dict = {}
+    for key, value in body.items():
+        try:
+            result[key] = await set_setting(
+                db,
+                current_user.tenant_id,
+                key,
+                value,
+                actor_id=current_user.id,
+            )
+        except KeyError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unknown setting key: {key!r}",
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            )
     await db.commit()
-    return body
+    return result
 
 
 class BulkDeleteUsersRequest(PydanticBaseModel):

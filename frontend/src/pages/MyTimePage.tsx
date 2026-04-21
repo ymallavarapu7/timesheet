@@ -157,8 +157,9 @@ export const MyTimePage: React.FC = () => {
   const [weekAnchorDate, setWeekAnchorDate] = useState<Date>(new Date());
   const { data: publicSettings } = useTenantPublicSettings();
   const weekStartsOn = useWeekStartsOn();
-  const pastDaysAllowed = Math.max(0, parseInt(publicSettings?.time_entry_past_days ?? '14', 10) || 0);
-  const futureDaysAllowed = Math.max(0, parseInt(publicSettings?.time_entry_future_days ?? '0', 10) || 0);
+  // Post-catalog endpoints return typed values; coerce to string before parseInt.
+  const pastDaysAllowed = Math.max(0, parseInt(String(publicSettings?.time_entry_past_days ?? '14'), 10) || 0);
+  const futureDaysAllowed = Math.max(0, parseInt(String(publicSettings?.time_entry_future_days ?? '0'), 10) || 0);
   const today = new Date();
   const todayStr = format(today, 'yyyy-MM-dd');
   const minEntryDateStr = format(addDays(today, -pastDaysAllowed), 'yyyy-MM-dd');

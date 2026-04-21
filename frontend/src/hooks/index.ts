@@ -96,6 +96,7 @@ export {
   useTenantPublicSettings,
   useWeekStartsOn,
   useUpdateTenantSettings,
+  useTenantSettingsCatalog,
   useDepartments,
   useCreateDepartment,
   useDeleteDepartment,

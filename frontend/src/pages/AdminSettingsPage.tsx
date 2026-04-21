@@ -1,9 +1,28 @@
 import React, { useEffect, useState } from 'react';
 import { useTenantSettings, useUpdateTenantSettings } from '@/hooks';
+import { TenantSettingsForm } from '@/components/TenantSettingsForm';
+
+// ─── back-compat coercion ──────────────────────────────────────────────────
+// After the typed settings catalog landed (migration 028), the settings API
+// returns native types — numbers for ``int/float`` settings, booleans for
+// ``bool`` settings, etc. This form was written when everything came back as
+// ``string | null``. Coerce to a string here so the existing state variables
+// keep working without a full rewrite.
+// TODO: remove the old form once TenantSettingsForm is verified in prod.
+const toStringish = (v: unknown): string | null => {
+  if (v == null) return null;
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  return String(v);
+};
 
 export const AdminSettingsPage: React.FC = () => {
-  const { data: tenantSettings = {} } = useTenantSettings();
+  const { data: rawTenantSettings = {} } = useTenantSettings();
   const updateSettings = useUpdateTenantSettings();
+
+  // Normalise every value to ``string | null`` for the legacy form below.
+  const tenantSettings: Record<string, string | null> = Object.fromEntries(
+    Object.entries(rawTenantSettings ?? {}).map(([k, v]) => [k, toStringish(v)])
+  );
 
   const [settingsSaved, setSettingsSaved] = useState(false);
   const flashSaved = () => {
@@ -412,6 +431,17 @@ export const AdminSettingsPage: React.FC = () => {
             </button>
           </div>
         </div>
+      </div>
+
+      {/* ─── Catalog-driven settings form (new, side-by-side during rollout) ───
+          Renders every setting from the ``setting_definitions`` catalog with
+          typed widgets + per-field validation, driven by the backend catalog.
+          The legacy hand-coded form above stays fully functional — both
+          write via the same PATCH endpoint.
+          TODO: once this form is verified in prod, remove the legacy form
+          above (and the ``toStringish`` shim at the top of this file). */}
+      <div className="mt-8">
+        <TenantSettingsForm />
       </div>
     </div>
   );
