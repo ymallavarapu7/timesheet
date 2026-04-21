@@ -248,14 +248,21 @@ async def _check_external_reminders(
 
     # External contractors are modeled as users with is_external=True. Remind
     # anyone whose email hasn't produced an ingested email this calendar month.
+    # Require email_verified so we don't remind invitees who haven't accepted
+    # yet — consistent with the internal-reminder eligibility helper.
     external_result = await session.execute(
         select(User).where(
             (User.tenant_id == tenant_id)
             & (User.is_external == True)  # noqa: E712
             & (User.is_active == True)  # noqa: E712
+            & (User.email_verified == True)  # noqa: E712
         )
     )
     externals = external_result.scalars().all()
+    logger.info(
+        "external_reminder: %d recipients for tenant %s",
+        len(externals), tenant_id,
+    )
 
     month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
 

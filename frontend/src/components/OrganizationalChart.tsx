@@ -146,7 +146,10 @@ export const OrganizationalChart: React.FC<OrganizationalChartProps> = ({
   topLevelUsers,
   currentUserId,
 }) => {
-  // Calculate max depth for layout purposes
+  // Calculate max depth for layout purposes. Guarded so an empty top level
+  // yields ``maxDepth = 1`` instead of ``-Infinity`` from ``Math.max(...[])``
+  // — the empty branch below short-circuits before render anyway, but a
+  // sane number keeps the ``useMemo`` return value safe for future callers.
   const maxDepth = useMemo(() => {
     const calculateDepth = (userId: number, visited: Set<number> = new Set()): number => {
       if (visited.has(userId)) return 0;
@@ -156,13 +159,17 @@ export const OrganizationalChart: React.FC<OrganizationalChartProps> = ({
       return 1 + Math.max(...subordinates.map((u) => calculateDepth(u.id, visited)));
     };
 
+    if (topLevelUsers.length === 0) return 1;
     return Math.max(...topLevelUsers.map((u) => calculateDepth(u.id)));
   }, [topLevelUsers, usersByManager]);
 
   if (topLevelUsers.length === 0) {
     return (
-      <div className="flex items-center justify-center p-8 text-muted-foreground">
-        <p>No organization hierarchy available.</p>
+      <div
+        className="flex items-center justify-center p-8 text-muted-foreground"
+        data-testid="org-chart-empty"
+      >
+        <p>No team members yet.</p>
       </div>
     );
   }

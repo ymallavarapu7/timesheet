@@ -1458,7 +1458,11 @@ async def reject_timesheet(
     )
     await session.commit()
 
-    # Send rejection notification email to the contractor
+    # Send rejection notification email to the contractor. If the sender
+    # matches a User in this tenant who has been deactivated, skip the email
+    # — telling an offboarded user to "correct and resubmit" is noise. Unknown
+    # senders (no matching User row) still get the reply, which is the normal
+    # case for external contractors who don't have an account.
     try:
         from app.services.email_service import send_email
         email_result = await session.execute(
@@ -1466,28 +1470,42 @@ async def reject_timesheet(
         )
         email_record = email_result.scalar_one_or_none()
         if email_record and email_record.sender_email:
-            period_str = ""
-            if timesheet.period_start and timesheet.period_end:
-                period_str = (
-                    f"{timesheet.period_start.strftime('%b %d')} – "
-                    f"{timesheet.period_end.strftime('%b %d, %Y')}"
+            sender_user_result = await session.execute(
+                select(User).where(
+                    (User.email == email_record.sender_email)
+                    & (User.tenant_id == current_user.tenant_id)
                 )
-            employee_name = (
-                timesheet.employee.full_name
-                if timesheet.employee else "Contractor"
             )
-            subject = f"Timesheet Rejected — {period_str or email_record.subject or 'Your recent submission'}"
-            body_text = (
-                f"Dear {employee_name},\n\n"
-                f"Your timesheet submission has been reviewed and rejected.\n\n"
-                f"Period: {period_str or 'See original submission'}\n"
-                f"Reason: {body.reason}\n\n"
-                f"Please review the reason above, correct your timesheet, "
-                f"and reply to this email with the corrected timesheet attached.\n\n"
-                f"If you have any questions, please contact your project manager.\n\n"
-                f"Regards,\nAcufy Platform"
-            )
-            await send_email(to_address=email_record.sender_email, subject=subject, body_text=body_text)
+            sender_user = sender_user_result.scalar_one_or_none()
+            should_send_email = not (sender_user and not sender_user.is_active)
+            if not should_send_email:
+                logger.info(
+                    "ingestion_rejection_email_skipped: sender %s is inactive",
+                    email_record.sender_email,
+                )
+            else:
+                period_str = ""
+                if timesheet.period_start and timesheet.period_end:
+                    period_str = (
+                        f"{timesheet.period_start.strftime('%b %d')} – "
+                        f"{timesheet.period_end.strftime('%b %d, %Y')}"
+                    )
+                employee_name = (
+                    timesheet.employee.full_name
+                    if timesheet.employee else "Contractor"
+                )
+                subject = f"Timesheet Rejected — {period_str or email_record.subject or 'Your recent submission'}"
+                body_text = (
+                    f"Dear {employee_name},\n\n"
+                    f"Your timesheet submission has been reviewed and rejected.\n\n"
+                    f"Period: {period_str or 'See original submission'}\n"
+                    f"Reason: {body.reason}\n\n"
+                    f"Please review the reason above, correct your timesheet, "
+                    f"and reply to this email with the corrected timesheet attached.\n\n"
+                    f"If you have any questions, please contact your project manager.\n\n"
+                    f"Regards,\nAcufy Platform"
+                )
+                await send_email(to_address=email_record.sender_email, subject=subject, body_text=body_text)
     except Exception as exc:
         logger.error("Failed to send rejection email: %s", exc)
 
