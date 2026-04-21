@@ -36,8 +36,8 @@ const apiError = (e: unknown) =>
 
 // ─── Form types ────────────────────────────────────────────────────────────
 
-type TenantFormState = { name: string; slug: string; status: TenantStatus; ingestion_enabled: boolean; max_mailboxes: string };
-const emptyTenantForm = (): TenantFormState => ({ name: '', slug: '', status: 'active', ingestion_enabled: false, max_mailboxes: '1' });
+type TenantFormState = { name: string; slug: string; status: TenantStatus; ingestion_enabled: boolean; max_mailboxes: string; timezone: string };
+const emptyTenantForm = (): TenantFormState => ({ name: '', slug: '', status: 'active', ingestion_enabled: false, max_mailboxes: '1', timezone: '' });
 
 type AdminFormState = { full_name: string; email: string; username: string; password: string };
 const emptyAdminForm = (): AdminFormState => ({ full_name: '', email: '', username: '', password: 'password' });
@@ -195,7 +195,7 @@ export const PlatformAdminPage: React.FC = () => {
     onError: (e: unknown) => setTenantFormError(apiError(e)),
   });
   const updateTenantMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: Partial<Omit<TenantFormState, 'max_mailboxes'>> & { max_mailboxes?: number | null } }) =>
+    mutationFn: ({ id, data }: { id: number; data: Partial<Omit<TenantFormState, 'max_mailboxes' | 'timezone'>> & { max_mailboxes?: number | null; timezone?: string | null } }) =>
       tenantsAPI.update(id, data).then((r) => r.data),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['tenants'] }); qc.invalidateQueries({ queryKey: ['dashboard'] }); closeTenantModal(); },
     onError: (e: unknown) => setTenantFormError(apiError(e)),
@@ -231,6 +231,7 @@ export const PlatformAdminPage: React.FC = () => {
       status: t.status,
       ingestion_enabled: t.ingestion_enabled,
       max_mailboxes: t.max_mailboxes == null ? '' : String(t.max_mailboxes),
+      timezone: t.timezone ?? '',
     });
     setTenantFormError('');
     setEditingTenant(t);
@@ -245,11 +246,14 @@ export const PlatformAdminPage: React.FC = () => {
     if (editingTenant) {
       const trimmed = tenantForm.max_mailboxes.trim();
       const maxMailboxes = trimmed === '' ? null : Math.max(0, parseInt(trimmed, 10) || 0);
+      const tzTrimmed = tenantForm.timezone.trim();
+      const timezonePayload = tzTrimmed === '' ? null : tzTrimmed;
       // Only send max_mailboxes when ingestion is on; it's meaningless otherwise.
-      const { max_mailboxes: _drop, ...rest } = tenantForm;
+      const { max_mailboxes: _dropMb, timezone: _dropTz, ...rest } = tenantForm;
+      const base = { ...rest, timezone: timezonePayload };
       updateTenantMutation.mutate({
         id: editingTenant.id,
-        data: tenantForm.ingestion_enabled ? { ...rest, max_mailboxes: maxMailboxes } : rest,
+        data: tenantForm.ingestion_enabled ? { ...base, max_mailboxes: maxMailboxes } : base,
       });
     } else {
       createTenantMutation.mutate({ name: tenantForm.name.trim(), slug: tenantForm.slug.trim() });
@@ -819,6 +823,19 @@ export const PlatformAdminPage: React.FC = () => {
                       <p className="text-xs text-slate-500 mt-1">Cap on mailboxes this tenant can connect. Blank = unlimited.</p>
                     </div>
                   )}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Timezone (IANA)</label>
+                    <input
+                      type="text"
+                      placeholder="UTC"
+                      className="w-full rounded-lg border px-3 py-2 text-sm"
+                      value={tenantForm.timezone}
+                      onChange={(e) => setTenantForm((f) => ({ ...f, timezone: e.target.value }))}
+                    />
+                    <p className="text-xs text-slate-500 mt-1">
+                      IANA timezone name, e.g. America/New_York, Europe/London. Leave blank for UTC.
+                    </p>
+                  </div>
                 </div>
               )}
               {tenantFormError && <p className="text-xs text-red-600">{tenantFormError}</p>}

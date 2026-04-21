@@ -115,6 +115,16 @@ CATALOG: dict[str, dict[str, Any]] = {
         "is_public": True,
         "sort_order": 80,
     },
+    "tenant_default_timezone": {
+        "category": "time_entry",
+        "data_type": "string",
+        "default_value": "UTC",
+        "validation": {},
+        "label": "Default timezone",
+        "description": "IANA timezone name used for deadline calculations and notifications (e.g. America/New_York, Europe/London). Defaults to UTC.",
+        "is_public": True,
+        "sort_order": 5,
+    },
     # ── time_off ───────────────────────────────────────────────────
     "time_off_past_days": {
         "category": "time_off",

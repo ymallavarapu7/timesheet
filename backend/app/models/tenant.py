@@ -1,4 +1,5 @@
 import enum
+from typing import Optional
 
 from sqlalchemy import Boolean, Enum as SAEnum, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -31,6 +32,11 @@ class Tenant(Base, TimestampMixin):
     # Default 1 for new ingestion-enabled tenants — platform admin raises it.
     max_mailboxes: Mapped[int | None] = mapped_column(
         Integer, nullable=True
+    )
+    # IANA timezone name (e.g. "America/New_York"). NULL = fall back to UTC
+    # for deadline calculations and notifications. See app.core.timezone_utils.
+    timezone: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, default=None
     )
 
     # Back-populated from each tenant-scoped model

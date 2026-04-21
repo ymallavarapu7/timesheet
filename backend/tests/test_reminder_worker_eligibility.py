@@ -1,11 +1,12 @@
 """
 Regression tests for reminder worker recipient targeting and auto-lock.
 
-Covers Fix 4 (internal reminder eligibility) and Fix 5 (auto-lock eligibility).
-The worker's state machine picks a "window" based on wall-clock time, so the
-tests force ``datetime.now`` inside the worker module to a deterministic value
-that falls inside either the pre-deadline reminder window or the post-deadline
-lock window as each test needs.
+Covers Fix 4 (internal reminder eligibility), Fix 5 (auto-lock eligibility),
+and the tenant-timezone reminder window behavior added in WS2.
+
+The worker now resolves current time through ``now_for_tenant``, so these
+tests patch that helper to a deterministic aware datetime in the requested
+tenant timezone.
 """
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
@@ -23,6 +24,7 @@ def _compile_jsonb_sqlite(element, compiler, **kw):  # pragma: no cover - test s
 
 
 from app.core.security import get_password_hash
+from app.core.timezone_utils import resolve_tz
 from app.models.assignments import EmployeeManagerAssignment
 from app.models.base import Base
 from app.models.tenant import Tenant, TenantStatus
@@ -55,23 +57,17 @@ async def db_session(tmp_path) -> AsyncSession:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class _FrozenDatetime(datetime):
-    """Subclass so ``datetime.now(tz)`` returns a deterministic value inside
-    the worker while ``datetime(...)`` continues to construct real instances."""
-
-    _frozen: datetime = datetime(2026, 4, 17, 14, 30, tzinfo=timezone.utc)
-
-    @classmethod
-    def now(cls, tz=None):  # type: ignore[override]
-        if tz is None:
-            return cls._frozen.replace(tzinfo=None)
-        return cls._frozen.astimezone(tz)
-
-
 def _freeze_worker_now(when: datetime):
-    """Patch `datetime` inside reminder_worker so now() returns ``when``."""
-    _FrozenDatetime._frozen = when
-    return patch.object(reminder_worker, "datetime", _FrozenDatetime)
+    """Patch ``now_for_tenant`` inside reminder_worker to return ``when``."""
+
+    def _frozen_now_for_tenant(tenant_timezone: str | None) -> datetime:
+        return when.astimezone(resolve_tz(tenant_timezone))
+
+    return patch.object(
+        reminder_worker,
+        "now_for_tenant",
+        side_effect=_frozen_now_for_tenant,
+    )
 
 
 async def _make_tenant(session: AsyncSession) -> Tenant:
@@ -178,7 +174,7 @@ async def test_internal_reminder_skips_user_with_no_manager(db_session: AsyncSes
     with _freeze_worker_now(EARLY_WINDOW_NOW), patch.object(
         reminder_worker, "send_email", sent
     ):
-        await _process_tenant_reminders(tenant.id, db_session)
+        await _process_tenant_reminders(tenant, db_session)
 
     sent.assert_not_awaited()
 
@@ -196,7 +192,7 @@ async def test_internal_reminder_skips_unverified_user(db_session: AsyncSession)
     with _freeze_worker_now(EARLY_WINDOW_NOW), patch.object(
         reminder_worker, "send_email", sent
     ):
-        await _process_tenant_reminders(tenant.id, db_session)
+        await _process_tenant_reminders(tenant, db_session)
 
     sent.assert_not_awaited()
 
@@ -214,7 +210,7 @@ async def test_internal_reminder_skips_timesheet_locked_user(db_session: AsyncSe
     with _freeze_worker_now(EARLY_WINDOW_NOW), patch.object(
         reminder_worker, "send_email", sent
     ):
-        await _process_tenant_reminders(tenant.id, db_session)
+        await _process_tenant_reminders(tenant, db_session)
 
     sent.assert_not_awaited()
 
@@ -232,7 +228,7 @@ async def test_internal_reminder_skips_external_user(db_session: AsyncSession):
     with _freeze_worker_now(EARLY_WINDOW_NOW), patch.object(
         reminder_worker, "send_email", sent
     ):
-        await _process_tenant_reminders(tenant.id, db_session)
+        await _process_tenant_reminders(tenant, db_session)
 
     sent.assert_not_awaited()
 
@@ -248,7 +244,7 @@ async def test_internal_reminder_sends_to_legitimate_user(db_session: AsyncSessi
     with _freeze_worker_now(EARLY_WINDOW_NOW), patch.object(
         reminder_worker, "send_email", sent
     ):
-        await _process_tenant_reminders(tenant.id, db_session)
+        await _process_tenant_reminders(tenant, db_session)
 
     sent.assert_awaited()
     # Confirm THIS user was the addressee.
@@ -277,7 +273,7 @@ async def test_auto_lock_skips_user_with_no_manager(db_session: AsyncSession):
     with _freeze_worker_now(AFTER_DEADLINE_NOW), patch.object(
         reminder_worker, "send_email", AsyncMock()
     ):
-        await _process_tenant_reminders(tenant.id, db_session)
+        await _process_tenant_reminders(tenant, db_session)
     await db_session.refresh(emp)
     assert emp.timesheet_locked is False
 
@@ -298,7 +294,7 @@ async def test_auto_lock_skips_unverified_user(db_session: AsyncSession):
     with _freeze_worker_now(AFTER_DEADLINE_NOW), patch.object(
         reminder_worker, "send_email", AsyncMock()
     ):
-        await _process_tenant_reminders(tenant.id, db_session)
+        await _process_tenant_reminders(tenant, db_session)
     await db_session.refresh(emp)
     assert emp.timesheet_locked is False
 
@@ -318,7 +314,7 @@ async def test_auto_lock_skips_user_created_after_week_start(db_session: AsyncSe
     with _freeze_worker_now(AFTER_DEADLINE_NOW), patch.object(
         reminder_worker, "send_email", AsyncMock()
     ):
-        await _process_tenant_reminders(tenant.id, db_session)
+        await _process_tenant_reminders(tenant, db_session)
     await db_session.refresh(emp)
     assert emp.timesheet_locked is False
 
@@ -339,7 +335,7 @@ async def test_auto_lock_skips_external_user(db_session: AsyncSession):
     with _freeze_worker_now(AFTER_DEADLINE_NOW), patch.object(
         reminder_worker, "send_email", AsyncMock()
     ):
-        await _process_tenant_reminders(tenant.id, db_session)
+        await _process_tenant_reminders(tenant, db_session)
     await db_session.refresh(emp)
     assert emp.timesheet_locked is False
 
@@ -359,7 +355,37 @@ async def test_auto_lock_applies_to_legitimate_user(db_session: AsyncSession):
     with _freeze_worker_now(AFTER_DEADLINE_NOW), patch.object(
         reminder_worker, "send_email", AsyncMock()
     ):
-        await _process_tenant_reminders(tenant.id, db_session)
+        await _process_tenant_reminders(tenant, db_session)
     await db_session.refresh(emp)
     assert emp.timesheet_locked is True
     assert emp.timesheet_locked_reason is not None
+
+
+@pytest.mark.asyncio
+async def test_internal_lock_window_uses_tenant_timezone(db_session: AsyncSession):
+    """
+    2026-04-17 20:05 UTC is 16:05 in America/New_York.
+
+    Under the old UTC-based logic that looked "past a 17:00 Friday deadline"
+    and would auto-lock. Under tenant-aware logic it's still before 17:00 local,
+    so no lock should occur yet.
+    """
+    tenant = await _make_tenant(db_session)
+    tenant.timezone = "America/New_York"
+    await _enable_internal_reminders(db_session, tenant.id, lock_enabled=True)
+    emp = await _make_employee(
+        db_session,
+        tenant,
+        "ny-employee@example.com",
+        created_at=WEEK_START_DT - timedelta(days=30),
+    )
+    await db_session.commit()
+
+    pre_local_deadline_utc = datetime(2026, 4, 17, 20, 5, tzinfo=timezone.utc)
+    with _freeze_worker_now(pre_local_deadline_utc), patch.object(
+        reminder_worker, "send_email", AsyncMock()
+    ):
+        await _process_tenant_reminders(tenant, db_session)
+
+    await db_session.refresh(emp)
+    assert emp.timesheet_locked is False

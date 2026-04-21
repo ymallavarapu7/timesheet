@@ -9,11 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.deps import get_current_user, require_role
+from app.core.timezone_utils import combine_tenant, now_for_tenant
 from app.db import get_db
 from app.models.assignments import EmployeeManagerAssignment
 from app.models.activity_log import ActivityLog
 from app.models.client import Client
 from app.models.project import Project
+from app.models.tenant import Tenant
 from app.models.time_entry import TimeEntry, TimeEntryStatus
 from app.models.time_off_request import TimeOffRequest, TimeOffStatus
 from app.models.user import User, UserRole
@@ -38,6 +40,8 @@ async def _get_managed_employee_ids(db: AsyncSession, manager_id: int, as_of: Op
         EmployeeManagerAssignment.manager_id == manager_id
     )
     if as_of is not None:
+        # Historical "as_of end-of-day" filter, not current wall-clock deadline
+        # math. This intentionally stays date-scoped rather than tenant-now based.
         query = query.where(EmployeeManagerAssignment.created_at <=
                             datetime.combine(as_of, time.max))
     result = await db.execute(query)
@@ -55,6 +59,8 @@ async def _get_managed_active_employee_ids(db: AsyncSession, manager_id: int, as
         )
     )
     if as_of is not None:
+        # Historical "as_of end-of-day" filter, not current wall-clock deadline
+        # math. This intentionally stays date-scoped rather than tenant-now based.
         query = query.where(EmployeeManagerAssignment.created_at <=
                             datetime.combine(as_of, time.max))
     result = await db.execute(query)
@@ -72,6 +78,8 @@ async def _get_direct_active_report_ids(db: AsyncSession, manager_id: int, as_of
         )
     )
     if as_of is not None:
+        # Historical "as_of end-of-day" filter, not current wall-clock deadline
+        # math. This intentionally stays date-scoped rather than tenant-now based.
         query = query.where(EmployeeManagerAssignment.created_at <=
                             datetime.combine(as_of, time.max))
     result = await db.execute(query)
@@ -280,11 +288,37 @@ async def get_team_daily_overview(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    now = datetime.now()
+    # Load tenant.timezone for deadline math. ``get_current_user`` does not
+    # eagerload the tenant, so a targeted ``db.get`` keeps this endpoint the
+    # only thing that pays for the extra fetch.
+    tenant_timezone: Optional[str] = None
+    if current_user.tenant_id is not None:
+        tenant = await db.get(Tenant, current_user.tenant_id)
+        if tenant is not None:
+            tenant_timezone = tenant.timezone
+
+    # Daily submission cutoff time — settings-driven (catalog key added in
+    # Tier 1 WS1). Falls back to 10:00 if the row is missing or malformed.
+    deadline_time = time(hour=10, minute=0)
+    if current_user.tenant_id is not None:
+        from app.core.tenant_settings import get_setting
+
+        try:
+            raw = await get_setting(
+                db, current_user.tenant_id, "daily_submission_deadline_time"
+            )
+            if isinstance(raw, str) and ":" in raw:
+                hh, mm = raw.split(":", 1)
+                deadline_time = time(hour=int(hh), minute=int(mm))
+        except (KeyError, ValueError):
+            pass
+
+    now = now_for_tenant(tenant_timezone)
     target_date = _previous_working_day(now.date())
     deadline_day = _next_working_day(target_date)
-    submission_deadline_at = datetime.combine(
-        deadline_day, time(hour=10, minute=0))
+    submission_deadline_at = combine_tenant(
+        deadline_day, deadline_time, tenant_timezone
+    )
     has_time_remaining_until_deadline = now < submission_deadline_at
 
     if current_user.role not in [UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO, UserRole.ADMIN]:

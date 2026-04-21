@@ -608,6 +608,10 @@ class TenantUpdate(BaseModel):
     status: Optional[TenantStatus] = None
     ingestion_enabled: Optional[bool] = None
     max_mailboxes: Optional[int] = Field(None, ge=0)
+    # IANA timezone name (e.g. "America/New_York"). ``None`` means "fall back
+    # to UTC." Empty string is treated as clearing the value — the endpoint
+    # already passes through via ``model_dump(exclude_unset=True)``.
+    timezone: Optional[str] = Field(None, max_length=64)
 
 
 class TenantResponse(BaseModel):
@@ -617,6 +621,7 @@ class TenantResponse(BaseModel):
     status: TenantStatus
     ingestion_enabled: bool = False
     max_mailboxes: Optional[int] = None
+    timezone: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

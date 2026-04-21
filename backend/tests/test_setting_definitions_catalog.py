@@ -42,6 +42,7 @@ EXPECTED_KEYS = {
     "min_submit_weekly_hours",
     "allow_partial_week_submit",
     "week_start_day",
+    "tenant_default_timezone",
     # time_off
     "time_off_past_days",
     "time_off_future_days",

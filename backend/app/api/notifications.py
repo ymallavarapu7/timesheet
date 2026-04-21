@@ -5,9 +5,11 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user
+from app.core.timezone_utils import now_for_tenant
 from app.db import get_db
 from app.models.assignments import EmployeeManagerAssignment, UserProjectAccess
 from app.models.notification import UserNotificationDismissal, UserNotificationState
+from app.models.tenant import Tenant
 from app.models.time_entry import TimeEntry, TimeEntryStatus
 from app.models.time_off_request import TimeOffRequest, TimeOffStatus
 from app.models.user import User, UserRole
@@ -158,7 +160,13 @@ async def _build_notification_summary(
 
     items: list[NotificationItem] = []
     route_counts = NotificationRouteCounts()
-    now = datetime.now(timezone.utc)
+
+    # Resolve tenant timezone once — every ``now`` / ``today`` / ``current_time``
+    # derivation below uses this. NULL tenant.timezone falls back to UTC so the
+    # behavior for existing tenants is unchanged.
+    tenant_row = await db.get(Tenant, current_user.tenant_id)
+    tenant_timezone = tenant_row.timezone if tenant_row is not None else None
+    now = now_for_tenant(tenant_timezone)
     current_time = now.time()
     ttl_cutoff = now - timedelta(days=NOTIFICATION_TTL_DAYS)
     ttl_cutoff_naive = ttl_cutoff.replace(tzinfo=None)  # For comparisons with _naive() results
@@ -264,8 +272,9 @@ async def _build_notification_summary(
         created_at=draft_time_off_latest,
     )
 
-    week_start = date.today() - timedelta(days=date.today().weekday())
-    previous_work_day = _previous_working_day(date.today())
+    tenant_today = now.date()
+    week_start = tenant_today - timedelta(days=tenant_today.weekday())
+    previous_work_day = _previous_working_day(tenant_today)
 
     previous_day_entry_count = await db.scalar(
         select(func.count(TimeEntry.id)).where(
@@ -275,7 +284,7 @@ async def _build_notification_summary(
         )
     )
     if current_time >= time(hour=8) and int(previous_day_entry_count or 0) == 0:
-        reminder_anchor = datetime.combine(date.today(), time(hour=8))
+        reminder_anchor = datetime.combine(tenant_today, time(hour=8))
         _add_notification(
             items,
             notification_id="missing-previous-day-entry",
@@ -382,7 +391,7 @@ async def _build_notification_summary(
                     [employee_id for employee_id in employee_scope_ids if employee_id not in entered_ids]
                 )
 
-            escalation_anchor = datetime.combine(date.today(), time(hour=14))
+            escalation_anchor = datetime.combine(tenant_today, time(hour=14))
             _add_notification(
                 items,
                 notification_id="missing-team-yesterday-entries",

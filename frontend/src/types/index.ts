@@ -314,6 +314,7 @@ export interface Tenant {
   status: TenantStatus;
   ingestion_enabled: boolean;
   max_mailboxes?: number | null;
+  timezone?: string | null;
   created_at: string;
   updated_at: string;
 }
