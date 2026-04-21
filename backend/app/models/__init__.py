@@ -21,9 +21,11 @@ from .ingestion_timesheet import (
 from .refresh_token import RefreshToken
 from .department import Department
 from .leave_type import LeaveType
+from .setting_definition import SettingDefinition
 
 __all__ = ["Tenant", "User", "Client", "Project", "Task", "TimeEntry",
            "TimeOffRequest", "EmployeeManagerAssignment", "UserProjectAccess", "UserNotificationState", "UserNotificationDismissal", "TimeEntryEditHistory",
            "SyncLog", "SyncDirection", "SyncEntityType", "SyncStatus", "ServiceToken", "ActivityLog",
            "Mailbox", "IngestedEmail", "EmailAttachment", "IngestionTimesheet",
-           "IngestionTimesheetLineItem", "IngestionAuditLog", "RefreshToken", "Department", "LeaveType"]
+           "IngestionTimesheetLineItem", "IngestionAuditLog", "RefreshToken", "Department", "LeaveType",
+           "SettingDefinition"]

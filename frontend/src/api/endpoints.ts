@@ -450,11 +450,37 @@ export const tenantsAPI = {
     apiClient.delete(`/tenants/${tenantId}/service-tokens/${tokenId}`),
 };
 
+export type SettingValue = string | number | boolean | null;
+
+export type SettingDefinition = {
+  key: string;
+  category: string;
+  data_type: 'int' | 'float' | 'bool' | 'string' | 'time' | 'json';
+  default_value: SettingValue;
+  validation: {
+    min?: number;
+    max?: number;
+    min_length?: number;
+    max_length?: number;
+    enum?: Array<string | number>;
+    pattern?: string;
+  };
+  label: string;
+  description: string;
+  is_public: boolean;
+  sort_order: number;
+};
+
 export const tenantSettingsAPI = {
-  get: () => apiClient.get<Record<string, string | null>>('/users/tenant-settings'),
-  getPublic: () => apiClient.get<Record<string, string | null>>('/users/tenant-settings/public'),
-  update: (data: Record<string, string | null>) =>
-    apiClient.patch<Record<string, string | null>>('/users/tenant-settings', data),
+  // Post-migration 028 the GET endpoints return typed values (numbers,
+  // booleans) rather than all strings. Legacy callers normalise via
+  // ``toStringish`` in AdminSettingsPage; new callers work with the typed
+  // values directly.
+  get: () => apiClient.get<Record<string, SettingValue>>('/users/tenant-settings'),
+  getPublic: () => apiClient.get<Record<string, SettingValue>>('/users/tenant-settings/public'),
+  getCatalog: () => apiClient.get<SettingDefinition[]>('/users/tenant-settings/catalog'),
+  update: (data: Record<string, SettingValue>) =>
+    apiClient.patch<Record<string, SettingValue>>('/users/tenant-settings', data),
   unlockUser: (userId: number) =>
     apiClient.post<{ success: boolean; user_id: number }>(`/users/users/${userId}/unlock-timesheet`, {}),
 };
