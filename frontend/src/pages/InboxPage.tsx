@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowRight, ChevronDown, ChevronRight, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { ArrowRight, ChevronDown, ChevronRight, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import axios from 'axios';
@@ -394,6 +394,38 @@ export const InboxPage: React.FC = () => {
     return [...baseGroups, ...skippedVisible];
   }, [timesheets, skippedGroups, statusFilter, clientId, search]);
   const statusCounts = React.useMemo(() => countStatuses(allGroups), [allGroups]);
+  const skippedCount = statusCounts.skipped ?? 0;
+
+  // Persist the dismissed-at count per tenant so the banner stays dismissed
+  // across refreshes, but reappears once more emails land in the skipped pile
+  // than the user last acknowledged. We only read/write localStorage on the
+  // client, and we guard against SSR / disabled storage.
+  const tenantScopeKey = user?.tenant_id != null ? `inbox.skippedBannerDismissedCount.${user.tenant_id}` : null;
+  const [dismissedSkippedCount, setDismissedSkippedCount] = React.useState<number>(() => {
+    if (typeof window === 'undefined' || !tenantScopeKey) return 0;
+    try {
+      const raw = window.localStorage.getItem(tenantScopeKey);
+      const parsed = raw == null ? 0 : Number.parseInt(raw, 10);
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+    } catch {
+      return 0;
+    }
+  });
+  const dismissSkippedBanner = React.useCallback(() => {
+    setDismissedSkippedCount(skippedCount);
+    if (typeof window !== 'undefined' && tenantScopeKey) {
+      try {
+        window.localStorage.setItem(tenantScopeKey, String(skippedCount));
+      } catch {
+        // Storage quota / private-mode — banner will simply re-show next load.
+      }
+    }
+  }, [skippedCount, tenantScopeKey]);
+  const showSkippedBanner =
+    skippedCount > 0 &&
+    skippedCount > dismissedSkippedCount &&
+    statusFilter !== 'skipped';
+
   const fetchDiagnostics = React.useMemo<FetchMessageDiagnostic[]>(() => {
     const diagnostics = fetchStatus?.result && typeof fetchStatus.result === 'object' && 'message_diagnostics' in fetchStatus.result
       ? fetchStatus.result.message_diagnostics
@@ -739,6 +771,47 @@ export const InboxPage: React.FC = () => {
         </section>
       ) : null}
 
+      {showSkippedBanner ? (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="skipped-emails-banner"
+          className="surface-card flex flex-wrap items-center justify-between gap-3 border-amber-300/30 bg-amber-500/5 px-5 py-3"
+        >
+          <div className="text-sm text-foreground">
+            <span className="font-medium">{skippedCount}</span>{' '}
+            {skippedCount === 1 ? 'email was' : 'emails were'} skipped during ingestion.{' '}
+            <button
+              type="button"
+              className="font-medium text-primary underline-offset-4 hover:underline"
+              onClick={() => setStatusFilter('skipped')}
+            >
+              View skipped
+            </button>{' '}
+            to reprocess individually, or reprocess them all now.
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleReprocessSkipped()}
+              disabled={isBusy}
+              className="action-button-secondary disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <RefreshCw className="mr-2 h-4 w-4" />
+              Reprocess {skippedCount} skipped
+            </button>
+            <button
+              type="button"
+              onClick={dismissSkippedBanner}
+              aria-label="Dismiss skipped emails banner"
+              className="rounded p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <section className="surface-card overflow-hidden">
         <div className="border-b border-border/70 px-5 py-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -770,7 +843,7 @@ export const InboxPage: React.FC = () => {
 
         {showFilters ? (
           <div className="space-y-4 border-b border-border/70 bg-muted/20 px-5 py-4">
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {STATUS_OPTIONS.map((option) => {
                 const active = statusFilter === option.key;
                 const count = statusCounts[option.key] ?? 0;
@@ -791,6 +864,18 @@ export const InboxPage: React.FC = () => {
                   </button>
                 );
               })}
+              {statusFilter === 'skipped' && skippedCount > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => void handleReprocessSkipped()}
+                  disabled={isBusy}
+                  data-testid="reprocess-all-skipped"
+                  className="ml-auto action-button-secondary disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Reprocess {skippedCount} skipped
+                </button>
+              ) : null}
             </div>
 
             <div className="flex flex-col gap-3 md:flex-row">
