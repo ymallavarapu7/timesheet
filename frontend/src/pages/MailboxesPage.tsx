@@ -1,5 +1,5 @@
 import React from 'react';
-import { ExternalLink, Mail, Plus, RefreshCw, RotateCcw, ShieldCheck, Trash2, X } from 'lucide-react';
+import { ExternalLink, Mail, Plus, Plug, RefreshCw, RotateCcw, ShieldCheck, Trash2, X } from 'lucide-react';
 import axios from 'axios';
 
 import { apiClient } from '@/api/client';
@@ -252,12 +252,30 @@ export const MailboxesPage: React.FC = () => {
     }
   };
 
+  // Reconnect an existing OAuth mailbox whose refresh token is dead (e.g. Google
+  // invalid_grant). Starts the same OAuth flow as a new connection — the
+  // callback upserts on (tenant, provider, oauth_email) and bypasses the
+  // mailbox cap for the existing-row path. Google's account picker is what
+  // steers the user to the matching account.
+  const handleOAuthReconnect = async (mailbox: Mailbox) => {
+    const provider = mailbox.oauth_provider as OAuthProvider | null;
+    if (!provider) {
+      setStatusTone('danger');
+      setStatusMessage('This mailbox has no OAuth provider to reconnect.');
+      return;
+    }
+    await handleOAuthConnect(provider);
+  };
+
+  const isOAuthMailbox = (mailbox: Mailbox): boolean =>
+    (mailbox.auth_type === 'oauth' || mailbox.auth_type === 'oauth2') &&
+    !!mailbox.oauth_provider;
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.28em] text-amber-200/80">Ingestion Admin</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">Mailboxes</h1>
+          <h1 className="text-3xl font-semibold tracking-tight">Mailboxes</h1>
           <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
             Configure intake mailboxes for timesheet submissions. Passwords never come back from the API once saved.
           </p>
@@ -332,6 +350,17 @@ export const MailboxesPage: React.FC = () => {
                     <ShieldCheck className="mr-2 h-4 w-4" />
                     Test
                   </button>
+                  {isOAuthMailbox(mailbox) && (
+                    <button
+                      type="button"
+                      onClick={() => void handleOAuthReconnect(mailbox)}
+                      className="action-button-secondary"
+                      title="Re-authorize this OAuth mailbox (use when the refresh token has expired or been revoked)"
+                    >
+                      <Plug className="mr-2 h-4 w-4" />
+                      Reconnect
+                    </button>
+                  )}
                   <button type="button" onClick={() => void handleResetCursor(mailbox)} className="action-button-secondary">
                     <RotateCcw className="mr-2 h-4 w-4" />
                     Re-fetch all
