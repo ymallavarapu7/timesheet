@@ -200,13 +200,34 @@ SYSTEM_ROLES = {
     },
 }
 
-_ROLE_INSERT = """
+# NOTE: asyncpg infers a single type for each named parameter used more than
+# once in a statement. When `:code` appeared in both the INSERT's SELECT list
+# (needing VARCHAR) and the WHERE clause (compared against a VARCHAR column),
+# asyncpg raised AmbiguousParameterError ("text vs character varying") during
+# migration 031's seed, crash-looping the API. Using distinct bind names plus
+# explicit CASTs lets the driver infer each site independently.
+_ROLE_INSERT_POSTGRES = """
+    INSERT INTO roles (tenant_id, code, name, is_system)
+    SELECT
+        NULL,
+        CAST(:code AS VARCHAR(100)),
+        CAST(:name AS VARCHAR(200)),
+        CAST(:is_system AS BOOLEAN)
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM roles
+        WHERE tenant_id IS NULL
+          AND code = CAST(:code_check AS VARCHAR(100))
+    )
+"""
+
+_ROLE_INSERT_SQLITE = """
     INSERT INTO roles (tenant_id, code, name, is_system)
     SELECT NULL, :code, :name, :is_system
     WHERE NOT EXISTS (
         SELECT 1
         FROM roles
-        WHERE tenant_id IS NULL AND code = :code
+        WHERE tenant_id IS NULL AND code = :code_check
     )
 """
 
@@ -299,6 +320,11 @@ def seed_sync(connection) -> int:
         )
         """
     )
+    role_insert = text(
+        _ROLE_INSERT_POSTGRES
+        if dialect == "postgresql"
+        else _ROLE_INSERT_SQLITE
+    )
 
     for code, description, category in PERMISSIONS:
         result = connection.execute(
@@ -309,8 +335,13 @@ def seed_sync(connection) -> int:
 
     for code, role_def in SYSTEM_ROLES.items():
         result = connection.execute(
-            text(_ROLE_INSERT),
-            {"code": code, "name": role_def["name"], "is_system": True},
+            role_insert,
+            {
+                "code": code,
+                "code_check": code,
+                "name": role_def["name"],
+                "is_system": True,
+            },
         )
         inserted += max(result.rowcount or 0, 0)
 

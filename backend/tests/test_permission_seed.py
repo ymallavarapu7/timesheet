@@ -18,7 +18,12 @@ from app.models.role import Role, RolePermission
 from app.models.role_assignment import RoleAssignment
 from app.models.tenant import Tenant, TenantStatus
 from app.models.user import User, UserRole
-from app.seed_permissions import PERMISSIONS, SYSTEM_ROLES, seed_async
+from app.seed_permissions import (
+    PERMISSIONS,
+    SYSTEM_ROLES,
+    _ROLE_INSERT_POSTGRES,
+    seed_async,
+)
 
 
 @compiles(JSONB, "sqlite")
@@ -177,6 +182,40 @@ async def test_user_role_assignments_seeded(db_session: AsyncSession):
 
     assert assignment is not None
     assert assignment.scope_type == "tenant"
+
+
+def test_role_insert_postgres_uses_distinct_bind_for_where_clause():
+    """
+    Regression guard for the AmbiguousParameterError that crash-looped the API
+    during migration 031 on deploy. asyncpg infers a single type for each
+    named parameter used more than once in a statement — reusing `:code` for
+    both the INSERT's SELECT list and the NOT EXISTS WHERE comparison made
+    the driver see conflicting type hints ("text" vs "character varying") for
+    the same $1 placeholder.
+
+    The fix uses distinct bind names (`:code` and `:code_check`) plus explicit
+    CASTs. This test asserts the SQL keeps that shape — future edits that
+    collapse back to a reused `:code` fail here instead of on a prod server.
+    """
+    import re
+
+    binds = re.findall(r":(\w+)", _ROLE_INSERT_POSTGRES)
+    # INSERT section references :code/:name/:is_system exactly once each;
+    # WHERE section uses :code_check. No bind may appear twice — that
+    # re-reuse is exactly what asyncpg rejected.
+    from collections import Counter
+
+    counts = Counter(binds)
+    duplicates = {name: n for name, n in counts.items() if n > 1}
+    assert not duplicates, (
+        f"Bind parameter(s) reused in _ROLE_INSERT_POSTGRES: {duplicates}. "
+        f"asyncpg's AmbiguousParameterError fires when the same bind is "
+        f"consumed by columns of different inferred types. Use distinct "
+        f"names (e.g. :code vs :code_check) and keep the explicit CASTs."
+    )
+    # Sanity: the two things we actually care about are both present.
+    assert "code" in counts
+    assert "code_check" in counts
 
 
 @pytest.mark.asyncio
