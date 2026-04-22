@@ -63,6 +63,20 @@ IMAGE_MIME_TYPES = {
     "image/png",
     "image/tiff",
     "image/bmp",
+    "image/gif",
+}
+
+WORD_DOCX_MIME_TYPES = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+# Legacy Word 97–2003 binary format. Can't be read by python-docx; handled via
+# antiword subprocess when the system binary is available.
+WORD_DOC_MIME_TYPES = {
+    "application/msword",
+    "application/vnd.ms-word",
+    "application/doc",
+    "application/x-msword",
 }
 
 # Vision prompt — copied exactly from extraction_service.ts
@@ -346,6 +360,195 @@ def _extract_spreadsheet(content: bytes, mime_type: str) -> ExtractionResult:
         return ExtractionResult(text="", method="failed", error=str(exc))
 
 
+# ─── Word document extraction ────────────────────────────────────────────────
+
+_DOCX_PREVIEW_CSS = """
+:root { color-scheme: light dark; }
+body {
+    margin: 0;
+    padding: 16px;
+    font-family: 'Segoe UI', Calibri, Arial, sans-serif;
+    font-size: 13px;
+    background: transparent;
+    color: #1a1a1a;
+}
+@media (prefers-color-scheme: dark) { body { color: #e6e6e6; } }
+p { margin: 0 0 8px 0; }
+table.docx-table {
+    border-collapse: collapse;
+    margin: 8px 0 16px 0;
+}
+table.docx-table td {
+    border: 1px solid rgba(127,127,127,0.4);
+    padding: 4px 8px;
+    vertical-align: top;
+}
+""".strip()
+
+
+def _wrap_docx_html(body: str) -> str:
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'><style>"
+        f"{_DOCX_PREVIEW_CSS}"
+        f"</style></head><body>{body}</body></html>"
+    )
+
+
+def _dedupe_docx_row_cells(row) -> list:
+    """
+    Return one cell per visible column in a python-docx row, collapsing merges.
+
+    python-docx exposes `row.cells` as the grid-expanded view: a horizontally
+    merged cell appears once per underlying grid column, and each copy returns
+    the full merged text. That's why a naive join produces
+    "Total Weekly Hours:\tTotal Weekly Hours:\t..." for a row with a single
+    merged header. Dedupe on the underlying `<w:tc>` XML element so each
+    physical cell contributes text exactly once.
+    """
+    seen_ids: set[int] = set()
+    unique: list = []
+    for cell in row.cells:
+        tc_id = id(cell._tc)
+        if tc_id in seen_ids:
+            continue
+        seen_ids.add(tc_id)
+        unique.append(cell)
+    return unique
+
+
+def _extract_docx(content: bytes) -> ExtractionResult:
+    """
+    Extract text and an HTML preview from a .docx (Word 2007+) file.
+
+    Plain text is what the downstream LLM sees — we join deduped row cells
+    with tabs and paragraphs/rows with newlines. HTML is purely presentational
+    for the review panel (mirrors what spreadsheet attachments produce via
+    `rendered_html`) and falls back to `None` if anything goes wrong so a
+    rendering bug can never mask a successful extraction.
+    """
+    try:
+        import docx  # python-docx
+        from html import escape as _html_escape
+
+        document = docx.Document(io.BytesIO(content))
+        text_parts: list[str] = []
+        html_parts: list[str] = []
+
+        for paragraph in document.paragraphs:
+            if paragraph.text.strip():
+                text_parts.append(paragraph.text)
+                html_parts.append(f"<p>{_html_escape(paragraph.text)}</p>")
+
+        for table in document.tables:
+            html_rows: list[str] = []
+            for row in table.rows:
+                unique_cells = _dedupe_docx_row_cells(row)
+                cell_texts = [(cell.text or "").strip() for cell in unique_cells]
+                if not any(cell_texts):
+                    continue
+                text_parts.append("\t".join(cell_texts))
+                html_cells = "".join(
+                    f"<td>{_html_escape(t).replace(chr(10), '<br/>')}</td>"
+                    for t in cell_texts
+                )
+                html_rows.append(f"<tr>{html_cells}</tr>")
+            if html_rows:
+                html_parts.append(
+                    '<table class="docx-table">' + "".join(html_rows) + "</table>"
+                )
+
+        text = "\n".join(text_parts).strip()
+        if not text:
+            return ExtractionResult(
+                text="",
+                method="failed",
+                error="No text content found in .docx file.",
+            )
+
+        # Review panel renders this inside a sandboxed <iframe> (see
+        # ReviewPanelPage.tsx), which doesn't inherit the parent's CSS. Emit a
+        # full standalone HTML document with dark-mode-aware styling so the
+        # preview is readable on both themes — same approach as xlsx_render.
+        rendered_html = (
+            _wrap_docx_html("".join(html_parts)) if html_parts else None
+        )
+        return ExtractionResult(
+            text=text,
+            method="native_spreadsheet",
+            rendered_html=rendered_html,
+        )
+    except Exception as exc:
+        logger.warning(".docx extraction failed: %s", exc)
+        return ExtractionResult(text="", method="failed", error=str(exc))
+
+
+async def _extract_doc(content: bytes) -> ExtractionResult:
+    """
+    Extract plain text from a legacy .doc (Word 97–2003 binary) file by
+    shelling out to `antiword`. The subprocess is wrapped in a 60s timeout so
+    a malformed file can't hang the worker — same defensive pattern we need
+    anywhere that shells out to an external binary.
+    """
+    import asyncio
+    import os
+    import tempfile
+
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+    except Exception as exc:
+        return ExtractionResult(text="", method="failed", error=f".doc write failed: {exc}")
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "antiword", tmp_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return ExtractionResult(
+                text="",
+                method="failed",
+                error="antiword timed out after 60s processing .doc file.",
+            )
+
+        if proc.returncode != 0:
+            err = (stderr or b"").decode("utf-8", errors="replace").strip()
+            return ExtractionResult(
+                text="",
+                method="failed",
+                error=f"antiword exited {proc.returncode}: {err or 'no stderr'}",
+            )
+
+        text = (stdout or b"").decode("utf-8", errors="replace").strip()
+        if not text:
+            return ExtractionResult(
+                text="",
+                method="failed",
+                error="antiword produced no output for .doc file.",
+            )
+        return ExtractionResult(text=text, method="native_spreadsheet")
+    except FileNotFoundError:
+        return ExtractionResult(
+            text="",
+            method="failed",
+            error="antiword binary is not installed — legacy .doc files cannot be extracted.",
+        )
+    except Exception as exc:
+        logger.warning(".doc extraction failed: %s", exc)
+        return ExtractionResult(text="", method="failed", error=str(exc))
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 # ─── Native PDF extraction ────────────────────────────────────────────────────
 
 def _extract_native_pdf(content: bytes) -> ExtractionResult:
@@ -609,6 +812,12 @@ def _normalize_mime_type(filename: str, mime_type: str) -> str:
         return "image/tiff"
     if suffix == ".bmp":
         return "image/bmp"
+    if suffix == ".gif":
+        return "image/gif"
+    if suffix == ".docx":
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if suffix == ".doc":
+        return "application/msword"
     return mime_lower
 
 
@@ -638,6 +847,16 @@ async def extract_text(
     if normalized_mime in SPREADSHEET_MIME_TYPES:
         logger.debug("Extracting spreadsheet: %s", filename)
         return _extract_spreadsheet(content, normalized_mime)
+
+    # ── Word (.docx) ──────────────────────────────────────────────────────────
+    if normalized_mime in WORD_DOCX_MIME_TYPES:
+        logger.debug("Extracting .docx: %s", filename)
+        return _extract_docx(content)
+
+    # ── Legacy Word (.doc) ────────────────────────────────────────────────────
+    if normalized_mime in WORD_DOC_MIME_TYPES:
+        logger.debug("Extracting .doc via antiword: %s", filename)
+        return await _extract_doc(content)
 
     # ── PDF ───────────────────────────────────────────────────────────────────
     if "pdf" in normalized_mime:
