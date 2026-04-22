@@ -943,7 +943,6 @@ async def _process_timesheet_attachment(
             extracted_data=extracted_data,
             extracted_supervisor_name=(extracted_data.get("supervisor_name") or "").strip() or None,
             llm_anomalies=anomalies,
-            llm_match_suggestions=match_suggestions,
             submitted_at=email_record.received_at,
             created_at=now,
             updated_at=now,
