@@ -54,7 +54,7 @@ from app.schemas.ingestion import (
 )
 from app.services.llm_ingestion import draft_comment
 from app.services.storage import delete_file, read_file
-from app.workers.email_fetch import enqueue_fetch_job, get_job_status
+from app.workers.email_fetch import enqueue_fetch_job, enqueue_reprocess_skipped_fanout, get_job_status
 
 router = APIRouter(prefix="/ingestion", tags=["ingestion"])
 
@@ -621,8 +621,21 @@ async def reprocess_skipped_emails(
     _: object = Depends(require_ingestion_enabled),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
+    # Fan out to one arq job per email so a slow/hung attachment can't kill
+    # the whole batch. See enqueue_reprocess_skipped_fanout for the details.
+    skipped_ids_result = await session.execute(
+        select(IngestedEmail.id)
+        .where(IngestedEmail.tenant_id == current_user.tenant_id)
+        .where(IngestedEmail.has_attachments.is_(True))
+        .where(~IngestedEmail.ingestion_timesheets.any())
+        .order_by(IngestedEmail.received_at.desc().nullslast(), IngestedEmail.id.desc())
+    )
+    email_ids = list(skipped_ids_result.scalars().all())
+
     try:
-        job_id = await enqueue_fetch_job(current_user.tenant_id, mode="reprocess_skipped")
+        job_id = await enqueue_reprocess_skipped_fanout(
+            current_user.tenant_id, email_ids
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 

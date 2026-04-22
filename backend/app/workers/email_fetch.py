@@ -544,6 +544,90 @@ async def _process_mailbox(
     return result
 
 
+async def enqueue_reprocess_skipped_fanout(
+    tenant_id: int,
+    email_ids: list[int],
+) -> str:
+    """
+    Enqueue one `reprocess_email` job per email id and return an umbrella
+    batch id whose status record is written as `complete` immediately.
+
+    Motivation: the previous `reprocess_skipped` path processed every skipped
+    email in a single arq job's main loop. One slow attachment (typically a
+    pdftoppm hang or a long Vision extraction) would consume the entire 300s
+    job_timeout and kill the batch mid-flight, leaving the rest of the list
+    stuck. Fan-out lets arq's worker pool run the emails concurrently and
+    scopes each 300s budget to a single email, so one slow or malformed
+    attachment can no longer poison the batch.
+
+    The umbrella status is recorded as `complete` immediately because the
+    "dispatch" phase is done — per-email jobs each have their own status
+    records. The frontend's skipped-emails query invalidates on complete,
+    and the banner re-checks the skipped count, so the UI stays accurate
+    as child jobs finish in the background.
+    """
+    from arq import create_pool
+    from app.workers.settings import get_redis_settings
+
+    redis = await create_pool(get_redis_settings())
+    try:
+        timestamp = int(datetime.now(timezone.utc).timestamp())
+        batch_id = f"reprocess_skipped_batch_tenant_{tenant_id}_{timestamp}"
+
+        if not email_ids:
+            await _write_job_status(
+                {"redis": redis},
+                job_id=batch_id,
+                tenant_id=tenant_id,
+                mode="reprocess_skipped",
+                status="complete",
+                progress=100,
+                message="No skipped emails to reprocess.",
+                result={"enqueued": 0},
+            )
+            return batch_id
+
+        for email_id in email_ids:
+            child_id = f"reprocess_email_tenant_{tenant_id}_{email_id}_{timestamp}"
+            await _write_job_status(
+                {"redis": redis},
+                job_id=child_id,
+                tenant_id=tenant_id,
+                mode="reprocess_email",
+                status="queued",
+                progress=0,
+                message=f"Reprocess job queued for email {email_id}.",
+            )
+            await redis.enqueue_job(
+                "fetch_emails_for_tenant",
+                tenant_id,
+                "reprocess_email",
+                email_id,
+                [],
+                _job_id=child_id,
+            )
+
+        await _write_job_status(
+            {"redis": redis},
+            job_id=batch_id,
+            tenant_id=tenant_id,
+            mode="reprocess_skipped",
+            status="complete",
+            progress=100,
+            message=(
+                f"Dispatched {len(email_ids)} per-email reprocess jobs. "
+                "Individual progress is tracked per child job; the skipped "
+                "list will shrink as each completes."
+            ),
+            result={"enqueued": len(email_ids)},
+        )
+        return batch_id
+    except Exception as exc:
+        raise RuntimeError(f"Failed to enqueue reprocess-skipped fan-out: {exc}. Is Redis running?") from exc
+    finally:
+        await redis.close()
+
+
 async def enqueue_fetch_job(
     tenant_id: int,
     *,

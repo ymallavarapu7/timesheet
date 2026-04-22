@@ -610,7 +610,18 @@ async def _rasterize_pdf(content: bytes) -> list[bytes]:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            await proc.communicate()
+            # Wrap in a timeout so a malformed PDF that hangs pdftoppm can't
+            # consume the entire arq job_timeout (which would kill a batch
+            # reprocess mid-flight). 60s is generous — pdftoppm typically
+            # completes in under a second per page, and MAX_PDF_PAGES caps
+            # the page count at 50.
+            try:
+                await asyncio.wait_for(proc.communicate(), timeout=60.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                logger.warning("pdftoppm timed out after 60s, falling back to pdf2image")
+                raise RuntimeError("pdftoppm timed out")
 
             if proc.returncode != 0:
                 logger.warning("pdftoppm exited with code %d, falling back to pdf2image", proc.returncode)
