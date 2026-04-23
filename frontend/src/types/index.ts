@@ -304,6 +304,43 @@ export interface ServiceTokenCreate {
   issuer: string;
 }
 
+export type LicenseTier = 'starter' | 'professional' | 'enterprise';
+
+export interface IssuedLicense {
+  jti: string;
+  tenant_name: string;
+  server_hash: string;
+  tier: LicenseTier | string;
+  max_users: number;
+  features: string[];
+  issued_at: string;
+  issued_by?: number | null;
+  expires_at?: string | null;
+  revoked: boolean;
+  revoked_at?: string | null;
+  revoke_mode?: 'graceful' | 'immediate' | null;
+  last_verified?: string | null;
+  last_active_users?: number | null;
+  last_version?: string | null;
+  notes?: string | null;
+}
+
+export interface LicenseIssuePayload {
+  tenant_name: string;
+  server_hostname: string;
+  db_name: string;
+  tier: LicenseTier;
+  max_users: number;
+  features: string[];
+  notes?: string;
+}
+
+export interface LicenseIssueResponse {
+  jti: string;
+  license_key: string;
+  issued_at: string;
+}
+
 // Tenant types
 export type TenantStatus = 'active' | 'inactive' | 'suspended';
 
@@ -315,6 +352,10 @@ export interface Tenant {
   ingestion_enabled: boolean;
   max_mailboxes?: number | null;
   timezone?: string | null;
+  deployment_type?: string;
+  license_expiry_behavior?: string;
+  license_jti?: string | null;
+  license_grace_until?: string | null;
   created_at: string;
   updated_at: string;
 }

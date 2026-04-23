@@ -47,6 +47,7 @@ PERMISSIONS = [
     ("service_token.issue", "Issue service tokens", "platform"),
     ("platform.settings.manage", "Manage platform-wide settings", "platform"),
     ("platform.admin.access", "Access platform administration UI", "platform"),
+    ("license.manage", "Issue, list, and revoke self-hosted licenses", "platform"),
 ]
 
 SYSTEM_ROLES = {
@@ -192,6 +193,7 @@ SYSTEM_ROLES = {
             "service_token.issue",
             "platform.settings.manage",
             "platform.admin.access",
+            "license.manage",
         ],
     },
     "REVIEWER": {

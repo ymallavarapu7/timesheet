@@ -10,8 +10,27 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { tenantsAPI } from '@/api';
-import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useResetUserPassword, useResendVerification } from '@/hooks';
-import { ServiceToken, ServiceTokenCreated, Tenant, TenantStatus, User, UserRole } from '@/types';
+import {
+  useUsers,
+  useCreateUser,
+  useUpdateUser,
+  useDeleteUser,
+  useResetUserPassword,
+  useResendVerification,
+  useIssueLicense,
+  useListLicenses,
+  useRevokeLicense,
+} from '@/hooks';
+import {
+  IssuedLicense,
+  LicenseIssueResponse,
+  Tenant,
+  TenantStatus,
+  User,
+  UserRole,
+  ServiceToken,
+  ServiceTokenCreated,
+} from '@/types';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -33,6 +52,11 @@ const StatusBadge: React.FC<{ status: TenantStatus }> = ({ status }) => {
 const slugify = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const apiError = (e: unknown) =>
   (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Something went wrong';
+const licenseStatusLabel = (license: IssuedLicense) => {
+  if (!license.revoked) return { label: 'Active', classes: 'bg-emerald-100 text-emerald-800' };
+  if (license.revoke_mode === 'graceful') return { label: 'Grace', classes: 'bg-amber-100 text-amber-800' };
+  return { label: 'Revoked', classes: 'bg-red-100 text-red-700' };
+};
 
 // ─── Form types ────────────────────────────────────────────────────────────
 
@@ -49,6 +73,25 @@ type AdminResetPasswordState = { userId: number; value: string; error: string } 
 
 type TokenFormState = { name: string; issuer: string };
 const emptyTokenForm = (): TokenFormState => ({ name: '', issuer: '' });
+
+type LicenseFormState = {
+  tenant_name: string;
+  server_hostname: string;
+  db_name: string;
+  tier: 'starter' | 'professional' | 'enterprise';
+  max_users: string;
+  features: string;
+  notes: string;
+};
+const emptyLicenseForm = (): LicenseFormState => ({
+  tenant_name: '',
+  server_hostname: '',
+  db_name: '',
+  tier: 'enterprise',
+  max_users: '0',
+  features: '',
+  notes: '',
+});
 
 // ─── Admin row action menu (flips upward when near container bottom) ──────
 
@@ -187,6 +230,7 @@ export const PlatformAdminPage: React.FC = () => {
     () => allUsers.filter((u) => u.role === 'ADMIN' && u.tenant_id != null).length,
     [allUsers],
   );
+  const { data: issuedLicenses = [], isLoading: licensesLoading } = useListLicenses();
 
   // ── Tenant mutations ──────────────────────────────────────────────────────
   const createTenantMutation = useMutation({
@@ -390,6 +434,14 @@ export const PlatformAdminPage: React.FC = () => {
   const [issuedToken, setIssuedToken] = useState<ServiceTokenCreated | null>(null);
   const [copiedToken, setCopiedToken] = useState(false);
   const [confirmRevokeToken, setConfirmRevokeToken] = useState<{ tenantId: number; token: ServiceToken } | null>(null);
+  const [showLicenseModal, setShowLicenseModal] = useState(false);
+  const [licenseForm, setLicenseForm] = useState<LicenseFormState>(emptyLicenseForm());
+  const [licenseFormError, setLicenseFormError] = useState('');
+  const [issuedLicense, setIssuedLicense] = useState<LicenseIssueResponse | null>(null);
+  const [copiedLicenseKey, setCopiedLicenseKey] = useState(false);
+  const [confirmRevokeLicense, setConfirmRevokeLicense] = useState<{ jti: string; immediate: boolean } | null>(null);
+  const issueLicenseMutation = useIssueLicense();
+  const revokeLicenseMutation = useRevokeLicense();
 
   const { data: serviceTokens = [], isLoading: tokensLoading, isError: tokensError, refetch: retryTokens } = useQuery({
     queryKey: ['service-tokens', expandedTenantId],
@@ -440,6 +492,38 @@ export const PlatformAdminPage: React.FC = () => {
       return;
     }
     issueTokenMutation.mutate({ tenantId: issueTokenForTenantId!, body: { name: tokenForm.name.trim(), issuer: tokenForm.issuer.trim() } });
+  };
+  const closeLicenseModal = () => {
+    setShowLicenseModal(false);
+    setLicenseForm(emptyLicenseForm());
+    setLicenseFormError('');
+    setIssuedLicense(null);
+    setCopiedLicenseKey(false);
+  };
+  const handleLicenseSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLicenseFormError('');
+    if (!licenseForm.tenant_name.trim() || !licenseForm.server_hostname.trim() || !licenseForm.db_name.trim()) {
+      setLicenseFormError('Tenant name, server hostname, and database name are required.');
+      return;
+    }
+    try {
+      const response = await issueLicenseMutation.mutateAsync({
+        tenant_name: licenseForm.tenant_name.trim(),
+        server_hostname: licenseForm.server_hostname.trim(),
+        db_name: licenseForm.db_name.trim(),
+        tier: licenseForm.tier,
+        max_users: Math.max(0, parseInt(licenseForm.max_users, 10) || 0),
+        features: licenseForm.features
+          .split(',')
+          .map((value) => value.trim())
+          .filter(Boolean),
+        notes: licenseForm.notes.trim() || undefined,
+      });
+      setIssuedLicense(response);
+    } catch (error) {
+      setLicenseFormError(apiError(error));
+    }
   };
 
   const isTenantPending = createTenantMutation.isPending || updateTenantMutation.isPending;
@@ -495,6 +579,87 @@ export const PlatformAdminPage: React.FC = () => {
               <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Admin Contacts</p>
               <p className="mt-1 text-2xl font-bold text-blue-600">{totalAdmins}</p>
             </div>
+          </div>
+
+          <div className="rounded-xl border bg-white shadow-sm p-5 mb-6">
+            <div className="flex items-center justify-between gap-4 mb-4">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">License Management</h2>
+                <p className="text-sm text-slate-500">
+                  Issue self-hosted activation keys and manage revocations.
+                </p>
+              </div>
+              <button
+                onClick={() => { setLicenseForm(emptyLicenseForm()); setLicenseFormError(''); setIssuedLicense(null); setShowLicenseModal(true); }}
+                className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                <KeyRound className="w-4 h-4" />Issue License
+              </button>
+            </div>
+
+            {licensesLoading ? (
+              <p className="text-sm text-slate-500">Loading issued licenses…</p>
+            ) : issuedLicenses.length === 0 ? (
+              <p className="text-sm text-slate-400 italic">No licenses issued yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="border-b bg-slate-50 text-left">
+                    <tr>
+                      <th className="px-3 py-2 font-medium text-slate-600">Tenant</th>
+                      <th className="px-3 py-2 font-medium text-slate-600">Tier</th>
+                      <th className="px-3 py-2 font-medium text-slate-600">Issued</th>
+                      <th className="px-3 py-2 font-medium text-slate-600">Last verified</th>
+                      <th className="px-3 py-2 font-medium text-slate-600">Active users</th>
+                      <th className="px-3 py-2 font-medium text-slate-600">Status</th>
+                      <th className="px-3 py-2 font-medium text-slate-600">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {issuedLicenses.map((license) => {
+                      const statusBadge = licenseStatusLabel(license);
+                      return (
+                        <tr key={license.jti}>
+                          <td className="px-3 py-3">
+                            <div className="font-medium text-slate-900">{license.tenant_name}</div>
+                            <div className="font-mono text-[11px] text-slate-400">{license.jti}</div>
+                          </td>
+                          <td className="px-3 py-3 capitalize text-slate-700">{license.tier}</td>
+                          <td className="px-3 py-3 text-slate-500">{format(new Date(license.issued_at), 'MMM d, yyyy')}</td>
+                          <td className="px-3 py-3 text-slate-500">
+                            {license.last_verified ? format(new Date(license.last_verified), 'MMM d, yyyy HH:mm') : 'Never'}
+                          </td>
+                          <td className="px-3 py-3 text-slate-500">{license.last_active_users ?? '—'}</td>
+                          <td className="px-3 py-3">
+                            <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${statusBadge.classes}`}>
+                              {statusBadge.label}
+                            </span>
+                          </td>
+                          <td className="px-3 py-3">
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                onClick={() => setConfirmRevokeLicense({ jti: license.jti, immediate: false })}
+                                disabled={license.revoked}
+                                className="rounded-lg border border-amber-200 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-40"
+                              >
+                                Revoke (graceful)
+                              </button>
+                              <button
+                                onClick={() => setConfirmRevokeLicense({ jti: license.jti, immediate: true })}
+                                disabled={license.revoked}
+                                className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-40"
+                              >
+                                Revoke (immediate)
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
           {/* Tenant table */}
@@ -850,6 +1015,139 @@ export const PlatformAdminPage: React.FC = () => {
         </div>
       )}
 
+      {showLicenseModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-2xl rounded-xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b px-5 py-4">
+              <h2 className="text-base font-semibold text-slate-900">
+                {issuedLicense ? 'License Issued Successfully' : 'Issue License'}
+              </h2>
+              <button onClick={closeLicenseModal} className="rounded p-1 hover:bg-slate-100">
+                <X className="w-4 h-4 text-slate-500" />
+              </button>
+            </div>
+
+            {issuedLicense ? (
+              <div className="p-5 space-y-4">
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  Copy this key now — it will not be shown again.
+                </div>
+                <textarea
+                  readOnly
+                  value={issuedLicense.license_key}
+                  className="min-h-40 w-full rounded-lg border bg-slate-50 px-4 py-3 font-mono text-sm text-slate-800"
+                />
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(issuedLicense.license_key);
+                      setCopiedLicenseKey(true);
+                      setTimeout(() => setCopiedLicenseKey(false), 2000);
+                    }}
+                    className="rounded-lg border px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                  >
+                    {copiedLicenseKey ? 'Copied ✓' : 'Copy'}
+                  </button>
+                  <button
+                    onClick={closeLicenseModal}
+                    className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleLicenseSubmit} className="grid gap-4 p-5 md:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">Tenant Name</label>
+                  <input
+                    className="w-full rounded-lg border px-3 py-2 text-sm"
+                    value={licenseForm.tenant_name}
+                    onChange={(e) => setLicenseForm((current) => ({ ...current, tenant_name: e.target.value }))}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">Server Hostname</label>
+                  <input
+                    className="w-full rounded-lg border px-3 py-2 text-sm"
+                    value={licenseForm.server_hostname}
+                    onChange={(e) => setLicenseForm((current) => ({ ...current, server_hostname: e.target.value }))}
+                    placeholder="app.customer.internal"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">Database Name</label>
+                  <input
+                    className="w-full rounded-lg border px-3 py-2 text-sm"
+                    value={licenseForm.db_name}
+                    onChange={(e) => setLicenseForm((current) => ({ ...current, db_name: e.target.value }))}
+                    placeholder="timesheet"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">Tier</label>
+                  <select
+                    className="w-full rounded-lg border px-3 py-2 text-sm"
+                    value={licenseForm.tier}
+                    onChange={(e) => setLicenseForm((current) => ({ ...current, tier: e.target.value as LicenseFormState['tier'] }))}
+                  >
+                    <option value="starter">Starter</option>
+                    <option value="professional">Professional</option>
+                    <option value="enterprise">Enterprise</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">Max Users</label>
+                  <input
+                    type="number"
+                    min="0"
+                    className="w-full rounded-lg border px-3 py-2 text-sm"
+                    value={licenseForm.max_users}
+                    onChange={(e) => setLicenseForm((current) => ({ ...current, max_users: e.target.value }))}
+                  />
+                  <p className="mt-1 text-xs text-slate-500">Use 0 for unlimited.</p>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">Features</label>
+                  <input
+                    className="w-full rounded-lg border px-3 py-2 text-sm"
+                    value={licenseForm.features}
+                    onChange={(e) => setLicenseForm((current) => ({ ...current, features: e.target.value }))}
+                    placeholder="ingestion, custom_roles, multi_office, api_access"
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="mb-1 block text-xs font-medium text-slate-700">Notes</label>
+                  <textarea
+                    className="min-h-24 w-full rounded-lg border px-3 py-2 text-sm"
+                    value={licenseForm.notes}
+                    onChange={(e) => setLicenseForm((current) => ({ ...current, notes: e.target.value }))}
+                  />
+                </div>
+                {licenseFormError && (
+                  <p className="text-sm text-red-600 md:col-span-2">{licenseFormError}</p>
+                )}
+                <div className="flex justify-end gap-2 md:col-span-2">
+                  <button type="button" onClick={closeLicenseModal} className="rounded-lg border px-4 py-2 text-sm text-slate-700 hover:bg-slate-50">
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={issueLicenseMutation.isPending}
+                    className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    {issueLicenseMutation.isPending ? 'Issuing…' : 'Issue License'}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ── Add Admin Contact Modal ───────────────────────────────────────── */}
       {addAdminForTenantId != null && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -1142,6 +1440,38 @@ export const PlatformAdminPage: React.FC = () => {
                 className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
               >
                 {revokeTokenMutation.isPending ? 'Revoking…' : 'Revoke'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmRevokeLicense != null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded-xl bg-white shadow-2xl p-6">
+            <h2 className="mb-2 text-base font-semibold text-slate-900">Revoke this license?</h2>
+            <p className="mb-6 text-sm text-slate-500">
+              {confirmRevokeLicense.immediate
+                ? 'This self-hosted deployment will be invalidated immediately.'
+                : 'This self-hosted deployment will enter its grace revocation flow.'}
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmRevokeLicense(null)}
+                className="rounded-lg border px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  if (!confirmRevokeLicense) return;
+                  await revokeLicenseMutation.mutateAsync(confirmRevokeLicense);
+                  setConfirmRevokeLicense(null);
+                }}
+                disabled={revokeLicenseMutation.isPending}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {revokeLicenseMutation.isPending ? 'Revoking…' : 'Confirm'}
               </button>
             </div>
           </div>

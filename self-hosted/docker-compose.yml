@@ -1,0 +1,82 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-timesheet}
+      POSTGRES_USER: ${DB_USER:-timesheet}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-timesheet}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+  api:
+    image: ${IMAGE_REGISTRY:-ghcr.io/yourorg/timesheet-api}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-timesheet}:${DB_PASSWORD}@db:5432/${DB_NAME:-timesheet}
+      REDIS_URL: redis://redis:6379
+      DEPLOYMENT_MODE: self_hosted
+      LICENSE_KEY: ${LICENSE_KEY}
+      LICENSE_PUBLIC_KEY_PEM: ${LICENSE_PUBLIC_KEY_PEM}
+      LICENSE_SERVER_HASH_SALT: ${LICENSE_SERVER_HASH_SALT}
+      LICENSE_API_URL: ${LICENSE_API_URL:-https://licenses.yourdomain.com}
+      SECRET_KEY: ${SECRET_KEY}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  worker:
+    image: ${IMAGE_REGISTRY:-ghcr.io/yourorg/timesheet-api}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-timesheet}:${DB_PASSWORD}@db:5432/${DB_NAME:-timesheet}
+      REDIS_URL: redis://redis:6379
+      DEPLOYMENT_MODE: self_hosted
+      LICENSE_KEY: ${LICENSE_KEY}
+      LICENSE_PUBLIC_KEY_PEM: ${LICENSE_PUBLIC_KEY_PEM}
+      LICENSE_SERVER_HASH_SALT: ${LICENSE_SERVER_HASH_SALT}
+      LICENSE_API_URL: ${LICENSE_API_URL:-https://licenses.yourdomain.com}
+      SECRET_KEY: ${SECRET_KEY}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+    command: python -m arq app.workers.settings.WorkerSettings
+
+  frontend:
+    image: ${IMAGE_REGISTRY:-ghcr.io/yourorg/timesheet-frontend}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE_URL: ${API_BASE_URL:-http://localhost:8000}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+
+volumes:
+  db_data:
+  redis_data:

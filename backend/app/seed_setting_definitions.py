@@ -456,6 +456,16 @@ CATALOG: dict[str, dict[str, Any]] = {
         "is_public": False,
         "sort_order": 140,
     },
+    "license_key": {
+        "category": "licensing",
+        "data_type": "string",
+        "default_value": "",
+        "validation": {},
+        "label": "License key",
+        "description": "Signed license JWT. Set via LICENSE_KEY env var or stored here as a fallback.",
+        "is_public": False,
+        "sort_order": 10,
+    },
 }
 
 

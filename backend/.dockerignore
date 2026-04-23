@@ -7,6 +7,8 @@ venv
 .env.local
 .git
 .pytest_cache
+.tmp_pytest
+.tmp_pytest*
 uploads/*
 tests/
 pytest.ini
