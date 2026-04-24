@@ -209,6 +209,10 @@ async def process_email(
         fetched_at=now,
         has_attachments=parsed.has_attachments,
         raw_headers=parsed.raw_headers,
+        # Coerced to list because SQLAlchemy's JSON type serializes tuples as
+        # arrays but the round-tripped Python value matters for equality
+        # checks in tests and downstream code.
+        chain_senders=list(parsed.chain_senders) if parsed.chain_senders else None,
     )
     session.add(email_record)
     await session.flush()
@@ -828,6 +832,39 @@ async def _process_timesheet_attachment(
                         )
                         break
 
+        # Chain-senders resolution: try every (name, email) pulled from the
+        # forward chain against the known-user list. If exactly one chain
+        # entry matches a real user (by exact email or fuzzy name), auto-
+        # assign. Multiple matches on *different* users means we can't be
+        # sure — leave employee_id None and surface the whole chain to
+        # the reviewer so they pick. The unmatched chain is persisted onto
+        # the IngestionTimesheet for the review UI regardless of whether
+        # we also fell through to auto-create.
+        chain_match_ids: set[int] = set()
+        chain_from_email = email_record.chain_senders or []
+        if employee_id is None and chain_from_email:
+            known_emails_map = {
+                (emp.get("email") or "").strip().lower(): emp["id"]
+                for emp in employees
+                if emp.get("email")
+            }
+            for entry in chain_from_email:
+                entry_email = (entry.get("email") or "").strip().lower()
+                if entry_email and entry_email in known_emails_map:
+                    chain_match_ids.add(known_emails_map[entry_email])
+                    continue
+                entry_name = entry.get("name") or ""
+                if entry_name:
+                    matched = _fuzzy_match_employee(entry_name, employees)
+                    if matched is not None:
+                        chain_match_ids.add(matched)
+            if len(chain_match_ids) == 1:
+                employee_id = next(iter(chain_match_ids))
+                logger.info(
+                    "Resolved employee via forward chain (unique match): user_id=%s",
+                    employee_id,
+                )
+
         # ── Client resolution (precedence) ─────────────────────────────────
         # 1. User's default_client_id (if employee is resolved and pinned).
         # 2. LLM-extracted client name → match to existing (no auto-create).
@@ -896,8 +933,15 @@ async def _process_timesheet_attachment(
             email_record.forwarded_from_name or email_record.sender_name
         )
 
+        # If the forward chain carries candidates the reviewer should choose
+        # between (zero matches, or multiple matches on different users),
+        # hold off on both auto-create paths and let the reviewer pick.
+        # Creating a placeholder user now would saddle the record with the
+        # outer mailbox's email instead of the actual submitter's address.
+        needs_reviewer_chain_choice = bool(chain_from_email) and employee_id is None
+
         # Auto-create an employee user from extracted name if no match exists.
-        if employee_id is None:
+        if employee_id is None and not needs_reviewer_chain_choice:
             employee_id = await _resolve_or_create_extracted_employee_user(
                 extracted_employee_name=extracted_data.get("employee_name"),
                 sender_email=effective_sender_email,
@@ -908,6 +952,7 @@ async def _process_timesheet_attachment(
         # External user fallback — only when we have a real sender email address
         if (
             employee_id is None
+            and not needs_reviewer_chain_choice
             and effective_sender_email
             and effective_sender_email != "unknown@unknown.com"
             and "@" in effective_sender_email
@@ -919,6 +964,36 @@ async def _process_timesheet_attachment(
                 tenant_id=tenant_id,
                 session=session,
             )
+
+        # Build the match-suggestions payload the reviewer UI consumes. Only
+        # included when there's at least one chain entry AND the system
+        # wasn't able to auto-assign a unique employee from it.
+        llm_match_suggestions: dict | None = None
+        if chain_from_email and len(chain_match_ids) != 1:
+            suggestions = []
+            extracted_name_norm = (extracted_data.get("employee_name") or "").strip().lower()
+            for entry in chain_from_email:
+                entry_email = (entry.get("email") or "").strip().lower() or None
+                entry_name = (entry.get("name") or "").strip() or None
+                existing_user_id: int | None = None
+                if entry_email:
+                    for emp in employees:
+                        if (emp.get("email") or "").strip().lower() == entry_email:
+                            existing_user_id = emp["id"]
+                            break
+                if existing_user_id is None and entry_name:
+                    existing_user_id = _fuzzy_match_employee(entry_name, employees)
+                suggestions.append({
+                    "name": entry_name,
+                    "email": entry_email,
+                    "existing_user_id": existing_user_id,
+                    "matches_extracted_name": (
+                        bool(entry_name)
+                        and bool(extracted_name_norm)
+                        and entry_name.lower() == extracted_name_norm
+                    ),
+                })
+            llm_match_suggestions = {"chain_candidates": suggestions}
 
         # Anomaly detection
         anomalies = await detect_anomalies(
@@ -943,6 +1018,7 @@ async def _process_timesheet_attachment(
             extracted_data=extracted_data,
             extracted_supervisor_name=(extracted_data.get("supervisor_name") or "").strip() or None,
             llm_anomalies=anomalies,
+            llm_match_suggestions=llm_match_suggestions,
             submitted_at=email_record.received_at,
             created_at=now,
             updated_at=now,

@@ -9,6 +9,7 @@ import { Badge, Card, CardContent, CardHeader, CardTitle, Loading, Modal } from 
 import {
   useAddIngestionLineItem,
   useApproveIngestionTimesheet,
+  useAssignChainCandidate,
   useClients,
   useCreateClient,
   useDeleteIngestionLineItem,
@@ -28,7 +29,7 @@ import {
   useUpdateIngestionTimesheetData,
   useUsers,
 } from '@/hooks';
-import type { EmailAttachmentSummary, IngestionLineItem, IngestionLineItemPayload, SpreadsheetPreview } from '@/types';
+import type { ChainCandidate, EmailAttachmentSummary, IngestionLineItem, IngestionLineItemPayload, SpreadsheetPreview } from '@/types';
 
 type LineItemFormState = { work_date: string; hours: string; description: string; project_code: string; project_id: string };
 
@@ -173,6 +174,152 @@ const SpreadsheetPreviewTable: React.FC<{ preview: SpreadsheetPreview }> = ({ pr
   );
 };
 
+// Extract chain_candidates from the loosely-typed llm_match_suggestions blob.
+// Returns [] when the structure doesn't match — defensive because the
+// pipeline is the only writer but the column is Record<string, unknown>.
+const extractChainCandidates = (raw: Record<string, unknown> | null): ChainCandidate[] => {
+  if (!raw || typeof raw !== 'object') return [];
+  const candidates = (raw as { chain_candidates?: unknown }).chain_candidates;
+  if (!Array.isArray(candidates)) return [];
+  return candidates
+    .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object')
+    .map((entry) => ({
+      name: typeof entry.name === 'string' ? entry.name : null,
+      email: typeof entry.email === 'string' ? entry.email : null,
+      existing_user_id:
+        typeof entry.existing_user_id === 'number' ? entry.existing_user_id : null,
+      matches_extracted_name: entry.matches_extracted_name === true,
+    }));
+};
+
+
+type ChainCandidatesPanelProps = {
+  timesheetId: number | null;
+  rawSuggestions: Record<string, unknown> | null;
+  currentEmployeeId: number | null;
+  onAssign: (payload: { name?: string | null; email?: string | null }) => Promise<void>;
+  isAssigning: boolean;
+};
+
+const ChainCandidatesPanel: React.FC<ChainCandidatesPanelProps> = ({
+  timesheetId,
+  rawSuggestions,
+  currentEmployeeId,
+  onAssign,
+  isAssigning,
+}) => {
+  const candidates = React.useMemo(() => extractChainCandidates(rawSuggestions), [rawSuggestions]);
+  const [editingIdx, setEditingIdx] = React.useState<number | null>(null);
+  const [emailInput, setEmailInput] = React.useState('');
+  const [error, setError] = React.useState<string | null>(null);
+
+  // Reset state when we switch timesheets or the underlying data changes.
+  React.useEffect(() => {
+    setEditingIdx(null);
+    setEmailInput('');
+    setError(null);
+  }, [timesheetId, rawSuggestions]);
+
+  if (!candidates.length) return null;
+  // Hide the panel once the reviewer has bound the timesheet to anyone —
+  // the primary Employee dropdown is now authoritative.
+  if (currentEmployeeId != null) return null;
+
+  const handleSelect = async (candidate: ChainCandidate, idx: number) => {
+    setError(null);
+    // If candidate has an email OR matches an existing user, we can submit
+    // immediately. Otherwise open the inline email input.
+    if (candidate.email || candidate.existing_user_id != null) {
+      try {
+        await onAssign({ name: candidate.name, email: candidate.email });
+      } catch (exc) {
+        setError(exc instanceof Error ? exc.message : 'Assignment failed');
+      }
+      return;
+    }
+    setEditingIdx(idx);
+    setEmailInput('');
+  };
+
+  const handleConfirmWithEmail = async (candidate: ChainCandidate) => {
+    setError(null);
+    try {
+      await onAssign({
+        name: candidate.name,
+        email: emailInput.trim() || null,
+      });
+      setEditingIdx(null);
+      setEmailInput('');
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : 'Assignment failed');
+    }
+  };
+
+  return (
+    <div className="mt-3 rounded-md border border-amber-200/30 bg-amber-50/5 px-3 py-2.5" data-testid="chain-candidates-panel">
+      <p className="text-xs font-medium uppercase tracking-wide text-amber-200/80">
+        Candidates from email chain
+      </p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        The forwarded email included these names. Pick the one that belongs to this timesheet.
+      </p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {candidates.map((candidate, idx) => {
+          const label = candidate.email
+            ? `${candidate.name ?? candidate.email} <${candidate.email}>`
+            : candidate.name ?? '(no name)';
+          const isEditing = editingIdx === idx;
+          const hasKnownUser = candidate.existing_user_id != null;
+          return (
+            <div key={idx} className="flex flex-col gap-1" data-testid="chain-candidate-chip">
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 rounded-full bg-muted/30 px-3 py-1 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50"
+                onClick={() => void handleSelect(candidate, idx)}
+                disabled={isAssigning}
+                title={hasKnownUser ? 'Bind to existing user' : 'Select this candidate'}
+              >
+                {candidate.matches_extracted_name && <span>★</span>}
+                <span>{label}</span>
+                {hasKnownUser && <span className="text-[10px] uppercase text-emerald-300">known</span>}
+              </button>
+              {isEditing && !hasKnownUser && !candidate.email && (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="email"
+                    className="field-input h-7 text-xs"
+                    placeholder="email@example.com (optional)"
+                    value={emailInput}
+                    onChange={(e) => setEmailInput(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="rounded bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                    onClick={() => void handleConfirmWithEmail(candidate)}
+                    disabled={isAssigning}
+                  >
+                    Confirm
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => { setEditingIdx(null); setEmailInput(''); }}
+                    disabled={isAssigning}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+    </div>
+  );
+};
+
+
 export const ReviewPanelPage: React.FC = () => {
   const navigate = useNavigate();
   const { timesheetId, emailId } = useParams();
@@ -198,6 +345,7 @@ export const ReviewPanelPage: React.FC = () => {
   const createClient = useCreateClient();
   const { data: projects = [] } = useProjects({ active_only: true, limit: 500 });
   const updateTimesheet = useUpdateIngestionTimesheetData();
+  const assignChainCandidate = useAssignChainCandidate();
   const addLineItem = useAddIngestionLineItem();
   const updateLineItem = useUpdateIngestionLineItem();
   const deleteLineItem = useDeleteIngestionLineItem();
@@ -903,6 +1051,16 @@ export const ReviewPanelPage: React.FC = () => {
                     {extractedEmployeeHint && (
                       <p className="mt-1.5 text-xs text-muted-foreground">Extracted name: <span className="font-medium text-foreground">{extractedEmployeeDisplayName || extractedEmployeeHint}</span></p>
                     )}
+                    <ChainCandidatesPanel
+                      timesheetId={timesheet?.id ?? null}
+                      rawSuggestions={timesheet?.llm_match_suggestions ?? null}
+                      currentEmployeeId={timesheet?.employee_id ?? null}
+                      onAssign={async (payload) => {
+                        if (!timesheet) return;
+                        await assignChainCandidate.mutateAsync({ id: timesheet.id, data: payload });
+                      }}
+                      isAssigning={assignChainCandidate.isPending}
+                    />
                   </div>
                 </div>
 

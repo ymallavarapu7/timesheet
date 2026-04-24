@@ -52,6 +52,15 @@ class IngestedEmail(Base):
     llm_classification: Mapped[dict[str, Any] | None] = mapped_column(
         JSON, nullable=True
     )
+    # list[{"name": str | None, "email": str | None}] — every distinct sender
+    # pulled from the forward chain (nested RFC822 parts + body-quoted From:).
+    # Stored as JSON so it reads identically across Postgres (JSONB) and the
+    # SQLite test harness. NULL when the email isn't a recognizable forward
+    # or is a pure reply chain. See app.services.email_parser and the
+    # ingestion_pipeline chain-candidate resolution for usage.
+    chain_senders: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON, nullable=True
+    )
 
     mailbox: Mapped["Mailbox"] = relationship(
         "Mailbox", back_populates="emails"

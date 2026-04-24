@@ -82,6 +82,7 @@ export {
   useIngestionEmail,
   useIngestionTimesheet,
   useUpdateIngestionTimesheetData,
+  useAssignChainCandidate,
   useAddIngestionLineItem,
   useUpdateIngestionLineItem,
   useDeleteIngestionLineItem,

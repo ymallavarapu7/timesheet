@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -30,6 +31,8 @@ from app.models.project import Project
 from app.models.time_entry import TimeEntry, TimeEntryStatus
 from app.models.user import User
 from app.schemas.ingestion import (
+    AssignChainCandidateRequest,
+    AssignChainCandidateResponse,
     CleanupSkippedNoiseResponse,
     ApprovalResult,
     ApproveRequest,
@@ -1128,6 +1131,143 @@ async def get_review_timesheet(
     if not timesheet:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Timesheet not found")
     return _timesheet_to_detail(timesheet)
+
+
+@router.post(
+    "/timesheets/{timesheet_id}/assign-chain-candidate",
+    response_model=AssignChainCandidateResponse,
+)
+async def assign_chain_candidate(
+    timesheet_id: int,
+    body: AssignChainCandidateRequest,
+    current_user=Depends(require_can_review),
+    _: object = Depends(require_ingestion_enabled),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Bind an ingestion timesheet to an employee picked from the forward
+    chain. Either matches an existing user (by exact email or fuzzy name,
+    tenant-scoped) or creates a new user using the candidate's own email
+    — never the outer mailbox's address. This is the "real user's real
+    email" promise from the feature spec.
+    """
+    from app.core.security import get_password_hash
+    from app.models.user import User, UserRole
+
+    raw_name = (body.name or "").strip()
+    raw_email = (body.email or "").strip().lower()
+    if not raw_name and not raw_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one of `name` or `email` is required.",
+        )
+
+    timesheet = await get_ingestion_timesheet(session, timesheet_id, current_user.tenant_id)
+    if not timesheet:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Timesheet not found")
+    if timesheet.status == IngestionTimesheetStatus.approved:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot reassign an approved timesheet",
+        )
+
+    existing_user: User | None = None
+    if raw_email:
+        result = await session.execute(
+            select(User).where(
+                (User.tenant_id == current_user.tenant_id) & (User.email == raw_email)
+            )
+        )
+        existing_user = result.scalar_one_or_none()
+
+    if existing_user is None and raw_name:
+        from app.services.ingestion_pipeline import _fuzzy_match_employee, _load_known_employees
+
+        employees = await _load_known_employees(session, current_user.tenant_id)
+        matched_id = _fuzzy_match_employee(raw_name, employees)
+        if matched_id is not None:
+            result = await session.execute(
+                select(User).where(
+                    (User.tenant_id == current_user.tenant_id) & (User.id == matched_id)
+                )
+            )
+            existing_user = result.scalar_one_or_none()
+
+    created_new_user = False
+    if existing_user is not None:
+        employee_id = existing_user.id
+    else:
+        # No existing user matched. To create a new user we need a real
+        # email — the users.email column is NOT NULL and the whole point
+        # of this feature is to avoid planting dummy/placeholder rows.
+        # If the reviewer picked a name-only candidate without an email,
+        # ask them for one rather than inventing one.
+        if not raw_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "No existing user matched this name. Provide an email "
+                    "to create a new employee, or pick a candidate that "
+                    "matches a known user."
+                ),
+            )
+        base = (
+            raw_email.split("@", 1)[0].lower().replace(".", "_")
+            if raw_email else
+            re.sub(r"[^a-z0-9]+", "_", raw_name.lower()).strip("_")
+        ) or "employee"
+        username = base
+        suffix = 1
+        while True:
+            taken = await session.execute(select(User).where(User.username == username))
+            if taken.scalar_one_or_none() is None:
+                break
+            username = f"{base}_{suffix}"
+            suffix += 1
+
+        full_name = raw_name or raw_email.split("@", 1)[0]
+        new_user = User(
+            tenant_id=current_user.tenant_id,
+            email=raw_email,
+            username=username,
+            full_name=full_name,
+            hashed_password=get_password_hash("password"),
+            role=UserRole.EMPLOYEE,
+            is_active=True,
+            has_changed_password=False,
+            can_review=False,
+            is_external=True,
+        )
+        session.add(new_user)
+        await session.flush()
+        employee_id = new_user.id
+        created_new_user = True
+
+    previous = {"employee_id": timesheet.employee_id}
+    timesheet.employee_id = employee_id
+    timesheet.status = IngestionTimesheetStatus.under_review
+    timesheet.reviewer_id = current_user.id
+    timesheet.updated_at = datetime.now(timezone.utc)
+
+    await write_audit_log(
+        session,
+        timesheet_id,
+        current_user.id,
+        "chain_candidate_assigned",
+        previous_value=previous,
+        new_value={
+            "employee_id": employee_id,
+            "candidate_name": raw_name or None,
+            "candidate_email": raw_email or None,
+            "created_new_user": created_new_user,
+        },
+    )
+    await session.commit()
+    return {
+        "timesheet_id": timesheet_id,
+        "employee_id": employee_id,
+        "created_new_user": created_new_user,
+    }
 
 
 @router.patch("/timesheets/{timesheet_id}/data")

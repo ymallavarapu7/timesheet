@@ -544,6 +544,11 @@ export const ingestionAPI = {
     apiClient.post<{ status: string }>(`/api/ingestion/timesheets/${id}/revert-rejection`, {}),
   draftComment: (id: number, seed_text: string) =>
     apiClient.post<{ draft: string }>(`/api/ingestion/timesheets/${id}/draft-comment`, { seed_text }),
+  assignChainCandidate: (id: number, data: { name?: string | null; email?: string | null }) =>
+    apiClient.post<{ timesheet_id: number; employee_id: number; created_new_user: boolean }>(
+      `/api/ingestion/timesheets/${id}/assign-chain-candidate`,
+      data,
+    ),
 };
 
 // Platform settings endpoints (PLATFORM_ADMIN only)

@@ -306,6 +306,27 @@ class HoldRequest(BaseModel):
     comment: str | None = None
 
 
+class AssignChainCandidateRequest(BaseModel):
+    """
+    Request body for POST /ingestion/timesheets/{id}/assign-chain-candidate.
+
+    At least one of `name` or `email` must be provided. When both are given,
+    the endpoint prefers `email` for user lookup (exact match) and uses
+    `name` as the fuzzy-match fallback. When only `name` is given (the
+    reviewer picked a name-only chain entry and chose not to type an
+    email), the endpoint still creates or reuses a user — email may be
+    left blank on the created row.
+    """
+    name: str | None = None
+    email: str | None = None
+
+
+class AssignChainCandidateResponse(BaseModel):
+    timesheet_id: int
+    employee_id: int
+    created_new_user: bool
+
+
 class DraftCommentRequest(BaseModel):
     seed_text: str = ""
 

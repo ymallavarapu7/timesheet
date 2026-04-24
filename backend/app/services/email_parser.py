@@ -153,6 +153,18 @@ class ParsedEmail(NamedTuple):
     # Otherwise both are None and callers should use sender_email/name.
     forwarded_from_email: str | None = None
     forwarded_from_name: str | None = None
+    # Every distinct (name, email) pair we could pull from the forward chain:
+    # nested message/rfc822 parts and body-quoted 'From:' lines. Used by the
+    # ingestion pipeline to offer reviewers a list of likely employee names
+    # when no existing user matches the outer sender — see
+    # ingestion_pipeline._resolve_chain_candidates. Empty tuple for emails
+    # that aren't recognizable forwards or pure reply chains.
+    #
+    # Declared as an empty tuple (not []) because NamedTuple evaluates
+    # defaults once at class definition; a mutable list would be shared
+    # across every instance without a default_factory (which NamedTuple
+    # doesn't support). Callers coerce to list when they need mutability.
+    chain_senders: tuple[dict, ...] = ()
 
 
 # Matches the common forward markers Outlook/Gmail/Apple Mail insert.
@@ -219,6 +231,170 @@ def _extract_original_sender(body: str) -> tuple[str | None, str | None]:
             name = before or None
             return name, email_found
     return None, None
+
+
+_CHAIN_SENDERS_CAP = 20
+
+
+# Matches a "From:" line inside a forwarded body block. Deliberately narrower
+# than `_extract_original_sender`'s regex because we scan the WHOLE body here,
+# not just the first 80 lines of a confirmed forward — extra context means
+# extra false-positive risk. Requires a plausible-looking address to accept.
+_CHAIN_FROM_LINE = re.compile(r"^\s*(?:>+\s*)?From\s*:\s*(?P<rest>.+?)\s*$", re.IGNORECASE)
+_CHAIN_NAME_EMAIL = re.compile(r"^(?P<name>.+?)\s*<(?P<email>[^>]+)>\s*$")
+_CHAIN_BARE_ADDR = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+# Lines starting with these markers (after any leading '>' quote chars) begin
+# a signature block — stop scanning there so we don't collect signature
+# blurbs or sent-from-my-phone trailers as fake "senders".
+_SIGNATURE_MARKERS = (
+    "-- ",           # RFC 3676 standard signature separator
+    "--\n",          # Bare "--" on its own line
+    "sent from my",  # iPhone/Android auto-sig
+    "get outlook for",
+    "confidentiality notice",
+    "this email and any",
+)
+
+
+def _normalize_chain_entry(name: str | None, email_addr: str | None) -> dict | None:
+    """Normalize a (name, email) pair for deduplication and storage."""
+    normalized_email = (email_addr or "").strip().lower() or None
+    normalized_name = (name or "").strip().strip('"').strip("'") or None
+    if not normalized_email and not normalized_name:
+        return None
+    return {"name": normalized_name, "email": normalized_email}
+
+
+def _chain_entry_key(entry: dict) -> tuple:
+    """Case-insensitive identity used for deduping chain entries."""
+    return (
+        (entry.get("name") or "").lower(),
+        (entry.get("email") or "").lower(),
+    )
+
+
+def _scan_body_for_chain_from_lines(body: str) -> list[dict]:
+    """Find every parseable `From: ...` line in the body, skipping signatures."""
+    if not body:
+        return []
+    results: list[dict] = []
+    for raw_line in body.splitlines():
+        line_lower = raw_line.strip().lower()
+        # Strip leading quote markers before checking signature — quoted
+        # "Sent from my iPhone" still begins a signature block.
+        stripped = raw_line.lstrip("> ").lower()
+        if any(stripped.startswith(marker) for marker in _SIGNATURE_MARKERS):
+            break
+        if line_lower == "--":
+            break
+        match = _CHAIN_FROM_LINE.match(raw_line)
+        if not match:
+            continue
+        rest = match.group("rest").strip()
+        angle = _CHAIN_NAME_EMAIL.match(rest)
+        name: str | None = None
+        email_addr: str | None = None
+        if angle:
+            candidate = angle.group("email").strip()
+            if _CHAIN_BARE_ADDR.fullmatch(candidate):
+                email_addr = candidate
+                name = angle.group("name")
+        if email_addr is None:
+            addr_match = _CHAIN_BARE_ADDR.search(rest)
+            if addr_match:
+                email_addr = addr_match.group(0)
+                before = rest[: addr_match.start()].strip()
+                name = before or None
+            else:
+                # Name-only "From: Jane Doe" — keep it, the reviewer may
+                # still recognize the name even without an address.
+                name = rest or None
+        entry = _normalize_chain_entry(name, email_addr)
+        if entry is not None:
+            results.append(entry)
+    return results
+
+
+def _scan_nested_rfc822_for_chain(msg) -> list[dict]:
+    """
+    Collect `From:` from every embedded message/rfc822 part.
+
+    Gmail and Outlook often include the forwarded message as a structured
+    MIME part rather than inline body text — when they do, this is the
+    most reliable source of chain senders.
+    """
+    results: list[dict] = []
+    try:
+        parts = list(msg.walk())
+    except Exception:
+        return results
+    for part in parts:
+        try:
+            if part.get_content_type() != "message/rfc822":
+                continue
+            nested = part.get_payload()
+            if isinstance(nested, list):
+                nested = nested[0] if nested else None
+            if nested is None:
+                continue
+            raw_from = _decode_str(nested.get("From", ""))
+            if not raw_from:
+                continue
+            name, email_addr = _parse_address(raw_from)
+            entry = _normalize_chain_entry(name, email_addr)
+            if entry is not None:
+                results.append(entry)
+        except Exception:  # pragma: no cover — defensive only
+            continue
+    return results
+
+
+def _is_pure_reply_chain(subject: str, body: str, has_nested_rfc822: bool) -> bool:
+    """
+    A pure reply chain (Re: threads, no forward markers, no nested RFC822)
+    is noise for our purpose — the "senders" in the chain are just the
+    same two people bouncing a thread back and forth. Skip extraction.
+    """
+    if has_nested_rfc822:
+        return False
+    if _body_has_forward_marker(body):
+        return False
+    if _subject_looks_forwarded(subject):
+        return False
+    # If no forward signal at all, but subject looks like a reply, treat
+    # as pure reply. If subject is neither reply nor forward, we still
+    # scan — sometimes real forwards omit the Fwd: prefix.
+    s = (subject or "").strip().lower()
+    return s.startswith("re:")
+
+
+def _extract_chain_senders(msg, subject: str, body: str) -> list[dict]:
+    """
+    Extract every distinct (name, email) pair we can find in the forward
+    chain: nested message/rfc822 parts, plus body-quoted 'From:' lines.
+
+    Returns at most _CHAIN_SENDERS_CAP entries, deduped case-insensitively
+    on (name, email). Returns [] for pure reply chains.
+    """
+    nested = _scan_nested_rfc822_for_chain(msg)
+    has_nested = bool(nested)
+    if _is_pure_reply_chain(subject, body, has_nested):
+        return []
+    body_results = _scan_body_for_chain_from_lines(body)
+
+    seen: set[tuple] = set()
+    merged: list[dict] = []
+    # Nested RFC822 senders come first — they're the most reliable signal.
+    for entry in nested + body_results:
+        key = _chain_entry_key(entry)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(entry)
+        if len(merged) >= _CHAIN_SENDERS_CAP:
+            break
+    return merged
 
 
 def _fallback_message_id(msg, body: str) -> str:
@@ -324,6 +500,8 @@ def parse_email(raw_bytes: bytes) -> ParsedEmail:
         if maybe_email:
             forwarded_from_name, forwarded_from_email = maybe_name, maybe_email
 
+    chain_senders = tuple(_extract_chain_senders(msg, subject, body_text))
+
     return ParsedEmail(
         message_id=message_id,
         subject=subject,
@@ -338,6 +516,7 @@ def parse_email(raw_bytes: bytes) -> ParsedEmail:
         attachments=attachments,
         forwarded_from_email=forwarded_from_email,
         forwarded_from_name=forwarded_from_name,
+        chain_senders=chain_senders,
     )
 
 

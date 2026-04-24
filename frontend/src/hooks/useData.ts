@@ -858,6 +858,22 @@ export const useUpdateIngestionTimesheetData = () => {
   });
 };
 
+export const useAssignChainCandidate = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: {
+      id: number;
+      data: { name?: string | null; email?: string | null };
+    }) => ingestionAPI.assignChainCandidate(id, data).then((res) => res.data),
+    onSuccess: (_, { id }) => {
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheet', id] });
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
+      // User list may have grown — refresh employee dropdowns.
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+    },
+  });
+};
+
 export const useAddIngestionLineItem = () => {
   const queryClient = useQueryClient();
   return useMutation({

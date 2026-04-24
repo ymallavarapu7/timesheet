@@ -122,10 +122,12 @@ async def test_ingestion_timesheet_persists_without_match_suggestions(
     db_session: AsyncSession,
 ):
     """
-    The IngestionTimesheet construction at the end of
-    _process_timesheet_attachment no longer passes `llm_match_suggestions`.
-    Confirm the column is nullable and defaults to NULL when omitted, so the
-    fix doesn't rely on an implicit default that could later be tightened.
+    The `llm_match_suggestions` column must remain nullable so that
+    IngestionTimesheet rows created without chain-candidate data persist
+    cleanly with NULL. The original bug fix removed an undefined
+    `match_suggestions` reference; this test confirms the column still
+    works unset, which is the default path when a row isn't a forward
+    chain that needs reviewer disambiguation.
     """
     tenant = Tenant(
         name="Tenant M",

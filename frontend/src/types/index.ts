@@ -518,6 +518,18 @@ export interface StoredEmailDetail {
   attachments: EmailAttachmentSummary[];
 }
 
+// One entry pulled from the forward chain of an ingested email, surfaced
+// when no single existing user can be auto-assigned. Reviewer picks one
+// (optionally supplying an email if the chain entry only carried a name)
+// and the backend either binds to the existing user or creates a new one
+// using the candidate's own email — never the outer mailbox's address.
+export interface ChainCandidate {
+  name: string | null;
+  email: string | null;
+  existing_user_id: number | null;
+  matches_extracted_name: boolean;
+}
+
 export interface IngestionLineItem {
   id: number;
   work_date: string;
@@ -587,6 +599,12 @@ export interface IngestionTimesheetDetail {
   corrected_data: Record<string, unknown> | null;
   llm_anomalies: Array<Record<string, unknown>> | null;
   llm_match_suggestions: Record<string, unknown> | null;
+  // Shape when chain candidates are present:
+  //   llm_match_suggestions = { chain_candidates: ChainCandidate[] }
+  // Populated by the ingestion pipeline when a forwarded email's chain
+  // contains names that don't uniquely match an existing user. The review
+  // panel renders these as chips so the reviewer can bind the timesheet
+  // to a known user or create a new one with the candidate's own email.
   llm_summary: string | null;
   rejection_reason: string | null;
   internal_notes: string | null;
