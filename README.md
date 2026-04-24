@@ -2,7 +2,7 @@
 
 Modern time tracking and approvals for IT consulting teams.
 
-Acufy Timesheet replaces spreadsheet chaos with a clean, AI-assisted workflow —
+Acufy Timesheet replaces spreadsheet chaos with a clean, AI-assisted workflow -
 from weekly submissions through multi-level approval. Forwarded emails turn
 into reviewable timesheets automatically, approvers see only what they need,
 and admins get rollups without chasing people.
