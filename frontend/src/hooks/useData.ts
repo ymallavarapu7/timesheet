@@ -1,7 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '@/api/client';
 import type { HistoryGroup, SettingValue } from '@/api/endpoints';
-import type { IssuedLicense, LicenseIssuePayload, LicenseIssueResponse } from '@/types';
 import {
   timeentriesAPI,
   approvalsAPI,
@@ -560,40 +559,6 @@ export const useMyPermissions = () => {
         .get<{ permissions: string[] }>('/users/me/permissions')
         .then((res) => res.data.permissions),
     staleTime: 30_000,
-  });
-};
-
-export const useIssueLicense = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (data: LicenseIssuePayload) =>
-      apiClient
-        .post<LicenseIssueResponse>('/api/licensing/issue', data)
-        .then((res) => res.data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['licenses'] });
-    },
-  });
-};
-
-export const useListLicenses = () => {
-  return useQuery({
-    queryKey: ['licenses'],
-    queryFn: () =>
-      apiClient.get<IssuedLicense[]>('/api/licensing/list').then((res) => res.data),
-  });
-};
-
-export const useRevokeLicense = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ jti, immediate }: { jti: string; immediate: boolean }) =>
-      apiClient
-        .post(`/api/licensing/revoke/${jti}`, null, { params: { immediate } })
-        .then((res) => res.data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['licenses'] });
-    },
   });
 };
 

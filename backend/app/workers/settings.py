@@ -17,7 +17,6 @@ except ModuleNotFoundError:
 
 from app.core.config import settings
 from app.workers.email_fetch import fetch_emails_for_tenant, scheduled_fetch_emails
-from app.workers.license_verify_worker import reverify_license
 from app.workers.reminder_worker import check_and_send_reminders
 
 try:
@@ -67,7 +66,6 @@ class WorkerSettings:
         fetch_emails_for_tenant,
         check_and_send_reminders,
         scheduled_fetch_emails,
-        reverify_license,
     ]
     redis_settings = get_redis_settings()
     job_timeout = settings.worker_job_timeout
@@ -78,5 +76,4 @@ class WorkerSettings:
     cron_jobs = [
         cron(check_and_send_reminders, minute=_cron_minutes),
         cron(scheduled_fetch_emails, minute=_cron_minutes),
-        cron(reverify_license, hour=0, minute=0),
     ]

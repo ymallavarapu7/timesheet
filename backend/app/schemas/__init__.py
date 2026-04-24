@@ -612,10 +612,6 @@ class TenantUpdate(BaseModel):
     # to UTC." Empty string is treated as clearing the value — the endpoint
     # already passes through via ``model_dump(exclude_unset=True)``.
     timezone: Optional[str] = Field(None, max_length=64)
-    deployment_type: Optional[str] = Field(None, max_length=20)
-    license_expiry_behavior: Optional[str] = Field(None, max_length=20)
-    license_jti: Optional[str] = Field(None, max_length=64)
-    license_grace_until: Optional[datetime] = None
 
 
 class TenantResponse(BaseModel):
@@ -626,10 +622,6 @@ class TenantResponse(BaseModel):
     ingestion_enabled: bool = False
     max_mailboxes: Optional[int] = None
     timezone: Optional[str] = None
-    deployment_type: str = "saas"
-    license_expiry_behavior: str = "read_only"
-    license_jti: Optional[str] = None
-    license_grace_until: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 

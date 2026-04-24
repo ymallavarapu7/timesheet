@@ -1,9 +1,7 @@
 import enum
 from typing import Optional
 
-from datetime import datetime
-
-from sqlalchemy import Boolean, DateTime, Enum as SAEnum, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Enum as SAEnum, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampMixin
@@ -39,21 +37,6 @@ class Tenant(Base, TimestampMixin):
     # for deadline calculations and notifications. See app.core.timezone_utils.
     timezone: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True, default=None
-    )
-    deployment_type: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="saas", server_default="saas"
-    )
-    license_expiry_behavior: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="read_only", server_default="read_only"
-    )
-    license_jti: Mapped[Optional[str]] = mapped_column(
-        String(64),
-        ForeignKey("issued_licenses.jti", ondelete="SET NULL"),
-        nullable=True,
-    )
-    license_grace_until: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
     )
 
     # Back-populated from each tenant-scoped model

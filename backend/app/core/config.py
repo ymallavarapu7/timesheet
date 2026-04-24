@@ -57,15 +57,6 @@ ENV_FIELD_MAP = {
     "email_fetch_start_time": "EMAIL_FETCH_START_TIME",
     "email_fetch_end_time": "EMAIL_FETCH_END_TIME",
     "email_fetch_initial_days": "EMAIL_FETCH_INITIAL_DAYS",
-    "DEPLOYMENT_MODE": "DEPLOYMENT_MODE",
-    "LICENSE_KEY": "LICENSE_KEY",
-    "LICENSE_API_URL": "LICENSE_API_URL",
-    "LICENSE_PHONE_HOME_INTERVAL_HOURS": "LICENSE_PHONE_HOME_INTERVAL_HOURS",
-    "LICENSE_GRACE_PERIOD_DAYS": "LICENSE_GRACE_PERIOD_DAYS",
-    "LICENSE_SIGNING_KEY_PEM": "LICENSE_SIGNING_KEY_PEM",
-    "LICENSE_PUBLIC_KEY_PEM": "LICENSE_PUBLIC_KEY_PEM",
-    "LICENSE_SERVER_HASH_SALT": "LICENSE_SERVER_HASH_SALT",
-    "LICENSE_VALIDATE_TOKEN": "LICENSE_VALIDATE_TOKEN",
 }
 
 
@@ -327,44 +318,6 @@ class Settings(BaseModel):
     email_fetch_initial_days: int = Field(
         default=30,
         description="On first fetch (no cursor), only fetch emails from this many days back."
-    )
-
-    # Licensing / deployment mode
-    DEPLOYMENT_MODE: str = Field(
-        default="saas",
-        description="Deployment mode: saas or self_hosted."
-    )
-    LICENSE_KEY: str = Field(
-        default="",
-        description="Signed self-hosted license JWT."
-    )
-    LICENSE_API_URL: str = Field(
-        default="https://licenses.yourdomain.com",
-        description="Base URL of the licensing API."
-    )
-    LICENSE_PHONE_HOME_INTERVAL_HOURS: int = Field(
-        default=720,
-        description="How often the worker re-verifies the license with the licensing API."
-    )
-    LICENSE_GRACE_PERIOD_DAYS: int = Field(
-        default=7,
-        description="Grace period after failed online license validation."
-    )
-    LICENSE_SIGNING_KEY_PEM: str = Field(
-        default="",
-        description="PEM-encoded RSA private key used only by the issuing server."
-    )
-    LICENSE_PUBLIC_KEY_PEM: str = Field(
-        default="",
-        description="PEM-encoded RSA public key used by all deployments for local validation."
-    )
-    LICENSE_SERVER_HASH_SALT: str = Field(
-        default="",
-        description="Secret salt used when computing the license server hash."
-    )
-    LICENSE_VALIDATE_TOKEN: str = Field(
-        default="",
-        description="Optional shared secret fallback for the validate endpoint."
     )
 
     @classmethod

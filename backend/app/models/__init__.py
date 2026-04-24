@@ -25,11 +25,10 @@ from .setting_definition import SettingDefinition
 from .permission import Permission
 from .role import Role, RolePermission
 from .role_assignment import RoleAssignment
-from .issued_license import IssuedLicense
 
 __all__ = ["Tenant", "User", "Client", "Project", "Task", "TimeEntry",
            "TimeOffRequest", "EmployeeManagerAssignment", "UserProjectAccess", "UserNotificationState", "UserNotificationDismissal", "TimeEntryEditHistory",
            "SyncLog", "SyncDirection", "SyncEntityType", "SyncStatus", "ServiceToken", "ActivityLog",
            "Mailbox", "IngestedEmail", "EmailAttachment", "IngestionTimesheet",
            "IngestionTimesheetLineItem", "IngestionAuditLog", "RefreshToken", "Department", "LeaveType",
-           "SettingDefinition", "Permission", "Role", "RolePermission", "RoleAssignment", "IssuedLicense"]
+           "SettingDefinition", "Permission", "Role", "RolePermission", "RoleAssignment"]

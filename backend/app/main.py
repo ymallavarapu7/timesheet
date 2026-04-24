@@ -16,7 +16,6 @@ from app.api import (
     dashboard,
     departments,
     ingestion,
-    licensing,
     leave_types,
     mailboxes,
     notifications,
@@ -53,7 +52,6 @@ async def lifespan(app: FastAPI):
     # Startup
     await init_db()
     print("[OK] Database initialized")
-    await initialize_license_state()
     yield
     # Shutdown
     await close_db()
@@ -83,54 +81,8 @@ app.add_middleware(
         "Content-Type",
         "X-Service-Token",
         "X-Tenant-ID",
-        "X-License-Validate-Token",
     ],
 )
-
-
-async def initialize_license_state() -> None:
-    if settings.DEPLOYMENT_MODE != "self_hosted":
-        return
-
-    from app.core.licensing.state import persist_license_state, set_license_state
-    from app.core.licensing.validator import (
-        LicenseState,
-        LicenseStatus,
-        get_license_key,
-        local_validate,
-        online_validate,
-    )
-
-    key = get_license_key()
-    if not key:
-        logger.error(
-            "SELF_HOSTED mode requires a LICENSE_KEY. "
-            "Set the LICENSE_KEY environment variable."
-        )
-        state = LicenseState(
-            status=LicenseStatus.MISSING,
-            message="LICENSE_KEY not configured",
-        )
-        set_license_state(state)
-        await persist_license_state(state)
-        return
-
-    local_state = local_validate(key)
-    if local_state.status == LicenseStatus.INVALID:
-        logger.error("License local validation failed: %s", local_state.message)
-        set_license_state(local_state)
-        await persist_license_state(local_state)
-        return
-
-    full_state = await online_validate(key, local_state)
-    set_license_state(full_state)
-    await persist_license_state(full_state)
-    logger.info(
-        "License validated: status=%s tier=%s features=%s",
-        full_state.status,
-        full_state.tier,
-        full_state.features,
-    )
 
 
 @app.middleware("http")
@@ -143,47 +95,6 @@ async def add_security_headers(request: Request, call_next):
     if not settings.debug:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
-
-
-@app.middleware("http")
-async def license_enforcement_middleware(request: Request, call_next):
-    from app.core.licensing.state import get_license_expiry_behavior, get_license_state, is_saas_mode
-    from app.core.licensing.validator import LicenseStatus
-
-    if is_saas_mode():
-        return await call_next(request)
-
-    path = request.url.path
-    if path.startswith("/auth/"):
-        return await call_next(request)
-
-    state = get_license_state()
-    if state.status in {LicenseStatus.MISSING, LicenseStatus.INVALID}:
-        return Response(
-            content='{"detail":"License validation failed. Contact support."}',
-            status_code=503,
-            media_type="application/json",
-        )
-
-    if state.status == LicenseStatus.GRACE:
-        return await call_next(request)
-
-    if state.status == LicenseStatus.EXPIRED:
-        expiry_behavior = await get_license_expiry_behavior()
-        if expiry_behavior == "full_lockout":
-            return Response(
-                content='{"detail":"System is unavailable until the license is renewed."}',
-                status_code=503,
-                media_type="application/json",
-            )
-        if request.method not in ("GET", "HEAD", "OPTIONS"):
-            return Response(
-                content='{"detail":"System is in read-only mode. License renewal required."}',
-                status_code=503,
-                media_type="application/json",
-            )
-
-    return await call_next(request)
 
 
 @app.middleware("http")
@@ -234,7 +145,6 @@ app.include_router(dashboard.router)
 app.include_router(notifications.router)
 app.include_router(tenants.router)
 app.include_router(platform_settings.router)
-app.include_router(licensing.router)
 app.include_router(sync.router)
 app.include_router(mailboxes.router, prefix="/api")
 app.include_router(mailboxes.oauth_router)
