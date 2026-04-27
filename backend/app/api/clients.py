@@ -1,11 +1,21 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query
-from pydantic import BaseModel as PydanticBaseModel
+from pydantic import BaseModel as PydanticBaseModel, Field
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.schemas import ClientResponse, ClientCreate, ClientUpdate
 from app.crud.client import get_client_by_id, create_client, update_client, delete_client, list_clients
 from app.core.deps import get_current_user, require_role
+from app.models.client import Client
+from app.models.client_email_domain import ClientEmailDomain
+from app.models.ingested_email import IngestedEmail
+from app.models.ingestion_timesheet import IngestionTimesheet, IngestionTimesheetStatus
 from app.models.user import User
+from app.services.ingestion_pipeline import (
+    PERSONAL_EMAIL_DOMAINS,
+    _domain_of,
+    is_personal_email_domain,
+)
 from app.services.ingestion_sync import _send_outbound_webhook
 from app.services.activity import (
     TENANT_ADMIN_ACTIVITY_SCOPE,
@@ -83,6 +93,204 @@ async def create_new_client(
             ],
         )
     return new_client
+
+
+class CreateClientFromDomainRequest(PydanticBaseModel):
+    """Body for POST /clients/from-domain.
+
+    The reviewer typed a name in the inline-popover and confirmed; the
+    backend creates the client, registers the domain mapping, and cascades
+    the assignment to every pending ingestion timesheet from that domain
+    in the tenant's queue.
+    """
+    name: str = Field(min_length=1, max_length=255, description="Client display name.")
+    domain: str = Field(min_length=3, max_length=255, description="Email domain (e.g. 'dxc.com').")
+
+
+class CreateClientFromDomainResponse(PydanticBaseModel):
+    client: ClientResponse
+    domain: str
+    cascaded_count: int = Field(
+        description="Number of pending ingestion timesheets that had their client_id set as a side-effect."
+    )
+
+
+def _email_domains_for_ingestion_timesheet(ts: IngestionTimesheet, email: IngestedEmail) -> set[str]:
+    """All domains we'd consider for client resolution on a single timesheet.
+
+    Mirrors the precedence used by the live resolver (forwarded-from →
+    body emails → outer sender), but without the LLM-extracted name path
+    since the cascade is strictly domain-based.
+    """
+    candidates: list[str] = []
+    if email.forwarded_from_email:
+        candidates.append(email.forwarded_from_email)
+    if email.sender_email:
+        candidates.append(email.sender_email)
+    extracted = ts.extracted_data or {}
+    body_emails = extracted.get("contact_emails") or []
+    if isinstance(body_emails, list):
+        candidates.extend(str(e) for e in body_emails if e)
+    chain = email.chain_senders or []
+    if isinstance(chain, list):
+        for entry in chain:
+            if isinstance(entry, dict) and entry.get("email"):
+                candidates.append(str(entry["email"]))
+    return {_domain_of(c) for c in candidates if c} - {""}
+
+
+@router.post(
+    "/from-domain",
+    response_model=CreateClientFromDomainResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_client_from_domain(
+    body: CreateClientFromDomainRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+) -> dict:
+    """
+    Create a client whose email domain is registered, then cascade the
+    assignment to every pending ingestion timesheet in the tenant's queue
+    whose sender/forwarded/body email domain matches.
+
+    Refuses personal email domains (gmail, outlook, etc.) — those are never
+    legitimate client identities. Returns 409 with the existing client info
+    if the domain is already mapped, so the frontend can offer a 'link to
+    that client' alternative.
+    """
+    if current_user.tenant_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="PLATFORM_ADMIN must operate within a tenant context for this action.",
+        )
+    tenant_id = current_user.tenant_id
+
+    name = body.name.strip()
+    domain = body.domain.strip().lower()
+    if "@" in domain:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="domain must be the bare domain (e.g. 'dxc.com'), not an email address.",
+        )
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="name is required.",
+        )
+    if is_personal_email_domain(domain):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"'{domain}' is a personal email provider and cannot be mapped to a client. "
+                "Pick an existing client manually for emails from this domain."
+            ),
+        )
+
+    # Reject if domain is already mapped in this tenant — return existing
+    # client info so the UI can offer 'link to it instead'.
+    existing_q = await db.execute(
+        select(ClientEmailDomain.client_id, Client.name)
+        .join(Client, Client.id == ClientEmailDomain.client_id)
+        .where(
+            (ClientEmailDomain.tenant_id == tenant_id)
+            & (ClientEmailDomain.domain == domain)
+        )
+    )
+    existing_row = existing_q.first()
+    if existing_row is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "domain_already_mapped",
+                "message": f"Domain '{domain}' is already mapped to client '{existing_row.name}'.",
+                "existing_client_id": existing_row.client_id,
+                "existing_client_name": existing_row.name,
+            },
+        )
+
+    # Create the Client + domain mapping in one transaction. Inlined
+    # rather than calling crud.create_client because that helper commits
+    # eagerly, which would leave a Client row orphaned if the cascade
+    # below failed.
+    new_client = Client(name=name, tenant_id=tenant_id)
+    db.add(new_client)
+    try:
+        await db.flush()  # populates new_client.id without committing
+    except Exception as exc:
+        await db.rollback()
+        # Most likely a duplicate name — the unique constraint
+        # (tenant_id, name) on Client surfaces here.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A client named '{name}' already exists in this tenant.",
+        ) from exc
+
+    # Register the domain mapping.
+    db.add(ClientEmailDomain(
+        tenant_id=tenant_id,
+        client_id=new_client.id,
+        domain=domain,
+    ))
+
+    # Cascade: find pending ingestion timesheets in this tenant with
+    # client_id IS NULL whose linked email's domain matches, and assign
+    # the new client. Done in Python because the candidate domain may
+    # come from JSON fields (extracted_data.contact_emails, chain_senders).
+    pending_q = await db.execute(
+        select(IngestionTimesheet, IngestedEmail)
+        .join(IngestedEmail, IngestedEmail.id == IngestionTimesheet.email_id)
+        .where(
+            (IngestionTimesheet.tenant_id == tenant_id)
+            & (IngestionTimesheet.client_id.is_(None))
+            & (IngestionTimesheet.status == IngestionTimesheetStatus.pending)
+        )
+    )
+    matched_ids: list[int] = []
+    for ts, email in pending_q.all():
+        if domain in _email_domains_for_ingestion_timesheet(ts, email):
+            matched_ids.append(ts.id)
+
+    if matched_ids:
+        await db.execute(
+            update(IngestionTimesheet)
+            .where(IngestionTimesheet.id.in_(matched_ids))
+            .values(client_id=new_client.id)
+        )
+
+    await record_activity_events(
+        db,
+        [
+            build_activity_event(
+                activity_type="CLIENT_CREATED",
+                visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
+                tenant_id=tenant_id,
+                actor_user=current_user,
+                entity_type="client",
+                entity_id=new_client.id,
+                summary=(
+                    f"{current_user.full_name} created client {new_client.name} "
+                    f"from domain {domain} (cascaded to {len(matched_ids)} pending email"
+                    f"{'' if len(matched_ids) == 1 else 's'})."
+                ),
+                route="/client-management",
+                route_params={"clientId": new_client.id},
+                metadata={
+                    "client_name": new_client.name,
+                    "domain": domain,
+                    "cascaded_count": len(matched_ids),
+                },
+            )
+        ],
+    )
+    await db.commit()
+    await db.refresh(new_client)
+
+    return {
+        "client": new_client,
+        "domain": domain,
+        "cascaded_count": len(matched_ids),
+    }
 
 
 @router.put("/{client_id}", response_model=ClientResponse)

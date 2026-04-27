@@ -1082,25 +1082,78 @@ async def _load_known_employees(session: AsyncSession, tenant_id: int) -> list[d
 
 
 async def _load_known_clients(session: AsyncSession, tenant_id: int) -> list[dict]:
+    """
+    Load tenant clients with their explicit email-domain mappings.
+
+    Each client dict includes:
+      - id, name, contact_email (legacy, single domain derived from this)
+      - domains: set[str] of explicitly-mapped domains from the
+        client_email_domains join table.
+
+    The resolver prefers explicit domains. Clients with no explicit domains
+    fall back to contact_email's domain so existing tenants keep working
+    without any data migration.
+    """
+    from app.models.client_email_domain import ClientEmailDomain
+
     result = await session.execute(
         select(Client.id, Client.name, Client.contact_email).where(
             Client.tenant_id == tenant_id
         )
     )
-    return [
+    clients = [
         {
             "id": row.id,
             "name": row.name,
             "contact_email": (row.contact_email or "").strip().lower(),
+            "domains": set(),
         }
         for row in result
     ]
+    if not clients:
+        return clients
+
+    by_id = {c["id"]: c for c in clients}
+    domain_rows = await session.execute(
+        select(ClientEmailDomain.client_id, ClientEmailDomain.domain).where(
+            ClientEmailDomain.tenant_id == tenant_id
+        )
+    )
+    for cid, dom in domain_rows:
+        client = by_id.get(cid)
+        if client and dom:
+            client["domains"].add(dom.strip().lower())
+    return clients
 
 
 def _domain_of(email: str | None) -> str:
     if not email or "@" not in email:
         return ""
     return email.split("@", 1)[1].strip().lower()
+
+
+# Domains that must never auto-create or be linked to a Client. These are
+# personal/free webmail providers; in a B2B staffing-firm context, an email
+# from one of these is almost always a forwarder or a personal address rather
+# than a client-owned domain.
+PERSONAL_EMAIL_DOMAINS: frozenset[str] = frozenset({
+    "gmail.com",
+    "outlook.com",
+    "hotmail.com",
+    "yahoo.com",
+    "icloud.com",
+    "aol.com",
+    "live.com",
+    "msn.com",
+    "proton.me",
+    "protonmail.com",
+})
+
+
+def is_personal_email_domain(domain: str | None) -> bool:
+    if not domain:
+        return False
+    return domain.strip().lower() in PERSONAL_EMAIL_DOMAINS
 
 
 def _resolve_client_id(
@@ -1147,16 +1200,28 @@ def _resolve_client_id(
 
 
 def _client_id_for_domain(domain: str, clients: list[dict]) -> int | None:
-    """Look up a client whose contact_email domain matches. If multiple clients
-    share the same domain (e.g. two Toyota entities), return the one with the
-    smallest id as the deterministic 'default' — reviewer overrides if wrong."""
+    """Look up the client owning a given email domain.
+
+    Precedence:
+      1. Explicit mapping in client_email_domains (the `domains` set).
+      2. Legacy: contact_email's domain (back-compat for tenants who
+         haven't migrated to the explicit table yet).
+
+    If multiple clients claim the same domain (rare — e.g. two Toyota
+    entities), return the one with the smallest id as a deterministic
+    default and let the reviewer override.
+    """
     if not domain:
         return None
-    matches = [c for c in clients if _domain_of(c.get("contact_email")) == domain]
-    if not matches:
-        return None
-    matches.sort(key=lambda c: c["id"])
-    return matches[0]["id"]
+    explicit = [c for c in clients if domain in c.get("domains", set())]
+    if explicit:
+        explicit.sort(key=lambda c: c["id"])
+        return explicit[0]["id"]
+    legacy = [c for c in clients if _domain_of(c.get("contact_email")) == domain]
+    if legacy:
+        legacy.sort(key=lambda c: c["id"])
+        return legacy[0]["id"]
+    return None
 
 
 def _extract_emails_from_text(text: str | None) -> list[str]:

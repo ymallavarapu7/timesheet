@@ -32,6 +32,9 @@ class Client(Base, TimestampMixin):
     tenant: Mapped["Tenant"] = relationship("Tenant", back_populates="clients")
     projects: Mapped[List["Project"]] = relationship(
         "Project", back_populates="client", cascade="all, delete-orphan")
+    email_domains: Mapped[List["ClientEmailDomain"]] = relationship(
+        "ClientEmailDomain", back_populates="client", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<Client(id={self.id}, name={self.name})>"

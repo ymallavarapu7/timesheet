@@ -1,6 +1,7 @@
 from .tenant import Tenant
 from .user import User
 from .client import Client
+from .client_email_domain import ClientEmailDomain
 from .project import Project
 from .task import Task
 from .time_entry import TimeEntry, TimeEntryEditHistory
@@ -26,7 +27,7 @@ from .permission import Permission
 from .role import Role, RolePermission
 from .role_assignment import RoleAssignment
 
-__all__ = ["Tenant", "User", "Client", "Project", "Task", "TimeEntry",
+__all__ = ["Tenant", "User", "Client", "ClientEmailDomain", "Project", "Task", "TimeEntry",
            "TimeOffRequest", "EmployeeManagerAssignment", "UserProjectAccess", "UserNotificationState", "UserNotificationDismissal", "TimeEntryEditHistory",
            "SyncLog", "SyncDirection", "SyncEntityType", "SyncStatus", "ServiceToken", "ActivityLog",
            "Mailbox", "IngestedEmail", "EmailAttachment", "IngestionTimesheet",
