@@ -777,15 +777,30 @@ export const ReviewPanelPage: React.FC = () => {
         {timesheet
           ? <Badge tone={timesheet.status === 'approved' ? 'success' : timesheet.status === 'rejected' ? 'danger' : 'info'}>{timesheet.status}</Badge>
           : <Badge tone="warning">{renderReason(storedEmail?.skip_reason)}</Badge>}
-        {timesheet?.extracted_data?.extraction_confidence != null && (
-          <span className={`text-xs px-2 py-0.5 rounded ${
-            Number(timesheet.extracted_data.extraction_confidence) >= 0.8 ? 'bg-emerald-50 text-emerald-700' :
-            Number(timesheet.extracted_data.extraction_confidence) >= 0.5 ? 'bg-amber-50 text-amber-700' :
-            'bg-red-50 text-red-700'
-          }`}>
-            AI Confidence: {(Number(timesheet.extracted_data.extraction_confidence) * 100).toFixed(0)}%
-          </span>
-        )}
+        {timesheet?.extracted_data?.extraction_confidence != null && (() => {
+          const score = Number(timesheet.extracted_data.extraction_confidence);
+          const uncertain = Array.isArray(timesheet.extracted_data.uncertain_fields)
+            ? timesheet.extracted_data.uncertain_fields
+            : [];
+          const hasUncertain = uncertain.length > 0;
+          const tone = hasUncertain
+            ? 'bg-amber-50 text-amber-700'
+            : score >= 0.8 ? 'bg-emerald-50 text-emerald-700'
+            : score >= 0.5 ? 'bg-amber-50 text-amber-700'
+            : 'bg-red-50 text-red-700';
+          const tooltip = hasUncertain
+            ? `Model self-rated. Uncertain fields: ${uncertain.join(', ')}. Verify before approving.`
+            : 'Model self-rated extraction certainty — not a calibrated probability. Always verify the extracted fields against the source document.';
+          return (
+            <span
+              className={`text-xs px-2 py-0.5 rounded ${tone}`}
+              title={tooltip}
+            >
+              AI self-rated: {(score * 100).toFixed(0)}%
+              {hasUncertain && ` · ${uncertain.length} uncertain`}
+            </span>
+          );
+        })()}
         {isReprocessing && (
           <div className="flex items-center gap-2">
             <RefreshCw className="h-3.5 w-3.5 animate-spin text-primary" />

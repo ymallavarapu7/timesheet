@@ -6,7 +6,7 @@ import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from time import perf_counter, time
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel as PydanticBaseModel
@@ -130,8 +130,24 @@ def _oauth_mailbox_defaults(provider: OAuthProvider) -> dict:
     }
 
 
+def _resolve_oauth_postmessage_origin() -> str:
+    for candidate in settings.cors_origins:
+        if not candidate:
+            continue
+        try:
+            parsed = urlparse(candidate)
+        except ValueError:
+            continue
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+    raise RuntimeError(
+        "OAuth popup cannot post back: CORS_ORIGINS is empty or contains no valid http(s) origin. "
+        "Configure CORS_ORIGINS with the frontend URL(s) before initiating OAuth flows."
+    )
+
+
 def _oauth_popup_response(status_value: str, message: str, mailbox_id: int | None = None) -> HTMLResponse:
-    frontend_origin = settings.cors_origins[0] if settings.cors_origins else "*"
+    frontend_origin = _resolve_oauth_postmessage_origin()
     payload = {
         "type": "mailbox-oauth",
         "status": status_value,

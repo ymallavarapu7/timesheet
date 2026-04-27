@@ -692,12 +692,22 @@ async def _process_timesheet_attachment(
         if email_record and email_record.received_at
         else None
     )
-    extraction = await extract_text(
-        content=attachment.content,
-        filename=attachment.filename,
-        mime_type=attachment.mime_type,
-        reference_date=ref_date,
-    )
+    try:
+        extraction = await extract_text(
+            content=attachment.content,
+            filename=attachment.filename,
+            mime_type=attachment.mime_type,
+            reference_date=ref_date,
+        )
+    except Exception as exc:
+        logger.exception(
+            "extract_text crashed for attachment %s (%s); marking failed",
+            attachment.filename, attachment_record.id,
+        )
+        attachment_record.extraction_status = ExtractionStatus.failed
+        attachment_record.extraction_error = f"{type(exc).__name__}: {exc}"
+        attachment_record.extraction_method = None
+        return 0
     attachment_record.raw_extracted_text = extraction.text
     attachment_record.spreadsheet_preview = extraction.spreadsheet_preview
     attachment_record.rendered_html = extraction.rendered_html
@@ -865,47 +875,37 @@ async def _process_timesheet_attachment(
                     employee_id,
                 )
 
-        # ── Client resolution (precedence) ─────────────────────────────────
-        # 1. User's default_client_id (if employee is resolved and pinned).
-        # 2. LLM-extracted client name → match to existing (no auto-create).
-        # 3. Email address in document body → domain → client.contact_email.
-        # 4. Outer sender email's domain → client.contact_email.
-        # 5. Leave None — reviewer picks.
-        client_id: int | None = None
+        # ── Client resolution ──────────────────────────────────────────────
+        # Optimized for the staffing-firm tenant model: the firm (e.g. Acuent)
+        # places consultants at clients (e.g. DXC), and the consultant's work
+        # email domain identifies which client they're embedded at. Project
+        # codes inside the document (e.g. "wmACoE-Aegon-L3-Revitalize") are
+        # downstream-customer / program metadata, not client identity, so the
+        # LLM-extracted client_name is the last-resort signal. See
+        # _resolve_client_id for the full precedence.
+        employee_default_client_id: int | None = None
         if employee_id is not None:
             for emp in employees:
                 if emp["id"] == employee_id and emp.get("default_client_id"):
-                    client_id = emp["default_client_id"]
+                    employee_default_client_id = emp["default_client_id"]
                     break
 
-        if client_id is None:
-            extracted_client_name = (
+        body_emails_raw = extracted_data.get("contact_emails") or []
+        body_emails_list = (
+            [str(e) for e in body_emails_raw if e]
+            if isinstance(body_emails_raw, list) else []
+        )
+
+        client_id = _resolve_client_id(
+            employee_default_client_id=employee_default_client_id,
+            forwarded_from_email=email_record.forwarded_from_email,
+            body_emails=body_emails_list,
+            sender_email=email_record.sender_email,
+            extracted_client_name=(
                 extracted_data.get("client_name") or extracted_data.get("client") or ""
-            )
-            client_id = _find_existing_client_id(extracted_client_name, clients)
-
-        if client_id is None:
-            # Look for email addresses extracted from the document body.
-            body_emails = extracted_data.get("contact_emails") or []
-            if not isinstance(body_emails, list):
-                body_emails = []
-            for candidate_email in body_emails:
-                candidate_domain = _domain_of(str(candidate_email))
-                resolved = _client_id_for_domain(candidate_domain, clients)
-                if resolved is not None:
-                    client_id = resolved
-                    break
-
-        if client_id is None:
-            # Prefer the forwarded-from address when present, since the outer
-            # sender on a forwarded email is the forwarder's domain, not the
-            # contractor's.
-            effective_for_client = (
-                email_record.forwarded_from_email or email_record.sender_email or ""
-            )
-            client_id = _client_id_for_domain(
-                _domain_of(effective_for_client), clients
-            )
+            ),
+            clients=clients,
+        )
 
         # Normalize line items
         line_items_data = _normalize_line_items(
@@ -1101,6 +1101,49 @@ def _domain_of(email: str | None) -> str:
     if not email or "@" not in email:
         return ""
     return email.split("@", 1)[1].strip().lower()
+
+
+def _resolve_client_id(
+    *,
+    employee_default_client_id: int | None,
+    forwarded_from_email: str | None,
+    body_emails: list[str] | None,
+    sender_email: str | None,
+    extracted_client_name: str | None,
+    clients: list[dict],
+) -> int | None:
+    """
+    Apply the staffing-firm client precedence:
+      1. The employee's pinned default client.
+      2. Forwarded-from sender domain (real submitter on a forwarded email).
+      3. Any email domain mentioned in the document body.
+      4. Outer sender domain (direct submissions with no forward chain).
+      5. LLM-extracted client name fuzzy-matched to existing clients.
+    Returns None if nothing matches; the reviewer picks in the UI.
+
+    Pure function — no DB access, no I/O. Domain → client lookup is delegated
+    to the existing _client_id_for_domain helper which already handles the
+    "multiple clients share a domain" tie-break.
+    """
+    if employee_default_client_id is not None:
+        return employee_default_client_id
+
+    if forwarded_from_email:
+        match = _client_id_for_domain(_domain_of(forwarded_from_email), clients)
+        if match is not None:
+            return match
+
+    for candidate in body_emails or []:
+        match = _client_id_for_domain(_domain_of(str(candidate)), clients)
+        if match is not None:
+            return match
+
+    if sender_email:
+        match = _client_id_for_domain(_domain_of(sender_email), clients)
+        if match is not None:
+            return match
+
+    return _find_existing_client_id(extracted_client_name, clients)
 
 
 def _client_id_for_domain(domain: str, clients: list[dict]) -> int | None:

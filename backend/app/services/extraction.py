@@ -104,6 +104,23 @@ def _build_vision_prompt(reference_date: str | None = None) -> str:
         "rather than daily dated entries, do not invent a repeated work_date for "
         "each category row; instead infer the month/period from tokens like 2/26 "
         "and return an empty line_items array. "
+        # ── Hallucination guards ────────────────────────────────────────────
+        "STRICT RULE: Never invent values. If a field is not explicitly visible "
+        "in the image, return null for that field and add the field name to "
+        "uncertain_fields. Do not infer names, clients, or projects from "
+        "context, headers, footers, URLs, or training-data priors — copy them "
+        "verbatim from the document or return null. "
+        "For employee_name specifically: only extract a name that is clearly "
+        "labeled as the timesheet's submitter, owner, employee, or worker "
+        "(common labels include 'Owner', 'Employee', 'Name', 'Submitted by', "
+        "'Resource', 'Consultant'). If the document only contains other names "
+        "(approvers, supervisors, signatories, recipients, mailing addresses, "
+        "URL fragments, system metadata), return null for employee_name and "
+        "list 'employee_name' in uncertain_fields. Never guess. "
+        "Set extraction_confidence to reflect actual visual certainty: use "
+        "values below 0.5 when the document is partially blank, low-quality, "
+        "or missing key fields. Do not return 1.0 unless every requested field "
+        "is unambiguously present in the image. "
         "Return only valid JSON with a top-level field timesheets, where timesheets "
         "is an array of objects with fields: employee_name, client_name, "
         "period_start (YYYY-MM-DD), period_end (YYYY-MM-DD), total_hours (number), "
@@ -605,10 +622,15 @@ async def _rasterize_pdf(content: bytes) -> list[bytes]:
             with open(input_path, "wb") as f:
                 f.write(content)
 
+            # Start pdftoppm in its own process group so we can SIGKILL the
+            # whole tree if it hangs (a malformed PDF can leave pdftoppm itself
+            # blocked in a way that kill(SIGTERM) does not unblock).
+            preexec_fn = os.setsid if hasattr(os, "setsid") else None
             proc = await asyncio.create_subprocess_exec(
                 "pdftoppm", "-png", "-l", str(MAX_PDF_PAGES), input_path, output_prefix,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                preexec_fn=preexec_fn,
             )
             # Wrap in a timeout so a malformed PDF that hangs pdftoppm can't
             # consume the entire arq job_timeout (which would kill a batch
@@ -618,8 +640,23 @@ async def _rasterize_pdf(content: bytes) -> list[bytes]:
             try:
                 await asyncio.wait_for(proc.communicate(), timeout=60.0)
             except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
+                # The subprocess transport can get wedged after communicate()
+                # is cancelled — proc.wait() then blocks forever, taking down
+                # the worker job. Force-kill the process group and bound the
+                # cleanup wait so we always raise RuntimeError on time.
+                try:
+                    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+                        import signal
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    else:
+                        proc.kill()
+                except (ProcessLookupError, PermissionError):
+                    pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)
+                except (asyncio.TimeoutError, Exception):
+                    # Cleanup is best-effort; the OS will reap the zombie.
+                    pass
                 logger.warning("pdftoppm timed out after 60s, falling back to pdf2image")
                 raise RuntimeError("pdftoppm timed out")
 
@@ -640,16 +677,24 @@ async def _rasterize_pdf(content: bytes) -> list[bytes]:
     except Exception:
         pass
 
-    # Fallback to pdf2image
+    # Fallback to pdf2image. Run in a thread with a hard timeout so a malformed
+    # PDF that hangs Poppler internals via pdf2image cannot lock the worker.
     from pdf2image import convert_from_bytes
 
-    pages = convert_from_bytes(content, dpi=200, last_page=MAX_PDF_PAGES)
-    result = []
-    for page in pages:
-        buf = io.BytesIO()
-        page.save(buf, format="PNG")
-        result.append(buf.getvalue())
-    return result
+    def _run_pdf2image() -> list[bytes]:
+        pages = convert_from_bytes(content, dpi=200, last_page=MAX_PDF_PAGES)
+        out: list[bytes] = []
+        for page in pages:
+            buf = io.BytesIO()
+            page.save(buf, format="PNG")
+            out.append(buf.getvalue())
+        return out
+
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_run_pdf2image), timeout=90.0)
+    except asyncio.TimeoutError:
+        logger.warning("pdf2image fallback timed out after 90s; giving up on PDF rasterization")
+        raise RuntimeError("PDF rasterization timed out (both pdftoppm and pdf2image)")
 
 
 # ─── Tesseract OCR ────────────────────────────────────────────────────────────
