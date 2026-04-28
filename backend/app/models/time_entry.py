@@ -83,6 +83,20 @@ class TimeEntry(Base, TimestampMixin):
     ingestion_source_tenant: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
     )
+    # Supervisor carried forward from IngestionTimesheet on approval. Both
+    # are nullable for entries that didn't come through the ingestion path
+    # (manual time entries) and for ingestion entries where no supervisor
+    # was extractable from the source document.
+    supervisor_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # Original LLM-extracted name, preserved verbatim regardless of any
+    # reviewer override on supervisor_user_id. Audit anchor: lets reports
+    # flag mismatches between "what the document said" and "who we mapped
+    # it to" without re-reading the source.
+    supervisor_name_extracted: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
 
     # Relationships
     user: Mapped["User"] = relationship(
@@ -93,6 +107,8 @@ class TimeEntry(Base, TimestampMixin):
         "Task", back_populates="time_entries")
     approved_by_user: Mapped[Optional["User"]] = relationship(
         "User", back_populates="approved_entries", foreign_keys=[approved_by])
+    supervisor: Mapped[Optional["User"]] = relationship(
+        "User", foreign_keys=[supervisor_user_id])
     edit_history: Mapped[list["TimeEntryEditHistory"]] = relationship(
         "TimeEntryEditHistory",
         back_populates="time_entry",

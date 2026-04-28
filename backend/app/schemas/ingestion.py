@@ -178,6 +178,8 @@ class IngestionTimesheetSummary(BaseModel):
     employee_name: str | None
     extracted_employee_name: str | None = None
     extracted_supervisor_name: str | None = None
+    supervisor_user_id: int | None = None
+    supervisor_name: str | None = None
     client_id: int | None
     client_name: str | None
     period_start: date | None
@@ -277,6 +279,8 @@ class IngestionTimesheetDetail(BaseModel):
     time_entries_created: bool
     extracted_employee_name: str | None = None
     extracted_supervisor_name: str | None = None
+    supervisor_user_id: int | None = None
+    supervisor_name: str | None = None
     email: EmailContextRead | None
     line_items: list[LineItemRead]
     audit_log: list[dict[str, Any]]
@@ -287,6 +291,10 @@ class IngestionTimesheetDetail(BaseModel):
 class TimesheetDataUpdate(BaseModel):
     employee_id: int | None = None
     client_id: int | None = None
+    # Reviewer-confirmed supervisor (permissive: any reviewer can override
+    # the LLM-extracted name). Set to None or omit to clear; the original
+    # extracted_supervisor_name is preserved on the record regardless.
+    supervisor_user_id: int | None = None
     period_start: date | None = None
     period_end: date | None = None
     total_hours: Decimal | None = None

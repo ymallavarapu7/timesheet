@@ -64,6 +64,13 @@ class IngestionTimesheet(Base, TimestampMixin):
     llm_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     extracted_supervisor_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Reviewer-confirmed supervisor. Pre-filled at ingestion time when the
+    # extracted_supervisor_name fuzzy-matches an existing tenant user; the
+    # reviewer can override on the review page. Carried forward to every
+    # TimeEntry created on approval (see api/ingestion.py::approve_timesheet).
+    supervisor_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     internal_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     submitted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -86,6 +93,9 @@ class IngestionTimesheet(Base, TimestampMixin):
     )
     reviewer: Mapped["User | None"] = relationship(
         "User", foreign_keys=[reviewer_id]
+    )
+    supervisor: Mapped["User | None"] = relationship(
+        "User", foreign_keys=[supervisor_user_id]
     )
     client: Mapped["Client | None"] = relationship("Client")
     line_items: Mapped[list["IngestionTimesheetLineItem"]] = relationship(
