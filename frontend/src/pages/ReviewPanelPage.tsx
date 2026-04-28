@@ -35,6 +35,112 @@ import type { ChainCandidate, EmailAttachmentSummary, IngestionLineItem, Ingesti
 
 type LineItemFormState = { work_date: string; hours: string; description: string; project_code: string; project_id: string };
 
+// R9: small popover anchored under a button, used for Reject and Hold.
+// Both share the same shape (textarea + cancel/confirm) but differ in
+// tone (red for reject, neutral for hold). Anchored positioning is
+// computed in a layout effect so it tracks the trigger button on
+// scroll and resize.
+const ReasonPopover: React.FC<{
+  open: boolean;
+  anchorEl: HTMLElement | null;
+  title: string;
+  description: string;
+  placeholder: string;
+  reason: string;
+  setReason: (s: string) => void;
+  confirmLabel: string;
+  confirmTone: 'danger' | 'primary';
+  isSubmitting?: boolean;
+  onConfirm: () => void;
+  onClose: () => void;
+}> = ({ open, anchorEl, title, description, placeholder, reason, setReason, confirmLabel, confirmTone, isSubmitting, onConfirm, onClose }) => {
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+  const [position, setPosition] = React.useState<{ top: number; left: number } | null>(null);
+
+  React.useLayoutEffect(() => {
+    if (!open || !anchorEl) return;
+    const update = () => {
+      const rect = anchorEl.getBoundingClientRect();
+      const POPOVER_WIDTH = 380;
+      const ESTIMATED_HEIGHT = 240;
+      const VIEWPORT_MARGIN = 16;
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const top = spaceBelow > ESTIMATED_HEIGHT + VIEWPORT_MARGIN
+        ? rect.bottom + window.scrollY + 6
+        : rect.top + window.scrollY - ESTIMATED_HEIGHT - 6;
+      const maxLeft = window.innerWidth - POPOVER_WIDTH - VIEWPORT_MARGIN;
+      const left = Math.min(rect.left + window.scrollX, Math.max(maxLeft, VIEWPORT_MARGIN));
+      setPosition({ top, left });
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [open, anchorEl]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const id = window.requestAnimationFrame(() => textareaRef.current?.focus());
+    return () => window.cancelAnimationFrame(id);
+  }, [open]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+
+  if (!open || !position) return null;
+  const canSubmit = reason.trim().length > 0 && !isSubmitting;
+  const confirmClass = confirmTone === 'danger'
+    ? 'inline-flex items-center justify-center rounded-md bg-[var(--danger)] px-3 py-1.5 text-sm font-medium text-white transition hover:bg-[var(--danger)]/90 disabled:cursor-not-allowed disabled:opacity-60'
+    : 'action-button h-9 px-3 text-sm disabled:cursor-not-allowed disabled:opacity-60';
+
+  return (
+    <>
+      <div role="presentation" className="fixed inset-0 z-[80]" onClick={onClose} />
+      <div
+        role="dialog"
+        aria-label={title}
+        className="absolute z-[90] w-[380px] rounded-xl border border-border/70 bg-card p-4 shadow-[0_18px_48px_rgba(0,0,0,0.35)]"
+        style={{ top: position.top, left: position.left }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">{title}</p>
+        <p className="mb-3 text-xs text-muted-foreground">{description}</p>
+        <textarea
+          ref={textareaRef}
+          className="field-textarea text-sm"
+          rows={3}
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder={placeholder}
+        />
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <button type="button" onClick={onClose} className="action-button-secondary h-9 px-3 text-sm">Cancel</button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={!canSubmit}
+            className={confirmClass}
+          >
+            {isSubmitting ? `${confirmLabel}…` : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </>
+  );
+};
+
 // R2: small `~` marker the field labels show when the LLM listed that
 // field in extracted_data.uncertain_fields. Hover for the per-field
 // reason; the wider context lives on the AI badge in the topbar.
@@ -489,6 +595,15 @@ export const ReviewPanelPage: React.FC = () => {
   const [bulkProjectId, setBulkProjectId] = React.useState<string>('');
   const [bulkExcludeReason, setBulkExcludeReason] = React.useState<string>('');
   const [bulkBusy, setBulkBusy] = React.useState(false);
+
+  // R9: Reject and Hold popovers, both with required-reason text.
+  // The previous Reject UX was a full-width banner that pushed the
+  // table down; Hold had no reason field at all. Anchored popovers
+  // keep the in-page context, and a non-empty reason becomes a real
+  // audit signal (vs the prior "click and forget" Hold).
+  const [rejectPopoverAnchor, setRejectPopoverAnchor] = React.useState<HTMLElement | null>(null);
+  const [holdPopoverAnchor, setHoldPopoverAnchor] = React.useState<HTMLElement | null>(null);
+  const [holdReason, setHoldReason] = React.useState<string>('');
   const [reviewComment, setReviewComment] = React.useState('');
   const [rejectReason, setRejectReason] = React.useState('');
   const [lineItemModalOpen, setLineItemModalOpen] = React.useState(false);
@@ -501,7 +616,8 @@ export const ReviewPanelPage: React.FC = () => {
   const [fullSheetHtml, setFullSheetHtml] = React.useState<string | null>(null);
   const [fullSheetLoading, setFullSheetLoading] = React.useState(false);
   const [showApproveConfirm, setShowApproveConfirm] = React.useState(false);
-  const [showRejectPanel, setShowRejectPanel] = React.useState(false);
+  // showRejectPanel was the previous full-width banner approach.
+  // Replaced by an anchored popover (R9). State removed.
   const [rejectingLineItemId, setRejectingLineItemId] = React.useState<number | null>(null);
   const [lineItemRejectReason, setLineItemRejectReason] = React.useState('');
 
@@ -873,12 +989,18 @@ export const ReviewPanelPage: React.FC = () => {
   const handleReject = async () => {
     if (!timesheet || !rejectReason.trim()) return;
     await rejectTimesheet.mutateAsync({ id: timesheet.id, reason: rejectReason, comment: reviewComment || undefined });
-    setShowRejectPanel(false);
+    setRejectPopoverAnchor(null);
+    setRejectReason('');
   };
 
   const handleHold = async () => {
-    if (!timesheet) return;
-    await holdTimesheet.mutateAsync({ id: timesheet.id, comment: reviewComment || undefined });
+    if (!timesheet || !holdReason.trim()) return;
+    // The Hold endpoint takes an optional `comment` field; the popover
+    // requires a non-empty reason and we send it as that comment so it
+    // shows up in the audit log alongside who paused the review.
+    await holdTimesheet.mutateAsync({ id: timesheet.id, comment: holdReason.trim() });
+    setHoldPopoverAnchor(null);
+    setHoldReason('');
   };
 
   // ── Bulk line-item handlers (R4) ──
@@ -1141,19 +1263,6 @@ export const ReviewPanelPage: React.FC = () => {
           )}
         </div>
       </div>
-
-      {showRejectPanel && (
-        <div className="shrink-0 border-b border-[var(--danger)]/20 bg-[var(--danger-light)] px-6 py-3">
-          <p className="mb-2 text-sm font-medium text-[var(--danger)]">Reject submission</p>
-          <textarea className="field-textarea" rows={2} value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} placeholder="Reason is required" />
-          <div className="mt-2 flex gap-2">
-            <button type="button" className="action-button-secondary" onClick={() => setShowRejectPanel(false)}>Cancel</button>
-            <button type="button" className="action-button" disabled={rejectTimesheet.isPending || !rejectReason.trim()} onClick={handleReject}>
-              {rejectTimesheet.isPending ? 'Submitting...' : 'Submit Rejection'}
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* ── Two-panel body ──────────────────────────────────────────── */}
       <div ref={containerRef} className="flex min-h-0 flex-1 overflow-hidden">
@@ -1684,21 +1793,26 @@ export const ReviewPanelPage: React.FC = () => {
                     <label className="mb-1.5 block text-sm font-medium text-foreground">Comment</label>
                     <textarea className="field-textarea" rows={3} value={reviewComment} onChange={(e) => setReviewComment(e.target.value)} />
                   </div>
-                  {isActionable && (
-                    <div>
-                      <label className="mb-1.5 block text-sm font-medium text-foreground">Reject Reason</label>
-                      <input className="field-input" value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} placeholder="Required for rejection" />
-                    </div>
-                  )}
                   <div className="grid gap-2">
                     <button type="button" onClick={handleDraftComment} className="action-button-secondary" disabled={draftComment.isPending}>
                       <Bot className="mr-1.5 h-4 w-4" /> {draftComment.isPending ? 'Drafting...' : 'Draft AI Comment'}
                     </button>
                     {isActionable && <>
-                      <button type="button" onClick={handleHold} className="action-button-secondary" disabled={holdTimesheet.isPending}>
-                        <PauseCircle className="mr-1.5 h-4 w-4" /> {holdTimesheet.isPending ? 'Holding...' : 'Place On Hold'}
+                      <button
+                        type="button"
+                        onClick={(e) => setHoldPopoverAnchor(e.currentTarget)}
+                        className="action-button-secondary"
+                        disabled={holdTimesheet.isPending}
+                      >
+                        <PauseCircle className="mr-1.5 h-4 w-4" />
+                        {holdTimesheet.isPending ? 'Holding...' : 'Place On Hold'}
                       </button>
-                      <button type="button" onClick={() => setShowRejectPanel((current) => !current)} className="action-button-secondary" disabled={rejectTimesheet.isPending}>
+                      <button
+                        type="button"
+                        onClick={(e) => setRejectPopoverAnchor(e.currentTarget)}
+                        className="action-button-secondary"
+                        disabled={rejectTimesheet.isPending}
+                      >
                         <XCircle className="mr-1.5 h-4 w-4" /> Reject Submission
                       </button>
                     </>}
@@ -1775,6 +1889,36 @@ export const ReviewPanelPage: React.FC = () => {
         isSubmitting={createClientFromDomain.isPending || createClient.isPending}
         onConfirm={handleAddClientConfirm}
         onClose={() => setAddClientAnchor(null)}
+      />
+
+      <ReasonPopover
+        open={rejectPopoverAnchor != null}
+        anchorEl={rejectPopoverAnchor}
+        title="Reject submission"
+        description="Reason will be visible to the submitter and saved on the audit log."
+        placeholder="e.g. Hours exceed contract limit"
+        reason={rejectReason}
+        setReason={setRejectReason}
+        confirmLabel="Reject"
+        confirmTone="danger"
+        isSubmitting={rejectTimesheet.isPending}
+        onConfirm={handleReject}
+        onClose={() => setRejectPopoverAnchor(null)}
+      />
+
+      <ReasonPopover
+        open={holdPopoverAnchor != null}
+        anchorEl={holdPopoverAnchor}
+        title="Place on hold"
+        description="What's the holdup? Visible to other reviewers in the inbox."
+        placeholder="e.g. Waiting on client confirmation"
+        reason={holdReason}
+        setReason={setHoldReason}
+        confirmLabel="Place on hold"
+        confirmTone="primary"
+        isSubmitting={holdTimesheet.isPending}
+        onConfirm={handleHold}
+        onClose={() => setHoldPopoverAnchor(null)}
       />
     </div>
   );
