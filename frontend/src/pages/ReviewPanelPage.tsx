@@ -35,6 +35,19 @@ import type { ChainCandidate, EmailAttachmentSummary, IngestionLineItem, Ingesti
 
 type LineItemFormState = { work_date: string; hours: string; description: string; project_code: string; project_id: string };
 
+// R2: small `~` marker the field labels show when the LLM listed that
+// field in extracted_data.uncertain_fields. Hover for the per-field
+// reason; the wider context lives on the AI badge in the topbar.
+const UncertaintyMarker: React.FC<{ title: string }> = ({ title }) => (
+  <span
+    className="ml-1 inline-flex h-4 min-w-[1rem] items-center justify-center rounded border border-amber-400/50 bg-amber-500/10 px-1 text-[10px] font-bold text-amber-700 dark:text-amber-300"
+    title={title}
+    aria-label={title}
+  >
+    ~
+  </span>
+);
+
 // Personal email providers — never bind to a Client domain. Mirror of
 // the backend PERSONAL_EMAIL_DOMAINS set; the cascade endpoint refuses
 // to create a domain mapping for these. Same set used by InboxPage.
@@ -570,6 +583,20 @@ export const ReviewPanelPage: React.FC = () => {
     ? clients.some((c: { id: number; name: string }) =>
         c.name.trim().toLowerCase() === extractedClientHint.toLowerCase())
     : false;
+  // R2: per-field uncertainty markers. The LLM returns
+  // `extracted_data.uncertain_fields` (an array of field names) when it
+  // wasn't sure. We surface that as a small `~` next to the field
+  // labels the array names. Hovering shows the full list and a hint to
+  // verify before approving. Replaces the global "AI self-rated" badge
+  // as the primary signal — the badge stays as a fallback.
+  const uncertainFields = React.useMemo<Set<string>>(() => {
+    const raw = (timesheet?.extracted_data as { uncertain_fields?: unknown } | undefined)?.uncertain_fields;
+    if (!Array.isArray(raw)) return new Set();
+    return new Set(raw.map((v) => String(v).trim().toLowerCase()).filter(Boolean));
+  }, [timesheet?.extracted_data]);
+  const isFieldUncertain = (...names: string[]) =>
+    names.some((name) => uncertainFields.has(name.toLowerCase()));
+
   // Sender domain drives both the cascade target and the smart-guess
   // pre-fill for the "+ Add client" popover. Prefer the forwarded-from
   // address (the actual submitter on a forwarded email); fall back to
@@ -666,6 +693,32 @@ export const ReviewPanelPage: React.FC = () => {
     }
     setLineItemModalOpen(true);
   };
+
+  // ── Reprocess scope dropdown (R10) ──
+  // Replaces two scattered reprocess affordances (a topbar button that
+  // re-runs the whole email, and a small text link near the attachment
+  // card that re-runs just the linked attachment) with one icon-only
+  // dropdown in the topbar. Both scopes live in the same place so the
+  // reviewer doesn't have to remember which control does which.
+  const [reprocessMenuOpen, setReprocessMenuOpen] = React.useState(false);
+  const reprocessMenuRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (!reprocessMenuOpen) return;
+    const onClickOutside = (e: MouseEvent) => {
+      if (!reprocessMenuRef.current?.contains(e.target as Node)) {
+        setReprocessMenuOpen(false);
+      }
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setReprocessMenuOpen(false);
+    };
+    window.addEventListener('mousedown', onClickOutside);
+    window.addEventListener('keydown', onEsc);
+    return () => {
+      window.removeEventListener('mousedown', onClickOutside);
+      window.removeEventListener('keydown', onEsc);
+    };
+  }, [reprocessMenuOpen]);
 
   // Confirm handler for the "+ Add client" popover. If the sender domain
   // is a real (non-personal) domain we use the cascade endpoint so other
@@ -908,19 +961,71 @@ export const ReviewPanelPage: React.FC = () => {
             {reprocessStatus?.status === 'complete' ? 'Reprocessing complete.' : 'Reprocessing failed.'}
           </span>
         )}
-        <div className="flex shrink-0 gap-2">
-          <button type="button" onClick={() => handleReprocessEmail()} className="action-button-secondary" disabled={reprocessEmail.isPending || isReprocessing}>
-            <RefreshCw className={`mr-1.5 h-4 w-4 ${isReprocessing ? 'animate-spin' : ''}`} /> {reprocessEmail.isPending ? 'Queueing...' : isReprocessing ? 'Reprocessing...' : 'Reprocess'}
-          </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {/* Reprocess: icon-only dropdown with two scopes (R10).
+              Replaces a separate "Reprocess linked attachment" link
+              that used to live near the attachment card; both scopes
+              now share one place so the reviewer doesn't have to
+              remember which control does which. */}
+          <div ref={reprocessMenuRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setReprocessMenuOpen((v) => !v)}
+              disabled={reprocessEmail.isPending || isReprocessing}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border/60 text-muted-foreground transition hover:border-primary/40 hover:text-foreground disabled:opacity-50"
+              aria-label="Reprocess"
+              aria-haspopup="menu"
+              aria-expanded={reprocessMenuOpen}
+              title="Reprocess this timesheet or the whole email"
+            >
+              <RefreshCw className={`h-4 w-4 ${isReprocessing ? 'animate-spin' : ''}`} />
+            </button>
+            {reprocessMenuOpen && (
+              <div className="absolute right-0 top-full z-30 mt-2 w-64 rounded-lg border border-border/60 bg-popover p-1 shadow-lg" role="menu">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReprocessMenuOpen(false);
+                    if (linkedAttachment) {
+                      void handleReprocessEmail([linkedAttachment.id]);
+                    } else {
+                      void handleReprocessEmail();
+                    }
+                  }}
+                  className="block w-full rounded px-3 py-2 text-left text-sm hover:bg-muted/50 disabled:opacity-50"
+                  disabled={reprocessEmail.isPending || isReprocessing}
+                  role="menuitem"
+                >
+                  <div className="font-medium text-foreground">Reprocess this timesheet</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    Re-runs LLM extraction on the linked attachment only.
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReprocessMenuOpen(false);
+                    void handleReprocessEmail();
+                  }}
+                  className="block w-full rounded px-3 py-2 text-left text-sm hover:bg-muted/50 disabled:opacity-50"
+                  disabled={reprocessEmail.isPending || isReprocessing}
+                  role="menuitem"
+                >
+                  <div className="font-medium text-foreground">Reprocess whole email</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    Re-fetches and re-extracts all attachments from this email.
+                  </div>
+                </button>
+              </div>
+            )}
+          </div>
+
           {timesheet?.status === 'rejected' && (
             <button type="button" onClick={handleRevertRejection} className="action-button-secondary" disabled={revertTimesheetRejection.isPending}>
               <RefreshCw className="mr-1.5 h-4 w-4" /> {revertTimesheetRejection.isPending ? 'Reverting...' : 'Revert Rejection'}
             </button>
           )}
-          {isActionable && <>
-            <button type="button" onClick={handleHold} className="action-button-secondary" disabled={holdTimesheet.isPending}>
-              <PauseCircle className="mr-1.5 h-4 w-4" /> {holdTimesheet.isPending ? 'Holding...' : 'On Hold'}
-            </button>
+          {isActionable && (
             <div className="relative">
               <button type="button" onClick={() => setShowApproveConfirm((v) => !v)} className="action-button" disabled={approveTimesheet.isPending}>
                 <Check className="mr-1.5 h-4 w-4" /> {approveTimesheet.isPending ? 'Approving...' : 'Approve'}
@@ -946,7 +1051,7 @@ export const ReviewPanelPage: React.FC = () => {
                 );
               })()}
             </div>
-          </>}
+          )}
         </div>
       </div>
 
@@ -1010,11 +1115,11 @@ export const ReviewPanelPage: React.FC = () => {
                     );
                   })}
                 </div>
-                {linkedAttachment && (
-                  <button type="button" onClick={() => handleReprocessEmail([linkedAttachment.id])} className="mt-3 inline-flex items-center gap-1.5 text-xs text-[var(--warning)] transition hover:text-[var(--accent-blue)]" disabled={reprocessEmail.isPending}>
-                    <RefreshCw className="h-3.5 w-3.5" /> Reprocess linked attachment
-                  </button>
-                )}
+                {/* "Reprocess linked attachment" used to live here as a
+                    text link. Both reprocess scopes (this timesheet vs
+                    whole email) now live in the topbar's icon dropdown
+                    so the reviewer doesn't have to remember which
+                    control does which. See setReprocessMenuOpen above. */}
               </div>
             )}
           </div>
@@ -1079,13 +1184,33 @@ export const ReviewPanelPage: React.FC = () => {
                   const label = s.period_start && s.period_end
                     ? `${new Date(s.period_start).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${new Date(s.period_end).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
                     : `#${s.id}`;
+                  // R8: status dot per tab so the reviewer sees the issue
+                  // distribution before clicking. Hover the tab to see why.
+                  const anomalyCount = Array.isArray(s.llm_anomalies) ? s.llm_anomalies.length : 0;
+                  let dotClass = 'bg-sky-500';
+                  let dotTitle = 'Ready to review';
+                  if (s.status === 'approved') {
+                    dotClass = 'bg-emerald-500'; dotTitle = 'Approved';
+                  } else if (s.status === 'rejected') {
+                    dotClass = 'bg-red-500'; dotTitle = 'Rejected';
+                  } else if (s.status === 'on_hold') {
+                    dotClass = 'bg-slate-400'; dotTitle = 'On hold';
+                  } else if (anomalyCount > 0) {
+                    dotClass = 'bg-amber-500';
+                    dotTitle = `${anomalyCount} anomaly${anomalyCount === 1 ? '' : 'ies'} flagged`;
+                  }
                   return (
                     <button
                       key={s.id}
                       type="button"
                       onClick={() => navigate(`/ingestion/review/${s.id}`)}
-                      className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${isActive ? 'bg-primary text-primary-foreground' : 'border border-border/60 bg-muted/30 text-muted-foreground hover:border-primary/30 hover:text-foreground'}`}
+                      title={dotTitle}
+                      className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium transition ${isActive ? 'bg-primary text-primary-foreground' : 'border border-border/60 bg-muted/30 text-muted-foreground hover:border-primary/30 hover:text-foreground'}`}
                     >
+                      <span
+                        aria-hidden="true"
+                        className={`inline-block h-1.5 w-1.5 rounded-full ${dotClass} ${isActive ? 'opacity-90' : ''}`}
+                      />
                       {label}
                     </button>
                   );
@@ -1114,7 +1239,12 @@ export const ReviewPanelPage: React.FC = () => {
                 <div className="space-y-3">
                   <div>
                     <div className="mb-1.5 flex items-center justify-between gap-3">
-                      <label className="block text-sm font-medium text-foreground">Client</label>
+                      <label className="block text-sm font-medium text-foreground">
+                        Client
+                        {isFieldUncertain('client_name', 'client') && (
+                          <UncertaintyMarker title="The model wasn't certain about the client. Verify against the document before approving." />
+                        )}
+                      </label>
                       <button
                         type="button"
                         onClick={(event) => setAddClientAnchor(event.currentTarget)}
@@ -1154,7 +1284,12 @@ export const ReviewPanelPage: React.FC = () => {
                     )}
                   </div>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-foreground">Employee</label>
+                    <label className="mb-1.5 block text-sm font-medium text-foreground">
+                      Employee
+                      {isFieldUncertain('employee_name') && (
+                        <UncertaintyMarker title="The model wasn't certain about the employee. Verify against the document before approving." />
+                      )}
+                    </label>
                     <select
                       className="field-input"
                       value={employeeSelectValue}
@@ -1190,7 +1325,12 @@ export const ReviewPanelPage: React.FC = () => {
                     field is what carries to TimeEntry.supervisor_name on
                     approval. */}
                 <div className="mt-3">
-                  <label className="mb-1.5 block text-sm font-medium text-foreground">Supervisor</label>
+                  <label className="mb-1.5 block text-sm font-medium text-foreground">
+                    Supervisor
+                    {isFieldUncertain('supervisor_name') && (
+                      <UncertaintyMarker title="The model wasn't certain about the supervisor. Verify against the document before approving." />
+                    )}
+                  </label>
                   <input
                     type="text"
                     className="field-input"
@@ -1213,15 +1353,30 @@ export const ReviewPanelPage: React.FC = () => {
                 <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">Week &amp; Hours</p>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-foreground">Week Start</label>
+                    <label className="mb-1.5 block text-sm font-medium text-foreground">
+                      Week Start
+                      {isFieldUncertain('period_start') && (
+                        <UncertaintyMarker title="The model wasn't certain about the period start. Verify against the document before approving." />
+                      )}
+                    </label>
                     <input type="date" className="field-input" value={summaryForm.period_start} onChange={(e) => setSummaryForm((c) => ({ ...c, period_start: e.target.value }))} />
                   </div>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-foreground">Week End</label>
+                    <label className="mb-1.5 block text-sm font-medium text-foreground">
+                      Week End
+                      {isFieldUncertain('period_end') && (
+                        <UncertaintyMarker title="The model wasn't certain about the period end. Verify against the document before approving." />
+                      )}
+                    </label>
                     <input type="date" className="field-input" value={summaryForm.period_end} onChange={(e) => setSummaryForm((c) => ({ ...c, period_end: e.target.value }))} />
                   </div>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-foreground">Total Hours</label>
+                    <label className="mb-1.5 block text-sm font-medium text-foreground">
+                      Total Hours
+                      {isFieldUncertain('total_hours') && (
+                        <UncertaintyMarker title="The model wasn't certain about the total hours. Verify against the document before approving." />
+                      )}
+                    </label>
                     <input className="field-input" value={summaryForm.total_hours} onChange={(e) => setSummaryForm((c) => ({ ...c, total_hours: e.target.value }))} />
                   </div>
                 </div>
