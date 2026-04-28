@@ -24,4 +24,4 @@ redistribute it.
 Acufy Timesheet is a hosted product - setup, credentials, and infrastructure
 are provided by Acufy to customers under contract.
 
-© Acufy, Inc. All rights reserved.
+© 2026 Acufy AI. All rights reserved.
