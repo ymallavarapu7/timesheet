@@ -340,3 +340,25 @@ def test_oauth_state_round_trip_preserves_all_claims():
         assert parsed["tenant_id"] == tenant_id
         assert parsed["user_id"] == user_id
         assert parsed["provider"] == provider
+
+
+# ── CSP header on the OAuth popup HTMLResponse (audit fix H4) ──────────────
+
+
+def test_oauth_popup_response_sets_relaxed_csp(monkeypatch):
+    """The popup HTMLResponse needs an explicit per-response CSP that
+    allows the inline postMessage script. The global middleware sets a
+    stricter default that would otherwise block it."""
+    monkeypatch.setattr(settings, "cors_origins", ["https://app.example.com"])
+
+    from app.api.mailboxes import _oauth_popup_response
+
+    response = _oauth_popup_response("success", "ok")
+    csp = response.headers.get("content-security-policy", "")
+    assert "default-src 'none'" in csp
+    assert "script-src 'unsafe-inline'" in csp
+    assert "frame-ancestors 'none'" in csp
+    # Defense in depth: don't accidentally allow remote script sources on
+    # the popup.
+    assert "script-src 'self'" not in csp
+    assert "https:" not in csp

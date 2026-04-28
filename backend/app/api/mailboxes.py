@@ -239,7 +239,24 @@ def _oauth_popup_response(status_value: str, message: str, mailbox_id: int | Non
     </script>
   </body>
 </html>"""
-    return HTMLResponse(page)
+    # Relax CSP just for this response: the inline script is required to
+    # postMessage back to the parent window. The default strict CSP set by
+    # the global middleware would block it. We tightly scope what's
+    # allowed: only inline script, no remote sources, no other resource
+    # types. The script content is fully server-controlled (status_value,
+    # the verified mailbox_id, and an html.escape'd message).
+    return HTMLResponse(
+        page,
+        headers={
+            "Content-Security-Policy": (
+                "default-src 'none'; "
+                "script-src 'unsafe-inline'; "
+                "style-src 'unsafe-inline'; "
+                "frame-ancestors 'none'; "
+                "base-uri 'none'"
+            )
+        },
+    )
 
 
 def _mask_mailbox(mailbox: Mailbox) -> dict:

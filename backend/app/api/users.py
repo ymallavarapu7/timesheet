@@ -31,14 +31,32 @@ logger = logging.getLogger(__name__)
 MANAGER_CHAIN_ROLES = {UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO}
 
 
-async def _get_descendant_user_ids(db: AsyncSession, manager_id: int) -> set[int]:
+async def _get_descendant_user_ids(
+    db: AsyncSession, manager_id: int, tenant_id: int
+) -> set[int]:
+    """Walk the manager-chain to all transitive direct reports.
+
+    Tenant-scoped: every BFS layer joins on User.tenant_id so descendant
+    sets cannot include users from another tenant, even if (somehow)
+    a cross-tenant EmployeeManagerAssignment row existed. Without this
+    scope the helper would return arbitrary user IDs and rely on every
+    caller to re-filter by tenant; that's a footgun for future code paths
+    that consume the IDs directly.
+
+    EmployeeManagerAssignment has no tenant_id column today, so we filter
+    via the employee's User.tenant_id. Manager_id may itself be cross-
+    tenant (we don't gate frontier members), but the BFS only emits
+    employees whose User row is in the requested tenant.
+    """
     descendant_ids: set[int] = set()
     frontier: set[int] = {manager_id}
 
     while frontier:
         result = await db.execute(
             select(EmployeeManagerAssignment.employee_id)
+            .join(User, User.id == EmployeeManagerAssignment.employee_id)
             .where(EmployeeManagerAssignment.manager_id.in_(frontier))
+            .where(User.tenant_id == tenant_id)
         )
         children = set(result.scalars().all())
         next_frontier = children - descendant_ids
@@ -49,7 +67,7 @@ async def _get_descendant_user_ids(db: AsyncSession, manager_id: int) -> set[int
 
 
 async def _get_managed_employees(db: AsyncSession, manager_id: int, tenant_id: int) -> list[User]:
-    descendant_ids = await _get_descendant_user_ids(db, manager_id)
+    descendant_ids = await _get_descendant_user_ids(db, manager_id, tenant_id)
     if not descendant_ids:
         return []
 
@@ -68,7 +86,7 @@ async def _get_managed_employees(db: AsyncSession, manager_id: int, tenant_id: i
 
 
 async def _get_managed_users(db: AsyncSession, manager_id: int, tenant_id: int) -> list[User]:
-    descendant_ids = await _get_descendant_user_ids(db, manager_id)
+    descendant_ids = await _get_descendant_user_ids(db, manager_id, tenant_id)
     if not descendant_ids:
         return []
 
