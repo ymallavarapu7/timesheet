@@ -1004,16 +1004,11 @@ async def _process_timesheet_attachment(
             period_end=extracted_data.get("period_end"),
         )
 
-        # Create IngestionTimesheet record. Supervisor: store the verbatim
-        # extracted name as an audit anchor, and pre-fill supervisor_user_id
-        # if it fuzzy-matches a tenant user. The reviewer can override on
-        # the review page; both fields propagate to TimeEntry on approval.
-        extracted_supervisor = (extracted_data.get("supervisor_name") or "").strip() or None
-        supervisor_user_id = (
-            _fuzzy_match_employee(extracted_supervisor, employees)
-            if extracted_supervisor
-            else None
-        )
+        # Create IngestionTimesheet record. Supervisor is a free-form
+        # string the reviewer can edit on the review page; the original
+        # LLM value stays in extracted_data JSON for audit. No FK to
+        # users — supervisors are typically client-side, not tenant
+        # employees, so we don't try to map them to User rows.
         timesheet = IngestionTimesheet(
             tenant_id=tenant_id,
             email_id=email_record.id,
@@ -1025,8 +1020,7 @@ async def _process_timesheet_attachment(
             total_hours=_resolve_total_hours(extracted_data, line_items_data),
             status=IngestionTimesheetStatus.pending,
             extracted_data=extracted_data,
-            extracted_supervisor_name=extracted_supervisor,
-            supervisor_user_id=supervisor_user_id,
+            extracted_supervisor_name=(extracted_data.get("supervisor_name") or "").strip() or None,
             llm_anomalies=anomalies,
             llm_match_suggestions=llm_match_suggestions,
             submitted_at=email_record.received_at,

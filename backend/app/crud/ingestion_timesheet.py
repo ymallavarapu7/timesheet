@@ -29,7 +29,6 @@ async def get_ingestion_timesheet(
             selectinload(IngestionTimesheet.email).selectinload(IngestedEmail.attachments),
             selectinload(IngestionTimesheet.employee),
             selectinload(IngestionTimesheet.client),
-            selectinload(IngestionTimesheet.supervisor),
         )
     )
     return result.scalar_one_or_none()
@@ -54,7 +53,6 @@ async def list_ingestion_timesheets(
             selectinload(IngestionTimesheet.employee),
             selectinload(IngestionTimesheet.client),
             selectinload(IngestionTimesheet.email),
-            selectinload(IngestionTimesheet.supervisor),
         )
         .order_by(IngestionTimesheet.created_at.desc())
         .limit(limit)

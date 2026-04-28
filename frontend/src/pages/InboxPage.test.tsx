@@ -72,8 +72,6 @@ const makeSkippedSummary = (overrides: Partial<IngestionTimesheetSummary> = {}):
   employee_name: null,
   extracted_employee_name: null,
   extracted_supervisor_name: null,
-  supervisor_user_id: null,
-  supervisor_name: null,
   client_id: null,
   client_name: null,
   period_start: null,

@@ -89,8 +89,6 @@ def _timesheet_to_summary(timesheet: IngestionTimesheet, rejected_sender_set: se
         "employee_name": timesheet.employee.full_name if timesheet.employee else None,
         "extracted_employee_name": (timesheet.extracted_data or {}).get("employee_name"),
         "extracted_supervisor_name": timesheet.extracted_supervisor_name,
-        "supervisor_user_id": timesheet.supervisor_user_id,
-        "supervisor_name": timesheet.supervisor.full_name if timesheet.supervisor else None,
         "client_id": timesheet.client_id,
         "client_name": timesheet.client.name if timesheet.client else None,
         "period_start": timesheet.period_start,
@@ -259,8 +257,6 @@ def _timesheet_to_detail(timesheet: IngestionTimesheet) -> dict:
         "time_entries_created": timesheet.time_entries_created,
         "extracted_employee_name": (timesheet.extracted_data or {}).get("employee_name"),
         "extracted_supervisor_name": timesheet.extracted_supervisor_name,
-        "supervisor_user_id": timesheet.supervisor_user_id,
-        "supervisor_name": timesheet.supervisor.full_name if timesheet.supervisor else None,
         "email": {
             "id": email.id,
             "subject": email.subject,
@@ -418,26 +414,6 @@ async def _validate_client(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied: client belongs to a different tenant",
-        )
-
-
-async def _validate_supervisor(
-    session: AsyncSession,
-    current_user: User,
-    supervisor_user_id: int | None,
-) -> None:
-    """Permissive: any tenant user can be selected as supervisor (no role
-    gate). The cross-tenant check is the only safety check."""
-    if supervisor_user_id is None:
-        return
-
-    supervisor = await session.get(User, supervisor_user_id)
-    if not supervisor:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Supervisor not found")
-    if supervisor.tenant_id != current_user.tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied: supervisor belongs to a different tenant",
         )
 
 
@@ -1315,13 +1291,11 @@ async def update_timesheet_data(
     serialized_updates = body.model_dump(mode="json", exclude_unset=True)
     await _validate_employee(session, current_user, updates.get("employee_id"))
     await _validate_client(session, current_user, updates.get("client_id"))
-    if "supervisor_user_id" in updates:
-        await _validate_supervisor(session, current_user, updates["supervisor_user_id"])
 
     previous = {
         "employee_id": timesheet.employee_id,
         "client_id": timesheet.client_id,
-        "supervisor_user_id": timesheet.supervisor_user_id,
+        "extracted_supervisor_name": timesheet.extracted_supervisor_name,
         "period_start": str(timesheet.period_start) if timesheet.period_start else None,
         "period_end": str(timesheet.period_end) if timesheet.period_end else None,
         "total_hours": str(timesheet.total_hours) if timesheet.total_hours is not None else None,
@@ -1568,11 +1542,10 @@ async def approve_timesheet(
             ingestion_line_item_id=str(item.id),
             ingestion_approved_by_name=current_user.full_name,
             ingestion_source_tenant=str(current_user.tenant_id),
-            # Carry the supervisor signal forward so approved entries retain
-            # an audit anchor for "who signed off in the source document"
-            # alongside "who we mapped it to". See migration 036.
-            supervisor_user_id=timesheet.supervisor_user_id,
-            supervisor_name_extracted=timesheet.extracted_supervisor_name,
+            # Carry the (possibly reviewer-edited) supervisor name forward
+            # so approved entries retain the "who signed off in the source
+            # document" anchor without a join to a separate table.
+            supervisor_name=timesheet.extracted_supervisor_name,
         )
         session.add(entry)
         await session.flush()
