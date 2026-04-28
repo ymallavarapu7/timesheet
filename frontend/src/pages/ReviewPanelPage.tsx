@@ -480,6 +480,15 @@ export const ReviewPanelPage: React.FC = () => {
   // cascade-from-domain popover so creating a client here also maps the
   // sender's domain when applicable.
   const [addClientAnchor, setAddClientAnchor] = React.useState<HTMLElement | null>(null);
+
+  // R4: bulk-select on line items. Reviewers regularly hit timesheets
+  // with 20+ rows that all need the same project assigned. Per-row
+  // edits are the worst friction point on the review page; the bulk
+  // toolbar collapses N decisions into one.
+  const [selectedLineItemIds, setSelectedLineItemIds] = React.useState<Set<number>>(new Set());
+  const [bulkProjectId, setBulkProjectId] = React.useState<string>('');
+  const [bulkExcludeReason, setBulkExcludeReason] = React.useState<string>('');
+  const [bulkBusy, setBulkBusy] = React.useState(false);
   const [reviewComment, setReviewComment] = React.useState('');
   const [rejectReason, setRejectReason] = React.useState('');
   const [lineItemModalOpen, setLineItemModalOpen] = React.useState(false);
@@ -526,6 +535,11 @@ export const ReviewPanelPage: React.FC = () => {
       total_hours: timesheet.total_hours ? Number(timesheet.total_hours).toFixed(1) : '',
       internal_notes: timesheet.internal_notes ?? '',
     });
+    // Clear bulk selection when navigating between siblings or switching
+    // timesheets — the selected ids only make sense in the current scope.
+    setSelectedLineItemIds(new Set());
+    setBulkProjectId('');
+    setBulkExcludeReason('');
   }, [timesheet]);
 
   React.useEffect(() => {
@@ -865,6 +879,79 @@ export const ReviewPanelPage: React.FC = () => {
   const handleHold = async () => {
     if (!timesheet) return;
     await holdTimesheet.mutateAsync({ id: timesheet.id, comment: reviewComment || undefined });
+  };
+
+  // ── Bulk line-item handlers (R4) ──
+  // The single-item PATCH/reject endpoints already exist and handle the
+  // audit-log + status transition correctly. For bulk we fire N
+  // concurrent calls; the UI shows a single busy state and refreshes
+  // the timesheet once at the end. A future bulk endpoint would shave
+  // the N round-trips but the audit log is still the same per-item
+  // shape, so the UX is identical from the reviewer's perspective.
+  const toggleLineItemSelection = (itemId: number) => {
+    setSelectedLineItemIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+  };
+
+  const selectAllSelectableLineItems = () => {
+    if (!timesheet) return;
+    const next = new Set<number>();
+    for (const item of timesheet.line_items) {
+      if (!item.is_rejected) next.add(item.id);
+    }
+    setSelectedLineItemIds(next);
+  };
+
+  const clearLineItemSelection = () => {
+    setSelectedLineItemIds(new Set());
+    setBulkProjectId('');
+    setBulkExcludeReason('');
+  };
+
+  const handleBulkAssignProject = async () => {
+    if (!timesheet || !bulkProjectId || selectedLineItemIds.size === 0) return;
+    const projectIdNum = Number(bulkProjectId);
+    if (!Number.isFinite(projectIdNum)) return;
+    setBulkBusy(true);
+    try {
+      const ids = [...selectedLineItemIds];
+      await Promise.all(
+        ids.map((itemId) =>
+          updateLineItem.mutateAsync({
+            timesheetId: timesheet.id,
+            itemId,
+            data: { project_id: projectIdNum },
+          })
+        )
+      );
+      clearLineItemSelection();
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const handleBulkExclude = async () => {
+    if (!timesheet || !bulkExcludeReason.trim() || selectedLineItemIds.size === 0) return;
+    setBulkBusy(true);
+    try {
+      const ids = [...selectedLineItemIds];
+      await Promise.all(
+        ids.map((itemId) =>
+          rejectLineItem.mutateAsync({
+            timesheetId: timesheet.id,
+            itemId,
+            reason: bulkExcludeReason.trim(),
+          })
+        )
+      );
+      clearLineItemSelection();
+    } finally {
+      setBulkBusy(false);
+    }
   };
 
   const handleRejectLineItem = async (itemId: number) => {
@@ -1402,19 +1489,121 @@ export const ReviewPanelPage: React.FC = () => {
               <div>
                 <div className="mb-3 flex items-center justify-between">
                   <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Line Items</p>
-                  {isActionable && (
-                    <button type="button" onClick={() => openLineItemModal()} className="inline-flex items-center gap-1 text-xs text-primary transition hover:opacity-75">
-                      <Plus className="h-3.5 w-3.5" /> Add
-                    </button>
-                  )}
+                  <div className="flex items-center gap-3">
+                    {isActionable && timesheet.line_items.length > 0 && (() => {
+                      const selectableCount = timesheet.line_items.filter((i) => !i.is_rejected).length;
+                      const allSelected = selectableCount > 0 && selectedLineItemIds.size === selectableCount;
+                      return (
+                        <button
+                          type="button"
+                          onClick={allSelected ? clearLineItemSelection : selectAllSelectableLineItems}
+                          className="text-xs text-primary transition hover:opacity-75"
+                        >
+                          {allSelected ? 'Clear selection' : `Select all (${selectableCount})`}
+                        </button>
+                      );
+                    })()}
+                    {isActionable && (
+                      <button type="button" onClick={() => openLineItemModal()} className="inline-flex items-center gap-1 text-xs text-primary transition hover:opacity-75">
+                        <Plus className="h-3.5 w-3.5" /> Add
+                      </button>
+                    )}
+                  </div>
                 </div>
+
+                {/* R4: bulk action toolbar — appears once anything is
+                    selected. Cascades the same per-item PATCH/reject
+                    endpoints over Promise.all so the audit-log and
+                    state-transition behavior is identical to clicking
+                    them one at a time. */}
+                {isActionable && selectedLineItemIds.size > 0 && (
+                  <div className="mb-3 rounded-lg border border-primary/30 bg-primary/5 p-3">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <span className="text-sm font-medium text-foreground">
+                        {selectedLineItemIds.size} line {selectedLineItemIds.size === 1 ? 'item' : 'items'} selected
+                      </span>
+                      <button
+                        type="button"
+                        onClick={clearLineItemSelection}
+                        disabled={bulkBusy}
+                        className="text-xs text-muted-foreground transition hover:text-foreground"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap items-stretch gap-2">
+                      <select
+                        className="field-input h-8 flex-1 min-w-[180px] text-sm"
+                        value={bulkProjectId}
+                        onChange={(e) => setBulkProjectId(e.target.value)}
+                        disabled={bulkBusy}
+                      >
+                        <option value="">Assign project…</option>
+                        {projects.map((project: { id: number; name: string }) => (
+                          <option key={project.id} value={project.id}>{project.name}</option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={handleBulkAssignProject}
+                        disabled={!bulkProjectId || bulkBusy}
+                        className="action-button h-8 px-3 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {bulkBusy ? 'Assigning…' : `Assign to ${selectedLineItemIds.size}`}
+                      </button>
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-stretch gap-2">
+                      <input
+                        className="field-input h-8 flex-1 min-w-[180px] text-sm"
+                        placeholder="Exclusion reason (required to exclude)"
+                        value={bulkExcludeReason}
+                        onChange={(e) => setBulkExcludeReason(e.target.value)}
+                        disabled={bulkBusy}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleBulkExclude}
+                        disabled={!bulkExcludeReason.trim() || bulkBusy}
+                        className="h-8 rounded border border-[var(--danger)]/30 px-3 text-sm text-[var(--danger)] transition hover:bg-[var(--danger-light)] disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {bulkBusy ? 'Excluding…' : `Exclude ${selectedLineItemIds.size}`}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {timesheet.line_items.length === 0
                   ? <p className="text-sm text-muted-foreground">No line items yet.</p>
                   : (
                     <div className="space-y-2">
-                      {timesheet.line_items.map((lineItem) => (
-                        <div key={lineItem.id} className={`group rounded-lg border px-3 py-2.5 transition ${lineItem.is_rejected ? 'border-[var(--danger)]/30 bg-[var(--danger-light)]/40' : 'border-border/60 bg-muted/20 hover:bg-muted/40'}`}>
-                          <div className="flex items-start justify-between gap-2">
+                      {timesheet.line_items.map((lineItem) => {
+                        const isSelected = selectedLineItemIds.has(lineItem.id);
+                        const canSelect = isActionable && !lineItem.is_rejected;
+                        return (
+                        <div
+                          key={lineItem.id}
+                          className={`group rounded-lg border transition ${
+                            lineItem.is_rejected
+                              ? 'border-[var(--danger)]/30 bg-[var(--danger-light)]/40'
+                              : isSelected
+                                ? 'border-primary/40 bg-primary/5'
+                                : 'border-border/60 bg-muted/20 hover:bg-muted/40'
+                          }`}
+                        >
+                          <div className="flex items-start gap-2 px-3 py-2.5">
+                            {/* Checkbox column. Excluded rows can't be
+                                selected (re-excluding them is a no-op).
+                                Restore them first if you need to act. */}
+                            <div className="flex h-5 shrink-0 items-center pt-0.5">
+                              <input
+                                type="checkbox"
+                                className="h-4 w-4 rounded border-border accent-primary disabled:opacity-40"
+                                checked={isSelected}
+                                disabled={!canSelect}
+                                onChange={() => toggleLineItemSelection(lineItem.id)}
+                                aria-label={canSelect ? `Select line item ${lineItem.id}` : 'Excluded; cannot be selected'}
+                              />
+                            </div>
                             <div className="min-w-0 flex-1">
                               <div className="flex flex-wrap items-center gap-1.5">
                                 <span className={`font-mono text-sm font-medium ${lineItem.is_rejected ? 'line-through text-muted-foreground' : 'text-foreground'}`}>{format(new Date(lineItem.work_date + 'T00:00:00'), 'MMM d, yyyy (EEE)')}</span>
@@ -1461,7 +1650,8 @@ export const ReviewPanelPage: React.FC = () => {
                             </div>
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 {!!timesheet.line_items.length && (
