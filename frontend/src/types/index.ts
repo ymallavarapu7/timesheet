@@ -566,6 +566,13 @@ export interface IngestionTimesheetSummary {
   employee_name: string | null;
   extracted_employee_name: string | null;
   extracted_supervisor_name: string | null;
+  // Reviewer-confirmed supervisor (FK to users.id). Pre-filled by ingestion
+  // when extracted_supervisor_name fuzzy-matches a tenant user. Survives
+  // approval onto every resulting time entry as an audit anchor.
+  supervisor_user_id: number | null;
+  // Resolved full name of supervisor_user_id, served by the backend so the
+  // table can display it without a second user lookup.
+  supervisor_name: string | null;
   client_id: number | null;
   client_name: string | null;
   period_start: string | null;
@@ -615,6 +622,8 @@ export interface IngestionTimesheetDetail {
   time_entries_created: boolean;
   extracted_employee_name: string | null;
   extracted_supervisor_name: string | null;
+  supervisor_user_id: number | null;
+  supervisor_name: string | null;
   email: IngestionEmailContext | null;
   line_items: IngestionLineItem[];
   audit_log: IngestionAuditLog[];
@@ -623,6 +632,9 @@ export interface IngestionTimesheetDetail {
 export interface IngestionDataUpdate {
   employee_id?: number | null;
   client_id?: number | null;
+  // Reviewer-confirmed supervisor user. Optional: omit to leave it
+  // unchanged; pass null explicitly to clear it.
+  supervisor_user_id?: number | null;
   period_start?: string | null;
   period_end?: string | null;
   total_hours?: string | number | null;

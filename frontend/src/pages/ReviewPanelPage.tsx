@@ -430,7 +430,7 @@ export const ReviewPanelPage: React.FC = () => {
     if (first?.id) navigate(`/ingestion/review/${first.id}`, { replace: true });
   }, [isEmailMode, siblingData, navigate]);
 
-  const [summaryForm, setSummaryForm] = React.useState({ employee_id: '', client_id: '', period_start: '', period_end: '', total_hours: '', internal_notes: '' });
+  const [summaryForm, setSummaryForm] = React.useState({ employee_id: '', client_id: '', supervisor_user_id: '', period_start: '', period_end: '', total_hours: '', internal_notes: '' });
   const [reviewComment, setReviewComment] = React.useState('');
   const [rejectReason, setRejectReason] = React.useState('');
   const [lineItemModalOpen, setLineItemModalOpen] = React.useState(false);
@@ -471,6 +471,7 @@ export const ReviewPanelPage: React.FC = () => {
     setSummaryForm({
       employee_id: timesheet.employee_id ? String(timesheet.employee_id) : '',
       client_id: timesheet.client_id ? String(timesheet.client_id) : '',
+      supervisor_user_id: timesheet.supervisor_user_id ? String(timesheet.supervisor_user_id) : '',
       period_start: timesheet.period_start ?? '',
       period_end: timesheet.period_end ?? '',
       total_hours: timesheet.total_hours ? Number(timesheet.total_hours).toFixed(1) : '',
@@ -619,6 +620,7 @@ export const ReviewPanelPage: React.FC = () => {
     await updateTimesheet.mutateAsync({ id: timesheet.id, data: {
       employee_id: summaryForm.employee_id ? Number(summaryForm.employee_id) : null,
       client_id: summaryForm.client_id ? Number(summaryForm.client_id) : null,
+      supervisor_user_id: summaryForm.supervisor_user_id ? Number(summaryForm.supervisor_user_id) : null,
       period_start: summaryForm.period_start || null,
       period_end: summaryForm.period_end || null,
       total_hours: summaryForm.total_hours || null,
@@ -1079,13 +1081,30 @@ export const ReviewPanelPage: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Supervisor */}
-                {timesheet?.extracted_supervisor_name && (
-                  <div className="mt-3">
-                    <label className="mb-1.5 block text-sm font-medium text-foreground">Supervisor</label>
-                    <p className="text-sm text-muted-foreground">{timesheet.extracted_supervisor_name}</p>
-                  </div>
-                )}
+                {/* Supervisor: editable dropdown of tenant users.
+                    Permissive model — any reviewer can override the
+                    extracted name. The original LLM-extracted name is
+                    kept on the record (and on every TimeEntry created
+                    by approval) as an audit anchor regardless of the
+                    reviewer's choice. */}
+                <div className="mt-3">
+                  <label className="mb-1.5 block text-sm font-medium text-foreground">Supervisor</label>
+                  <select
+                    className="field-input"
+                    value={summaryForm.supervisor_user_id}
+                    onChange={(e) => setSummaryForm((c) => ({ ...c, supervisor_user_id: e.target.value }))}
+                  >
+                    <option value="">No supervisor</option>
+                    {users.map((u) => (
+                      <option key={u.id} value={u.id}>{u.full_name}</option>
+                    ))}
+                  </select>
+                  {timesheet?.extracted_supervisor_name && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Extracted from document: <span className="font-medium text-foreground">{timesheet.extracted_supervisor_name}</span>. Saved with the approved entries for audit.
+                    </p>
+                  )}
+                </div>
               </div>
 
               {/* Week & Hours */}
