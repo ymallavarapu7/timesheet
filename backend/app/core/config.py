@@ -30,6 +30,7 @@ ENV_FIELD_MAP = {
     "s3_access_key": "S3_ACCESS_KEY",
     "s3_secret_key": "S3_SECRET_KEY",
     "encryption_key": "ENCRYPTION_KEY",
+    "encryption_keys_legacy": "ENCRYPTION_KEYS_LEGACY",
     "openai_api_key": "OPENAI_API_KEY",
     "google_client_id": "GOOGLE_CLIENT_ID",
     "google_client_secret": "GOOGLE_CLIENT_SECRET",
@@ -223,6 +224,16 @@ class Settings(BaseModel):
     encryption_key: str = Field(
         default="",
         description="32-byte hex key used for AES-256-GCM encryption."
+    )
+    encryption_keys_legacy: str = Field(
+        default="",
+        description=(
+            "Comma-separated 32-byte hex keys eligible for decryption only. "
+            "Used during key rotation: append the previous active key here, "
+            "then rotate ENCRYPTION_KEY. Old ciphertexts continue to decrypt "
+            "via these keys until they are re-encrypted under the new active "
+            "key."
+        ),
     )
     openai_api_key: str = Field(
         default="",

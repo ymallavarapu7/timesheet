@@ -362,3 +362,124 @@ def test_oauth_popup_response_sets_relaxed_csp(monkeypatch):
     # the popup.
     assert "script-src 'self'" not in csp
     assert "https:" not in csp
+
+
+# ── Encryption key rotation support (audit fix H5) ─────────────────────────
+
+
+def test_encrypt_emits_v1_versioned_format(monkeypatch):
+    """New ciphertexts carry a v1. prefix so callers can identify the
+    format. Future rotations can introduce v2 without breaking v1 reads."""
+    import secrets as _secrets
+    from app.services import encryption as enc
+
+    monkeypatch.setattr(settings, "encryption_key", _secrets.token_hex(32))
+    out = enc.encrypt("hello world")
+    assert out.startswith("v1.")
+
+
+def test_encrypt_round_trip_under_active_key(monkeypatch):
+    import secrets as _secrets
+    from app.services import encryption as enc
+
+    monkeypatch.setattr(settings, "encryption_key", _secrets.token_hex(32))
+    monkeypatch.setattr(settings, "encryption_keys_legacy", "")
+    cipher = enc.encrypt("payload that round-trips")
+    assert enc.decrypt(cipher) == "payload that round-trips"
+
+
+def test_decrypt_accepts_legacy_unprefixed_format(monkeypatch):
+    """Rows written before this change have no v1. prefix. They must
+    continue to decrypt under the active key without a data migration."""
+    import base64
+    import os
+    import secrets as _secrets
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    from app.services import encryption as enc
+
+    key_hex = _secrets.token_hex(32)
+    monkeypatch.setattr(settings, "encryption_key", key_hex)
+    monkeypatch.setattr(settings, "encryption_keys_legacy", "")
+
+    # Build a legacy-format ciphertext directly: pure base64 of nonce||ct.
+    nonce = os.urandom(12)
+    ciphertext = AESGCM(bytes.fromhex(key_hex)).encrypt(nonce, b"legacy", None)
+    legacy = base64.b64encode(nonce + ciphertext).decode("utf-8")
+
+    assert not legacy.startswith("v1.")
+    assert enc.decrypt(legacy) == "legacy"
+
+
+def test_decrypt_falls_back_to_legacy_key_after_rotation(monkeypatch):
+    """After an operator rotates the active key, rows protected by the
+    *previous* active key still decrypt as long as that key is listed in
+    encryption_keys_legacy."""
+    import secrets as _secrets
+
+    from app.services import encryption as enc
+
+    old_key = _secrets.token_hex(32)
+    new_key = _secrets.token_hex(32)
+
+    # Step 1: encrypt with the old key.
+    monkeypatch.setattr(settings, "encryption_key", old_key)
+    monkeypatch.setattr(settings, "encryption_keys_legacy", "")
+    old_cipher = enc.encrypt("written before rotation")
+
+    # Step 2: rotate to the new key, demote the old one to legacy.
+    monkeypatch.setattr(settings, "encryption_key", new_key)
+    monkeypatch.setattr(settings, "encryption_keys_legacy", old_key)
+
+    # Old ciphertext still decrypts (via legacy fallback).
+    assert enc.decrypt(old_cipher) == "written before rotation"
+
+    # New ciphertexts now use the new active key.
+    new_cipher = enc.encrypt("written after rotation")
+    assert enc.decrypt(new_cipher) == "written after rotation"
+
+
+def test_decrypt_raises_when_no_key_works(monkeypatch):
+    import secrets as _secrets
+
+    from app.services import encryption as enc
+
+    # Encrypt under one key, then change to a completely different one
+    # with no legacy fallback. Decryption should fail with a clear error
+    # rather than silently returning garbage.
+    monkeypatch.setattr(settings, "encryption_key", _secrets.token_hex(32))
+    cipher = enc.encrypt("inaccessible after key loss")
+
+    monkeypatch.setattr(settings, "encryption_key", _secrets.token_hex(32))
+    monkeypatch.setattr(settings, "encryption_keys_legacy", "")
+    with pytest.raises(ValueError, match="Decryption failed"):
+        enc.decrypt(cipher)
+
+
+def test_decrypt_supports_multiple_legacy_keys(monkeypatch):
+    """An operator may have already done one rotation in the past, so
+    the legacy list can carry several historical keys."""
+    import secrets as _secrets
+
+    from app.services import encryption as enc
+
+    key_a = _secrets.token_hex(32)
+    key_b = _secrets.token_hex(32)
+    key_c = _secrets.token_hex(32)
+
+    # Ciphertext from era A.
+    monkeypatch.setattr(settings, "encryption_key", key_a)
+    monkeypatch.setattr(settings, "encryption_keys_legacy", "")
+    cipher_a = enc.encrypt("era a")
+
+    # Ciphertext from era B.
+    monkeypatch.setattr(settings, "encryption_key", key_b)
+    monkeypatch.setattr(settings, "encryption_keys_legacy", key_a)
+    cipher_b = enc.encrypt("era b")
+
+    # Now in era C with both A and B as legacy.
+    monkeypatch.setattr(settings, "encryption_key", key_c)
+    monkeypatch.setattr(settings, "encryption_keys_legacy", f"{key_a}, {key_b}")
+    assert enc.decrypt(cipher_a) == "era a"
+    assert enc.decrypt(cipher_b) == "era b"
