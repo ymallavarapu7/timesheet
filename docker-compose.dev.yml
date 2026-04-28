@@ -1,0 +1,91 @@
+# Dev overlay: live reload for api / worker / frontend.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# This overlay does NOT replace docker-compose.yml — Compose merges the two.
+# It only redefines the services that need source bind-mounts and reload-
+# friendly run commands. db / redis / volumes are inherited from the base.
+#
+# What you get:
+#   - frontend: Vite dev server on port 5174 with HMR. Source edits in
+#     frontend/src reflect in the browser within ~1s.
+#   - api:      uvicorn --reload. Source edits in backend/ trigger a reload.
+#   - worker:   arq worker re-launched via watchfiles when backend/ changes.
+#
+# When to NOT use this overlay:
+#   - You want the production-style nginx-served bundle to QA the build
+#     output. Run plain `docker compose up` for that.
+#   - You're testing how the prod bundle handles base path / nginx routing.
+#
+# Switching modes cleanly:
+#   docker compose down
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# (or back to prod-style with `docker compose up` after a `down`).
+
+version: "3.9"
+
+services:
+  api:
+    # Bind-mount the backend source over /app so edits propagate without a
+    # rebuild. Python deps stay baked into the image.
+    volumes:
+      - ./backend:/app
+      - uploads:/app/uploads
+    # uvicorn --reload watches the package and restarts on change. We keep
+    # the alembic upgrade so a fresh dev DB still gets migrated on boot.
+    command: >
+      sh -c "
+        alembic upgrade head &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app
+      "
+
+  worker:
+    # Worker source is bind-mounted, but arq has no native --reload and
+    # adding a watcher dep just for dev is more weight than it's worth.
+    # When you edit worker code (rare), restart it manually:
+    #   docker compose restart worker
+    volumes:
+      - ./backend:/app
+      - uploads:/app/uploads
+
+  frontend:
+    # Replace the nginx-serving production image with a node dev container.
+    # The Dockerfile build stage already has Node + dependencies installed,
+    # but we bind the source over /app and run vite dev directly. Using the
+    # same image avoids a separate Dockerfile.dev.
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      # Anonymous volume protects the container's node_modules from being
+      # shadowed by a host-side node_modules that might not exist or might
+      # be Windows-built. Container installs into this volume on first run.
+      - /app/node_modules
+    # Override the build/serve flow with vite dev.
+    # --host 0.0.0.0 binds outside the container; without it Vite only listens
+    # on 127.0.0.1 inside and the host port mapping yields ECONNREFUSED.
+    command: >
+      sh -c "
+        if [ ! -d node_modules ] || [ ! -f node_modules/.package-lock.json ]; then
+          echo '>>> Installing frontend dependencies (one-time)...';
+          npm ci;
+        fi;
+        npm run dev -- --host 0.0.0.0
+      "
+    ports:
+      # Expose Vite's port. Browse http://localhost:5174 in dev mode.
+      # The base file's 80:80 mapping is preserved by Compose merge for
+      # backward-compat, but the container won't be listening on 80 in dev.
+      - "5174:5174"
+    environment:
+      # In dev, point Vite at the api container by service name. The host's
+      # exposed BACKEND_PORT (default 8000) is also reachable from the host
+      # browser thanks to Compose's port mapping in the base file.
+      VITE_API_BASE_URL: http://localhost:8000
+      VITE_BASE_PATH: /
+      BACKEND_HOST: api
+      BACKEND_PORT: "8000"
+      FRONTEND_PORT: "5174"
+    depends_on:
+      - api

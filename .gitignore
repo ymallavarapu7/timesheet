@@ -35,6 +35,14 @@ backups/
 # Local-only dev quick login
 frontend/src/pages/DevQuickLogin.tsx
 
+# Workshop / design artifacts - kept local, never committed
+inbox-mockup.html
+inbox-comparison.html
+dashboard-comparison.html
+review-comparison.html
+docs/redesign-roadmap.md
+cleanup-cascade-test.sh
+
 # Claude Code
 .claude/
 CLAUDE.md
