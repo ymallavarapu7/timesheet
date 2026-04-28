@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowRight, ChevronDown, ChevronRight, RefreshCw, Search, Trash2, X } from 'lucide-react';
+import { AlertTriangle, ArrowRight, ChevronDown, ChevronRight, Clock, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import axios from 'axios';
@@ -7,11 +7,13 @@ import axios from 'axios';
 
 import { Badge, Loading } from '@/components';
 import { BulkSelectBar } from '@/components/ui/BulkSelectBar';
+import { CreateClientFromDomainPopover } from '@/components/ui/CreateClientFromDomainPopover';
 import {
   useAuth,
   useBulkReprocessEmails,
   useBulkDeleteIngestedEmails,
   useClients,
+  useCreateClientFromDomain,
   useDeleteIngestedEmail,
   useFetchJobStatus,
   useIngestionTimesheets,
@@ -53,6 +55,94 @@ const formatHours = (value: string | number | null | undefined): string => {
   const numeric = Number(value);
   if (Number.isNaN(numeric)) return String(value);
   return numeric.toFixed(1);
+};
+
+// Rows older than this (in business days, weekends excluded) get an amber
+// tint on the Received cell so reviewers can scan stale ones at a glance.
+export const STALE_BUSINESS_DAYS = 5;
+
+// Personal email providers — never auto-create a client from these domains.
+// Mirror of the backend PERSONAL_EMAIL_DOMAINS set in ingestion_pipeline.py.
+const PERSONAL_EMAIL_DOMAINS = new Set([
+  'gmail.com',
+  'outlook.com',
+  'hotmail.com',
+  'yahoo.com',
+  'icloud.com',
+  'aol.com',
+  'live.com',
+  'msn.com',
+  'proton.me',
+  'protonmail.com',
+]);
+
+export const domainOf = (email: string | null | undefined): string => {
+  if (!email || !email.includes('@')) return '';
+  return email.split('@', 2)[1].trim().toLowerCase();
+};
+
+export const isPersonalDomain = (domain: string): boolean =>
+  PERSONAL_EMAIL_DOMAINS.has(domain.trim().toLowerCase());
+
+// Smart-guess client name from a domain. "dxc.com" -> "DXC" (uppercase if
+// short), "aegon.com" -> "Aegon" (title-case otherwise). Reviewer can edit.
+export const suggestNameFromDomain = (domain: string): string => {
+  const stem = (domain.split('.')[0] || domain).trim();
+  if (!stem) return '';
+  if (stem.length <= 4) return stem.toUpperCase();
+  return stem.charAt(0).toUpperCase() + stem.slice(1).toLowerCase();
+};
+
+export const getInitials = (name: string | null | undefined, email?: string | null): string => {
+  const source = (name || '').trim();
+  if (source.includes(',')) {
+    const [last, first] = source.split(',').map((part) => part.trim()).filter(Boolean);
+    if (last && first) return (first.charAt(0) + last.charAt(0)).toUpperCase();
+    if (last) return last.slice(0, 2).toUpperCase();
+  }
+  const parts = source.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase();
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  // Fall back to the first two characters of the local-part of the email.
+  const local = (email || '').split('@')[0] || '';
+  if (local.length >= 2) return local.slice(0, 2).toUpperCase();
+  return '?';
+};
+
+// Days between two dates, weekends excluded, rounded down. Returns 0 for
+// today, fractional values are floored. Used to flag rows older than
+// STALE_BUSINESS_DAYS.
+const businessDaysBetween = (later: Date, earlier: Date): number => {
+  const ms = later.getTime() - earlier.getTime();
+  if (ms <= 0) return 0;
+  const calendarDays = Math.floor(ms / (24 * 60 * 60 * 1000));
+  // Cheap approximation: 5 business days per 7 calendar days. Good enough
+  // for staleness highlighting; real business-day math would handle holidays.
+  return Math.floor(calendarDays * (5 / 7));
+};
+
+export const formatRelativeReceived = (value: string | null | undefined): string => {
+  if (!value) return '--';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '--';
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMinutes = Math.floor(diffMs / (60 * 1000));
+  const diffHours = Math.floor(diffMs / (60 * 60 * 1000));
+  const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+  if (diffMinutes < 1) return 'Just now';
+  if (diffMinutes < 60) return `${diffMinutes}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+};
+
+export const isStaleReceived = (value: string | null | undefined): boolean => {
+  if (!value) return false;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+  return businessDaysBetween(new Date(), date) >= STALE_BUSINESS_DAYS;
 };
 
 const cleanEmployeeNameForDisplay = (value?: string | null): string => {
@@ -312,6 +402,18 @@ export const InboxPage: React.FC = () => {
   const [showTechnicalDetails, setShowTechnicalDetails] = React.useState(false);
   const [selectedEmailIds, setSelectedEmailIds] = useState<Set<number>>(new Set());
 
+  // ── Cascade-create-client-from-domain popover state ──
+  // When the user clicks a "+ Create from <domain> (N)" inline button on an
+  // unresolved Client cell, we anchor a popover under that button. The
+  // popover handles the create / link-to-existing decision and triggers the
+  // backend cascade endpoint, which assigns the new (or existing) client to
+  // every pending row from the same domain in this tenant.
+  const [cascadePopover, setCascadePopover] = React.useState<{
+    domain: string;
+    anchorEl: HTMLElement;
+  } | null>(null);
+  const createClientFromDomain = useCreateClientFromDomain();
+
   const queryClient = useQueryClient();
   const triggerFetch = useTriggerFetchEmails();
   const { data: mailboxes = [] } = useMailboxes();
@@ -348,6 +450,29 @@ export const InboxPage: React.FC = () => {
     }
   }, [fetchStatus?.status, fetchStatus?.message, queryClient]);
   const { data: clients = [] } = useClients();
+
+  // Pre-fill the popover input with the matching existing client name when
+  // the smart-guess from the domain hits an existing client (case-insensitive,
+  // word-boundary fuzzy match). Otherwise, use the smart-guess so the
+  // reviewer just confirms a fresh "DXC" / "Aegon" / etc. The reviewer can
+  // edit the input freely either way.
+  const cascadeInitialValue = React.useMemo(() => {
+    if (!cascadePopover) return '';
+    const guess = suggestNameFromDomain(cascadePopover.domain);
+    const guessLower = guess.toLowerCase();
+    if (!guessLower) return guess;
+    const list = clients as Array<{ id: number; name: string }>;
+    const fuzzy = list.find((c) => {
+      const name = (c.name || '').toLowerCase();
+      return (
+        name === guessLower
+        || name.startsWith(guessLower + ' ')
+        || name.endsWith(' ' + guessLower)
+        || name.includes(' ' + guessLower + ' ')
+      );
+    });
+    return fuzzy ? fuzzy.name : guess;
+  }, [cascadePopover, clients]);
   const { data: skippedOverview, isLoading: skippedLoading } = useSkippedEmails(8);
   const { data: allTimesheets = [], isLoading: countsLoading } = useIngestionTimesheets(
     { limit: 200 },
@@ -463,6 +588,57 @@ export const InboxPage: React.FC = () => {
     deleteEmail.isPending ||
     bulkReprocessEmails.isPending ||
     bulkDeleteEmails.isPending;
+
+  // Pending count for a given domain across the currently visible groups.
+  // Personal-domain groups are excluded since they don't participate in the
+  // cascade (the backend rejects gmail/outlook/etc. with 422).
+  const cascadePendingCount = (domain: string): number => {
+    const target = domain.trim().toLowerCase();
+    if (!target) return 0;
+    return groups.reduce((accumulator, group) => {
+      if (group.kind === 'skipped') return accumulator;
+      if (group.primary.client_id != null) return accumulator;
+      if (domainOf(group.primary.sender_email) !== target) return accumulator;
+      return accumulator + 1;
+    }, 0);
+  };
+
+  const handleCascadeConfirm = async (
+    domain: string,
+    payload: { name: string; existing: { id: number; name: string } | null },
+  ) => {
+    try {
+      const result = await createClientFromDomain.mutateAsync({
+        name: payload.existing ? payload.existing.name : payload.name,
+        domain,
+      });
+      setCascadePopover(null);
+      setStatusTone('success');
+      setStatusMessage(
+        result.cascaded_count > 0
+          ? `Assigned ${result.client.name} to ${result.cascaded_count} pending email${result.cascaded_count === 1 ? '' : 's'} from ${domain}.`
+          : `Created ${result.client.name} from ${domain}.`,
+      );
+    } catch (error) {
+      // 409 conflict: the domain is already mapped to another client. Surface
+      // the existing-client info to the reviewer so they can decide.
+      if (axios.isAxiosError(error) && error.response?.status === 409) {
+        const detail = error.response.data?.detail as
+          | { message?: string; existing_client_name?: string }
+          | undefined;
+        setStatusTone('danger');
+        setStatusMessage(
+          detail?.message
+            || (detail?.existing_client_name
+              ? `Domain '${domain}' is already mapped to '${detail.existing_client_name}'.`
+              : `Domain '${domain}' is already mapped to another client.`),
+        );
+        return;
+      }
+      setStatusTone('danger');
+      setStatusMessage(getApiErrorMessage(error, 'Unable to assign client from domain.'));
+    }
+  };
 
   const handleBulkReprocess = async () => {
     const ids = [...selectedEmailIds];
@@ -992,7 +1168,6 @@ export const InboxPage: React.FC = () => {
                   <th className="px-4 py-4 font-medium">Week</th>
                   <th className="px-4 py-4 font-medium">Hours</th>
                   <th className="px-4 py-4 font-medium">Status</th>
-                  <th className="px-4 py-4 font-medium">AI Flags</th>
                   <th className="px-4 py-4 font-medium">Received</th>
                   <th className="px-4 py-4 font-medium text-right">Actions</th>
                 </tr>
@@ -1029,9 +1204,15 @@ export const InboxPage: React.FC = () => {
                           />
                         </td>
                         <td className="px-4 py-5 align-top">
-                          <div className="flex min-w-[180px] items-start gap-3">
-
-                            <div>
+                          <div className="group/sender flex min-w-[180px] items-start gap-3">
+                            <div
+                              className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold uppercase tracking-wide text-slate-100 ring-1 ring-inset ring-white/5 dark:ring-white/10"
+                              style={{ background: 'linear-gradient(135deg, #334155, #1e293b)' }}
+                              aria-hidden="true"
+                            >
+                              {getInitials(rowTarget.sender_name, rowTarget.sender_email)}
+                            </div>
+                            <div className="min-w-0">
                               <p className="font-semibold text-foreground">
                                 {rowTarget.sender_name || rowTarget.sender_email || 'Unknown sender'}
                                 {rowTarget.is_likely_resubmission && (
@@ -1043,7 +1224,11 @@ export const InboxPage: React.FC = () => {
                                   </span>
                                 )}
                               </p>
-                              <p className="mt-1 font-mono text-xs text-muted-foreground">{rowTarget.sender_email || '--'}</p>
+                              <p
+                                className="mt-1 max-h-0 overflow-hidden font-mono text-xs text-muted-foreground opacity-0 transition-all duration-150 group-hover:max-h-6 group-hover:opacity-100 group-focus-within:max-h-6 group-focus-within:opacity-100"
+                              >
+                                {rowTarget.sender_email || '--'}
+                              </p>
                             </div>
                           </div>
                         </td>
@@ -1057,8 +1242,54 @@ export const InboxPage: React.FC = () => {
                             ) : null}
                           </div>
                         </td>
-                        <td className="px-4 py-5 align-top text-sm text-foreground">
-                          {rowTarget.client_name || '--'}
+                        <td className="px-4 py-5 align-top text-sm">
+                          {rowTarget.client_name ? (
+                            <span className="text-foreground">{rowTarget.client_name}</span>
+                          ) : isSkipped ? (
+                            <span className="text-muted-foreground">--</span>
+                          ) : (() => {
+                            const senderDomain = domainOf(rowTarget.sender_email);
+                            // Personal-domain rows can't cascade — the backend
+                            // refuses gmail/outlook/etc. Show a static pill
+                            // and let the reviewer assign manually via the
+                            // review page. Surfacing a dropdown of all clients
+                            // here would crowd the row and duplicate the work
+                            // that's already inline on the review page.
+                            if (!senderDomain || isPersonalDomain(senderDomain)) {
+                              return (
+                                <span
+                                  className="inline-flex items-center rounded-md border border-dashed border-amber-400/45 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-300"
+                                  title={
+                                    senderDomain
+                                      ? `${senderDomain} is a personal email provider. Open this row to assign a client manually.`
+                                      : 'No sender domain. Open this row to assign a client manually.'
+                                  }
+                                >
+                                  Needs client
+                                </span>
+                              );
+                            }
+                            const count = cascadePendingCount(senderDomain);
+                            return (
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setCascadePopover({
+                                    domain: senderDomain,
+                                    anchorEl: event.currentTarget,
+                                  });
+                                }}
+                                className="inline-flex items-center gap-1 rounded-md border border-dashed border-amber-400/45 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-700 transition hover:border-amber-400/70 hover:bg-amber-500/15 dark:text-amber-300"
+                                title={`Create or link a client for ${senderDomain}`}
+                              >
+                                <Plus className="h-3 w-3" />
+                                <span>Create from</span>
+                                <span className="font-mono">{senderDomain}</span>
+                                {count > 1 ? <span className="opacity-70">({count})</span> : null}
+                              </button>
+                            );
+                          })()}
                         </td>
                         <td className="px-4 py-5 align-top">
                           {rowTarget.extracted_employee_name || rowTarget.employee_name ? (
@@ -1068,7 +1299,12 @@ export const InboxPage: React.FC = () => {
                           ) : isSkipped ? (
                             <span className="text-sm text-muted-foreground">--</span>
                           ) : (
-                            <span className="text-sm italic text-muted-foreground">Unassigned</span>
+                            <span
+                              className="inline-flex items-center rounded-md border border-dashed border-amber-400/45 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-300"
+                              title="Employee not yet assigned"
+                            >
+                              Needs employee
+                            </span>
                           )}
                         </td>
                         <td className="px-4 py-5 align-top text-sm text-muted-foreground">
@@ -1076,19 +1312,52 @@ export const InboxPage: React.FC = () => {
                             ? formatDateRange(group.timesheets[0]?.period_start ?? null, group.timesheets[group.timesheets.length - 1]?.period_end ?? null)
                             : formatDateRange(rowTarget.period_start, rowTarget.period_end)}
                         </td>
-                        <td className="px-4 py-5 align-top font-mono text-sm font-medium text-foreground">
-                          {isSkipped ? <span className="font-sans font-normal text-muted-foreground">--</span> : formatHours(group.totalHours)}
+                        <td className="px-4 py-5 align-top">
+                          {isSkipped ? (
+                            <span className="font-sans text-sm text-muted-foreground">--</span>
+                          ) : group.anomalyCount > 0 ? (
+                            <span
+                              className="inline-flex items-center gap-1 rounded-md border border-dashed border-amber-400/45 bg-amber-500/10 px-2 py-1 font-mono text-xs font-medium text-amber-700 dark:text-amber-300"
+                              title={`${group.anomalyCount} anomaly${group.anomalyCount === 1 ? '' : 'ies'} flagged. Open to review.`}
+                            >
+                              {formatHours(group.totalHours)}
+                              <AlertTriangle className="h-3 w-3" />
+                            </span>
+                          ) : (
+                            <span className="font-mono text-sm font-medium text-foreground">{formatHours(group.totalHours)}</span>
+                          )}
                         </td>
                         <td className="px-4 py-5 align-top">
                           <Badge tone={getStatusTone(group.status)} className="normal-case tracking-normal">
                             {statusLabel(group.status)}
                           </Badge>
                         </td>
-                        <td className="px-4 py-5 align-top text-sm text-muted-foreground">
-                          {group.anomalyCount ? `${group.anomalyCount}` : '--'}
-                        </td>
-                        <td className="px-4 py-5 align-top text-sm text-muted-foreground">
-                          {formatShortDate(rowTarget.received_at || rowTarget.created_at)}
+                        <td className="px-4 py-5 align-top">
+                          {(() => {
+                            const ts = rowTarget.received_at || rowTarget.created_at;
+                            const stale = !isSkipped && isStaleReceived(ts);
+                            const label = formatRelativeReceived(ts);
+                            const date = ts ? new Date(ts) : null;
+                            const titleAttr = date && !Number.isNaN(date.getTime())
+                              ? date.toLocaleString()
+                              : undefined;
+                            if (stale) {
+                              return (
+                                <span
+                                  className="inline-flex items-center gap-1 rounded-md border border-dashed border-amber-400/45 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-300"
+                                  title={`Waiting longer than ${STALE_BUSINESS_DAYS} business days${titleAttr ? ' · ' + titleAttr : ''}`}
+                                >
+                                  <Clock className="h-3 w-3" />
+                                  {label}
+                                </span>
+                              );
+                            }
+                            return (
+                              <span className="text-sm text-muted-foreground" title={titleAttr}>
+                                {label}
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td className="px-4 py-5 align-top text-right">
                           <div className="flex justify-end gap-2">
@@ -1145,6 +1414,19 @@ export const InboxPage: React.FC = () => {
         </div>
       </section>
 
+      <CreateClientFromDomainPopover
+        open={cascadePopover != null}
+        domain={cascadePopover?.domain ?? ''}
+        anchorEl={cascadePopover?.anchorEl ?? null}
+        cascadeCount={cascadePopover ? cascadePendingCount(cascadePopover.domain) : 0}
+        existingClients={clients as Array<{ id: number; name: string }>}
+        initialValue={cascadeInitialValue}
+        isSubmitting={createClientFromDomain.isPending}
+        onConfirm={(payload) => {
+          if (cascadePopover) void handleCascadeConfirm(cascadePopover.domain, payload);
+        }}
+        onClose={() => setCascadePopover(null)}
+      />
     </div>
   );
 };

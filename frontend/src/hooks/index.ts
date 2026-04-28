@@ -21,6 +21,7 @@ export {
   useDeleteClient,
   useBulkDeleteClients,
   useCreateClient,
+  useCreateClientFromDomain,
   useDeleteProject,
   useProjects,
   useTasks,

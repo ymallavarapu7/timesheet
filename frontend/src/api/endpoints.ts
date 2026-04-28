@@ -162,6 +162,13 @@ export const clientsAPI = {
 
   bulkDelete: (clientIds: number[]) =>
     apiClient.post<{ deleted: number }>('/clients/bulk-delete', { client_ids: clientIds }),
+
+  createFromDomain: (data: { name: string; domain: string }) =>
+    apiClient.post<{
+      client: { id: number; name: string };
+      domain: string;
+      cascaded_count: number;
+    }>('/clients/from-domain', data),
 };
 
 export const departmentsAPI = {

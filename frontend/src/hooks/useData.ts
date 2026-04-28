@@ -248,6 +248,25 @@ export const useCreateClient = () => {
   });
 };
 
+// Cascade-creates a Client from a domain and auto-resolves every pending
+// IngestionTimesheet in the tenant whose linked email's sender / forwarded /
+// body / chain-sender domain matches. Backed by POST /clients/from-domain.
+// On success, invalidates ingestion-timesheet queries so the inbox reflects
+// the cascade.
+export const useCreateClientFromDomain = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { name: string; domain: string }) =>
+      clientsAPI.createFromDomain(data).then((res) => res.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'timesheets'] });
+      queryClient.invalidateQueries({ queryKey: ['ingestion', 'skipped-emails'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    },
+  });
+};
+
 // Projects queries
 export const useProjects = (params?: GenericQueryParams) => {
   return useQuery({
