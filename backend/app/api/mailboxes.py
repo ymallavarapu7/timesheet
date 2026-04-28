@@ -27,12 +27,18 @@ from app.db import get_db
 from app.models.client import Client
 from app.models.mailbox import Mailbox, MailboxAuthType, MailboxProtocol, OAuthProvider
 from app.models.tenant import Tenant
+from app.models.user import User
 from app.schemas.ingestion import (
     ConnectionTestResult,
     MailboxCreate,
     MailboxRead,
     MailboxUpdate,
     OAuthConnectResponse,
+)
+from app.services.activity import (
+    TENANT_ADMIN_ACTIVITY_SCOPE,
+    build_activity_event,
+    record_activity_events,
 )
 from app.services.encryption import encrypt
 from app.services.imap import test_connection
@@ -77,11 +83,25 @@ def _state_signature(payload: str) -> str:
     return _b64url_encode(digest)
 
 
-def _build_oauth_state(provider: str, tenant_id: int) -> str:
+def _build_oauth_state(provider: str, tenant_id: int, user_id: int) -> str:
+    """Construct a signed OAuth state token bound to the initiating user.
+
+    The HMAC signature with the server's SECRET_KEY prevents tampering with
+    any payload field, so user_id is trustworthy on callback even though the
+    callback itself runs without an Authorization header (OAuth providers
+    redirect plain GET; we cannot require an auth header on that hop).
+
+    On callback, we verify the user still exists and is still active and
+    in the same tenant the state was issued for. The mailbox creation is
+    then attributed to that user via the activity log, which is what the
+    audit needed: a trustworthy "who connected this mailbox" anchor that
+    cannot be silently swapped by handing the popup to another admin.
+    """
     payload = json.dumps(
         {
             "provider": provider,
             "tenant_id": tenant_id,
+            "user_id": user_id,
             "issued_at": int(time()),
             "nonce": secrets.token_urlsafe(12),
         },
@@ -104,12 +124,21 @@ def _parse_oauth_state(state: str) -> dict:
             raise ValueError("OAuth state has expired.")
         tenant_id = int(data["tenant_id"])
         provider = str(data["provider"])
+        # user_id is required on new states. States issued before this fix
+        # don't carry it; we treat those as expired (force re-auth) rather
+        # than silently downgrading the binding.
+        if "user_id" not in data:
+            raise ValueError("OAuth state is missing a user binding (re-initiate).")
+        user_id = int(data["user_id"])
+    except ValueError:
+        raise
     except Exception as exc:
         raise ValueError("OAuth state is invalid or expired.") from exc
 
     return {
         "tenant_id": tenant_id,
         "provider": provider,
+        "user_id": user_id,
     }
 
 
@@ -573,7 +602,7 @@ async def get_oauth_connect_url(
             "scope": "openid email profile https://mail.google.com/ https://www.googleapis.com/auth/gmail.send",
             "access_type": "offline",
             "prompt": "consent",
-            "state": _build_oauth_state("google", current_user.tenant_id),
+            "state": _build_oauth_state("google", current_user.tenant_id, current_user.id),
         }
         auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
     elif provider == "microsoft":
@@ -589,7 +618,7 @@ async def get_oauth_connect_url(
             "scope": (
                 "openid profile email offline_access Mail.Read Mail.Send"
             ),
-            "state": _build_oauth_state("microsoft", current_user.tenant_id),
+            "state": _build_oauth_state("microsoft", current_user.tenant_id, current_user.id),
         }
         auth_url = (
             f"https://login.microsoftonline.com/{settings.microsoft_tenant_id}/oauth2/v2.0/authorize?"
@@ -634,6 +663,18 @@ async def oauth_callback(
     if not tenant.ingestion_enabled:
         return _oauth_popup_response("error", "Ingestion is not enabled for this tenant.")
 
+    # Verify the user the state was issued to is still valid in the same
+    # tenant. The signature already prevents tampering, so user_id is
+    # trustworthy; this check guards against an admin who initiated the
+    # flow being deactivated or moved to another tenant before completing.
+    initiating_user = await session.get(User, state_data["user_id"])
+    if not initiating_user:
+        return _oauth_popup_response("error", "The user who started this OAuth flow no longer exists.")
+    if not initiating_user.is_active:
+        return _oauth_popup_response("error", "The user who started this OAuth flow is no longer active.")
+    if initiating_user.tenant_id != tenant.id:
+        return _oauth_popup_response("error", "OAuth flow user does not match the tenant on this state.")
+
     try:
         if provider == OAuthProvider.google.value:
             oauth_data = await _exchange_google_oauth_code(code)
@@ -661,6 +702,43 @@ async def oauth_callback(
             return _oauth_popup_response("error", f"Unknown OAuth provider: {provider}")
     except Exception as exc:
         return _oauth_popup_response("error", f"{provider.title()} OAuth setup failed: {exc}")
+
+    # Audit anchor: attribute the mailbox connection to the user who
+    # actually initiated the OAuth flow (verified via the signed state),
+    # not to whichever browser session happened to land the callback. This
+    # is the trustworthy "who connected this mailbox" record the audit
+    # asked for; it survives the popup-handoff scenario the original
+    # finding flagged.
+    try:
+        await record_activity_events(
+            session,
+            [
+                build_activity_event(
+                    activity_type="MAILBOX_CONNECTED",
+                    visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
+                    tenant_id=tenant.id,
+                    actor_user=initiating_user,
+                    entity_type="mailbox",
+                    entity_id=mailbox.id,
+                    summary=(
+                        f"{initiating_user.full_name} connected {provider.title()} mailbox "
+                        f"{mailbox.oauth_email}."
+                    ),
+                    route="/mailboxes",
+                    route_params={"mailboxId": mailbox.id},
+                    metadata={
+                        "provider": provider,
+                        "mailbox_email": mailbox.oauth_email,
+                    },
+                )
+            ],
+        )
+        await session.commit()
+    except Exception:
+        # Activity logging is best-effort here. The mailbox is already saved;
+        # losing the audit event is preferable to failing the whole OAuth
+        # flow. The actual mailbox row still records its created_at timestamp.
+        await session.rollback()
 
     return _oauth_popup_response(
         "success",

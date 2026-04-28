@@ -1,6 +1,16 @@
+import json
+import time as time_module
+
 import pytest
 
-from app.api.mailboxes import _resolve_oauth_postmessage_origin
+from app.api.mailboxes import (
+    _b64url_decode,
+    _b64url_encode,
+    _build_oauth_state,
+    _parse_oauth_state,
+    _resolve_oauth_postmessage_origin,
+    _state_signature,
+)
 from app.core.config import settings
 from app.core.security import create_access_token, decode_token, get_password_hash, verify_password
 from app.schemas import TenantResponse, TenantUpdate, UserCreate, UserResponse, UserUpdate
@@ -240,3 +250,93 @@ def test_client_resolution_skips_empty_body_emails():
         clients=_CLIENTS_FIXTURE,
     )
     assert cid == 10
+
+
+# ── OAuth state binding to user/session (audit fix C3) ────────────────────
+
+
+def test_build_oauth_state_includes_user_id():
+    state = _build_oauth_state("google", tenant_id=7, user_id=42)
+    payload_b64, _signature = state.split(".", 1)
+    decoded = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+    assert decoded["provider"] == "google"
+    assert decoded["tenant_id"] == 7
+    assert decoded["user_id"] == 42
+    assert "issued_at" in decoded
+    assert "nonce" in decoded
+
+
+def test_parse_oauth_state_returns_user_id():
+    state = _build_oauth_state("microsoft", tenant_id=3, user_id=99)
+    parsed = _parse_oauth_state(state)
+    assert parsed == {"tenant_id": 3, "provider": "microsoft", "user_id": 99}
+
+
+def test_parse_oauth_state_rejects_signature_tampering():
+    state = _build_oauth_state("google", tenant_id=1, user_id=5)
+    payload_b64, signature = state.split(".", 1)
+    # Decode → mutate user_id from 5 to 999 → re-encode without re-signing.
+    decoded = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+    decoded["user_id"] = 999
+    forged_payload = json.dumps(decoded, separators=(",", ":"), sort_keys=True)
+    forged_b64 = _b64url_encode(forged_payload.encode("utf-8"))
+    forged_state = f"{forged_b64}.{signature}"
+    with pytest.raises(ValueError, match="signature"):
+        _parse_oauth_state(forged_state)
+
+
+def test_parse_oauth_state_rejects_legacy_state_without_user_id():
+    """States issued before this fix don't carry user_id. Treat as invalid
+    so callers re-initiate the OAuth flow rather than silently downgrading
+    the binding."""
+    legacy_payload = json.dumps(
+        {
+            "provider": "google",
+            "tenant_id": 1,
+            "issued_at": int(time_module.time()),
+            "nonce": "legacy",
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    legacy_state = (
+        _b64url_encode(legacy_payload.encode("utf-8"))
+        + "."
+        + _state_signature(legacy_payload)
+    )
+    with pytest.raises(ValueError, match="user binding"):
+        _parse_oauth_state(legacy_state)
+
+
+def test_parse_oauth_state_rejects_expired_state():
+    # Build a state with issued_at one hour in the past (well past the
+    # 600s OAUTH_STATE_MAX_AGE_SECONDS window).
+    expired_payload = json.dumps(
+        {
+            "provider": "google",
+            "tenant_id": 1,
+            "user_id": 5,
+            "issued_at": int(time_module.time()) - 3600,
+            "nonce": "abc",
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    expired_state = (
+        _b64url_encode(expired_payload.encode("utf-8"))
+        + "."
+        + _state_signature(expired_payload)
+    )
+    with pytest.raises(ValueError, match="expired"):
+        _parse_oauth_state(expired_state)
+
+
+def test_oauth_state_round_trip_preserves_all_claims():
+    # Spot-check that a freshly-built state for a real-shaped (tenant, user)
+    # round-trips back to the same claims.
+    for tenant_id, user_id, provider in [(1, 1, "google"), (42, 99, "microsoft"), (7, 13, "google")]:
+        state = _build_oauth_state(provider, tenant_id, user_id)
+        parsed = _parse_oauth_state(state)
+        assert parsed["tenant_id"] == tenant_id
+        assert parsed["user_id"] == user_id
+        assert parsed["provider"] == provider
