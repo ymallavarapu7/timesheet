@@ -43,6 +43,9 @@ review-comparison.html
 docs/redesign-roadmap.md
 cleanup-cascade-test.sh
 
+# Local dev tooling - per-developer, kept out of the shared repo
+docker-compose.dev.yml
+
 # Claude Code
 .claude/
 CLAUDE.md
