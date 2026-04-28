@@ -133,11 +133,17 @@ export const CreateClientFromDomainPopover: React.FC<CreateClientFromDomainPopov
     onConfirm({ name: trimmed, existing: exact });
   };
 
+  // When cascadeCount is 0 (or domain is missing) the popover is being
+  // used for a one-off client create rather than a cascade — show plain
+  // labels and skip the "N pending emails will be assigned" preamble.
+  const cascadeMode = Boolean(domain) && cascadeCount > 0;
+  const cascadeSuffix = cascadeMode ? ` · assign ${cascadeCount}` : '';
   const buttonLabel = !trimmed
-    ? `Create · assign ${cascadeCount}`
+    ? `Create${cascadeSuffix}`
     : exact
-      ? `Link to ${exact.name} · assign ${cascadeCount}`
-      : `Create "${trimmed}" · assign ${cascadeCount}`;
+      ? `Link to ${exact.name}${cascadeSuffix}`
+      : `Create "${trimmed}"${cascadeSuffix}`;
+  const headerLabel = cascadeMode ? 'Assign client from domain' : 'Add client';
 
   return (
     <>
@@ -148,7 +154,7 @@ export const CreateClientFromDomainPopover: React.FC<CreateClientFromDomainPopov
       />
       <div
         role="dialog"
-        aria-label="Assign client from domain"
+        aria-label={headerLabel}
         className={cn(
           'absolute z-[90] rounded-xl border border-border/70 bg-card shadow-[0_18px_48px_rgba(0,0,0,0.35)]',
           'p-4',
@@ -157,12 +163,22 @@ export const CreateClientFromDomainPopover: React.FC<CreateClientFromDomainPopov
         onClick={(e) => e.stopPropagation()}
       >
         <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
-          Assign client from domain
+          {headerLabel}
         </p>
-        <p className="mb-3 text-xs text-muted-foreground">
-          All <span className="font-semibold text-amber-700 dark:text-amber-300">{cascadeCount} pending email{cascadeCount === 1 ? '' : 's'}</span>
-          {' '}from <span className="font-mono text-amber-700 dark:text-amber-300">{domain}</span> will be assigned.
-        </p>
+        {cascadeMode ? (
+          <p className="mb-3 text-xs text-muted-foreground">
+            All <span className="font-semibold text-amber-700 dark:text-amber-300">{cascadeCount} pending email{cascadeCount === 1 ? '' : 's'}</span>
+            {' '}from <span className="font-mono text-amber-700 dark:text-amber-300">{domain}</span> will be assigned.
+          </p>
+        ) : domain ? (
+          <p className="mb-3 text-xs text-muted-foreground">
+            Will also map <span className="font-mono text-foreground">{domain}</span> to this client so future emails from that domain auto-resolve.
+          </p>
+        ) : (
+          <p className="mb-3 text-xs text-muted-foreground">
+            Create a new client. The sender's domain is personal (gmail, outlook, etc.) so no domain mapping is added.
+          </p>
+        )}
 
         <label className="mb-1 block text-xs font-medium text-muted-foreground" htmlFor="cascade-name-input">
           Client name

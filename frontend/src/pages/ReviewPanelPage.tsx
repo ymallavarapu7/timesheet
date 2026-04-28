@@ -6,12 +6,14 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { ingestionAPI } from '@/api/endpoints';
 import { Badge, Card, CardContent, CardHeader, CardTitle, Loading, Modal } from '@/components';
+import { CreateClientFromDomainPopover } from '@/components/ui/CreateClientFromDomainPopover';
 import {
   useAddIngestionLineItem,
   useApproveIngestionTimesheet,
   useAssignChainCandidate,
   useClients,
   useCreateClient,
+  useCreateClientFromDomain,
   useDeleteIngestionLineItem,
   useDraftIngestionComment,
   useFetchJobStatus,
@@ -32,6 +34,31 @@ import {
 import type { ChainCandidate, EmailAttachmentSummary, IngestionLineItem, IngestionLineItemPayload, SpreadsheetPreview } from '@/types';
 
 type LineItemFormState = { work_date: string; hours: string; description: string; project_code: string; project_id: string };
+
+// Personal email providers — never bind to a Client domain. Mirror of
+// the backend PERSONAL_EMAIL_DOMAINS set; the cascade endpoint refuses
+// to create a domain mapping for these. Same set used by InboxPage.
+const PERSONAL_EMAIL_DOMAINS = new Set([
+  'gmail.com', 'outlook.com', 'hotmail.com', 'yahoo.com',
+  'icloud.com', 'aol.com', 'live.com', 'msn.com', 'proton.me', 'protonmail.com',
+]);
+
+const domainOf = (email: string | null | undefined): string => {
+  if (!email || !email.includes('@')) return '';
+  return email.split('@', 2)[1].trim().toLowerCase();
+};
+
+const isPersonalDomain = (domain: string): boolean =>
+  PERSONAL_EMAIL_DOMAINS.has(domain.trim().toLowerCase());
+
+// Smart-guess client name from a domain (e.g. "dxc.com" -> "DXC",
+// "aegon.com" -> "Aegon"). Uppercase short stems, title-case longer ones.
+const suggestNameFromDomain = (domain: string): string => {
+  const stem = (domain.split('.')[0] || domain).trim();
+  if (!stem) return '';
+  if (stem.length <= 4) return stem.toUpperCase();
+  return stem.charAt(0).toUpperCase() + stem.slice(1).toLowerCase();
+};
 
 const emptyLineItem = (): LineItemFormState => ({ work_date: '', hours: '', description: '', project_code: '', project_id: '' });
 const toLineItemPayload = (form: LineItemFormState): IngestionLineItemPayload => ({
@@ -343,6 +370,11 @@ export const ReviewPanelPage: React.FC = () => {
   const { data: users = [] } = useUsers();
   const { data: clients = [] } = useClients();
   const createClient = useCreateClient();
+  // Cascade-create reuses the inbox endpoint: creates the client AND maps
+  // the domain so future emails from this domain auto-resolve. Falls back
+  // to plain createClient when the sender is on a personal-email domain
+  // (gmail/outlook/etc.), since the cascade endpoint refuses those.
+  const createClientFromDomain = useCreateClientFromDomain();
   const { data: projects = [] } = useProjects({ active_only: true, limit: 500 });
   const updateTimesheet = useUpdateIngestionTimesheetData();
   const assignChainCandidate = useAssignChainCandidate();
@@ -431,6 +463,10 @@ export const ReviewPanelPage: React.FC = () => {
   }, [isEmailMode, siblingData, navigate]);
 
   const [summaryForm, setSummaryForm] = React.useState({ employee_id: '', client_id: '', extracted_supervisor_name: '', period_start: '', period_end: '', total_hours: '', internal_notes: '' });
+  // Anchor + open state for the inline "+ Add client" popover. Reuses the
+  // cascade-from-domain popover so creating a client here also maps the
+  // sender's domain when applicable.
+  const [addClientAnchor, setAddClientAnchor] = React.useState<HTMLElement | null>(null);
   const [reviewComment, setReviewComment] = React.useState('');
   const [rejectReason, setRejectReason] = React.useState('');
   const [lineItemModalOpen, setLineItemModalOpen] = React.useState(false);
@@ -534,6 +570,22 @@ export const ReviewPanelPage: React.FC = () => {
     ? clients.some((c: { id: number; name: string }) =>
         c.name.trim().toLowerCase() === extractedClientHint.toLowerCase())
     : false;
+  // Sender domain drives both the cascade target and the smart-guess
+  // pre-fill for the "+ Add client" popover. Prefer the forwarded-from
+  // address (the actual submitter on a forwarded email); fall back to
+  // the outer sender. Personal-email domains (gmail/outlook/etc.)
+  // disable the cascade — the popover falls back to plain client create
+  // in that case.
+  const senderDomain = (() => {
+    const forwardedFrom = (emailContext as { forwarded_from_email?: string | null } | null)?.forwarded_from_email;
+    return domainOf(forwardedFrom || emailContext?.sender_email);
+  })();
+  const senderDomainIsPersonal = senderDomain ? isPersonalDomain(senderDomain) : false;
+  const addClientInitialValue = (() => {
+    if (extractedClientHint) return extractedClientHint;
+    if (senderDomain && !senderDomainIsPersonal) return suggestNameFromDomain(senderDomain);
+    return '';
+  })();
   const normalizedHint = normalizeEmployeeNameForMatch(extractedEmployeeHint);
   const extractedEmployeeMatch = normalizedHint
     ? users.find((user) => {
@@ -613,6 +665,43 @@ export const ReviewPanelPage: React.FC = () => {
       setLineItemForm(emptyLineItem());
     }
     setLineItemModalOpen(true);
+  };
+
+  // Confirm handler for the "+ Add client" popover. If the sender domain
+  // is a real (non-personal) domain we use the cascade endpoint so other
+  // pending emails from that domain auto-resolve. For personal-domain
+  // senders the cascade endpoint refuses (422), so we fall back to a
+  // plain create. Either way, the new client is auto-selected on this
+  // timesheet so the reviewer doesn't have to reach for the dropdown.
+  const handleAddClientConfirm = async (
+    payload: { name: string; existing: { id: number; name: string } | null },
+  ) => {
+    try {
+      let createdId: number | null = null;
+      if (payload.existing) {
+        // Reviewer picked an existing client out of the popover's fuzzy
+        // match. No create call needed; just bind it on this timesheet.
+        createdId = payload.existing.id;
+      } else if (senderDomain && !senderDomainIsPersonal) {
+        const result = await createClientFromDomain.mutateAsync({
+          name: payload.name,
+          domain: senderDomain,
+        });
+        createdId = result.client.id;
+      } else {
+        const created = await createClient.mutateAsync({ name: payload.name });
+        createdId = created.id;
+      }
+      if (createdId != null) {
+        setSummaryForm((c) => ({ ...c, client_id: String(createdId) }));
+      }
+      setAddClientAnchor(null);
+    } catch {
+      // Generic error surface; leave the popover open so the reviewer
+      // sees the failure context. Could be 409 (domain already mapped)
+      // or a duplicate-name conflict; in both cases keeping the popover
+      // open lets them adjust without losing input.
+    }
   };
 
   const handleSaveSummary = async () => {
@@ -1024,7 +1113,19 @@ export const ReviewPanelPage: React.FC = () => {
                 <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">Assignment</p>
                 <div className="space-y-3">
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-foreground">Client</label>
+                    <div className="mb-1.5 flex items-center justify-between gap-3">
+                      <label className="block text-sm font-medium text-foreground">Client</label>
+                      <button
+                        type="button"
+                        onClick={(event) => setAddClientAnchor(event.currentTarget)}
+                        className="inline-flex items-center gap-1 text-xs font-medium text-primary transition hover:opacity-80"
+                        aria-label="Add a new client"
+                        title="Open the document to find the client name, then create it here"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        Add client
+                      </button>
+                    </div>
                     <select className="field-input" value={summaryForm.client_id} onChange={(e) => setSummaryForm((c) => ({ ...c, client_id: e.target.value }))}>
                       <option value="">Select client</option>
                       {clients.map((client: { id: number; name: string }) => <option key={client.id} value={client.id}>{client.name}</option>)}
@@ -1315,6 +1416,21 @@ export const ReviewPanelPage: React.FC = () => {
           </div>
         </form>
       </Modal>}
+
+      <CreateClientFromDomainPopover
+        open={addClientAnchor != null}
+        anchorEl={addClientAnchor}
+        // Pass the domain only when it'll actually map (non-personal).
+        // The personal-domain branch in the popover renders a copy
+        // explaining that no domain mapping is added.
+        domain={senderDomain && !senderDomainIsPersonal ? senderDomain : ''}
+        cascadeCount={0}
+        existingClients={clients as Array<{ id: number; name: string }>}
+        initialValue={addClientInitialValue}
+        isSubmitting={createClientFromDomain.isPending || createClient.isPending}
+        onConfirm={handleAddClientConfirm}
+        onClose={() => setAddClientAnchor(null)}
+      />
     </div>
   );
 };
