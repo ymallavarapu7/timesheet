@@ -34,21 +34,22 @@ async def get_tenant_db(
     """FastAPI dependency: yield a session bound to the caller's
     tenant database.
 
-    Phase 3.B note: this dep is wired and available, but no endpoint
-    uses it yet. Every tenant still points at the shared ``timesheet_db``
-    so swapping ``Depends(get_db)`` to ``Depends(get_tenant_db)`` is a
-    behavioral no-op today. The bulk endpoint refactor lands in 3.C
-    alongside the actual per-tenant database split, which is when the
-    resolver materially changes behavior.
-
-    Resolution order (when callers do start using it):
+    Resolution order:
       1. ``X-Tenant-Slug`` header. Only honored for ``realm=platform``
          tokens (platform admins acting as a tenant). Tenant-realm
          tokens ignore the header to prevent tenant escape.
       2. ``tenant_slug`` claim on the JWT.
       3. Legacy fallback when no slug is resolvable (tokens minted
          before 3.B): use the shared ``app.db.get_db`` session. Phase
-         3.C removes this path once every issued token has a slug.
+         3.C+ removes this path once every issued token has a slug.
+
+    Resolver behavior (Phase 3.C): ``app.db_tenant`` reads the
+    control-plane ``tenants`` row. When ``is_isolated=True`` and a
+    ``db_name`` is set, the session binds to the per-tenant database;
+    otherwise it binds to the shared ``timesheet_db``. While
+    ``is_isolated`` stays False on every tenant, swapping
+    ``Depends(get_db)`` to ``Depends(get_tenant_db)`` is a behavioral
+    no-op.
 
     Routes that operate on cross-tenant data (tenants directory,
     platform settings, system health) should depend on
@@ -77,7 +78,16 @@ async def get_tenant_db(
             yield session
         return
 
-    factory = await get_session_factory_for_slug(slug)
+    try:
+        factory = await get_session_factory_for_slug(slug)
+    except LookupError as exc:
+        # Slug came from the JWT or from a header. Either way the
+        # caller handed us an identifier that doesn't exist in the
+        # control plane -- treat it as unauthenticated, never 500.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unknown tenant",
+        ) from exc
     async with factory() as session:
         yield session
 
