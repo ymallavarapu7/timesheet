@@ -29,10 +29,14 @@ export type NavSection = {
   items: NavItem[];
 };
 
-const isManager = (user: User | null) => Boolean(user && ['MANAGER', 'SENIOR_MANAGER', 'CEO', 'ADMIN'].includes(user.role));
+// Admin is intentionally excluded from manager/reviewer surfaces. A
+// human who is both an admin and a manager logs in with the manager
+// account for approval and review work; the admin portal handles
+// admin duties only (user / client / project / settings management).
+const isManager = (user: User | null) => Boolean(user && ['MANAGER', 'SENIOR_MANAGER', 'CEO'].includes(user.role));
 const isAdmin = (user: User | null) => user?.role === 'ADMIN';
 const isPlatformAdmin = (user: User | null) => user?.role === 'PLATFORM_ADMIN';
-const canReview = (user: User | null) => Boolean(user && (user.role === 'ADMIN' || user.can_review));
+const canReview = (user: User | null) => Boolean(user && user.role !== 'ADMIN' && user.can_review);
 
 export const buildNavigation = (user: User | null, ingestionEnabled: boolean): NavSection[] => {
   const sections: NavSection[] = [

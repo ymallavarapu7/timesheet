@@ -69,7 +69,9 @@ const PlatformAdminGuard: React.FC = () => {
 
 const ManagerGuard: React.FC = () => {
   const { user } = useAuth();
-  return user && ['MANAGER', 'SENIOR_MANAGER', 'CEO', 'ADMIN'].includes(user.role)
+  // Admin is excluded: per-role separation means an admin who is also
+  // a manager logs in with their manager account for approvals.
+  return user && ['MANAGER', 'SENIOR_MANAGER', 'CEO'].includes(user.role)
     ? <Outlet />
     : <Navigate to="/dashboard" replace />;
 };

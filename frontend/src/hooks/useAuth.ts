@@ -34,7 +34,10 @@ export const useIsEmployee = () => useHasRole(['EMPLOYEE', 'MANAGER', 'SENIOR_MA
 
 export const useCanReview = () => {
   const { user } = useAuth();
-  return Boolean(user && (user.role === 'ADMIN' || user.can_review));
+  // Admin role is intentionally excluded from the reviewer surface.
+  // A user who is both admin and a manager / reviewer logs in with
+  // their manager account for review and approval work.
+  return Boolean(user && user.role !== 'ADMIN' && user.can_review);
 };
 
 export const useIsReviewer = () => useCanReview();
