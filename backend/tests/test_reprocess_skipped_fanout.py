@@ -146,8 +146,15 @@ def _make_app(db_session: AsyncSession) -> TestClient:
     return TestClient(app)
 
 
-def _auth_headers(user: User) -> dict:
-    token = create_access_token({"sub": str(user.id), "tenant_id": user.tenant_id})
+def _auth_headers(user: User, *, tenant_slug: str = "fanout") -> dict:
+    # ``tenant_slug`` lands on every real token after Phase 3.B; tests
+    # mint it explicitly so ``get_tenant_slug`` has the claim it needs
+    # to enqueue work without a control-plane round trip.
+    token = create_access_token({
+        "sub": str(user.id),
+        "tenant_id": user.tenant_id,
+        "tenant_slug": tenant_slug,
+    })
     return {"Authorization": f"Bearer {token}"}
 
 

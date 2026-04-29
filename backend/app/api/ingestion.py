@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.deps import get_tenant_db, require_can_review, require_ingestion_enabled
+from app.core.deps import get_tenant_db, get_tenant_slug, require_can_review, require_ingestion_enabled
 from app.crud.ingestion_timesheet import (
     get_ingestion_timesheet,
     list_ingestion_timesheets,
@@ -469,9 +469,12 @@ async def _resolve_project_for_line_item(
 async def trigger_fetch_emails(
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
+    tenant_slug: str = Depends(get_tenant_slug),
 ) -> dict:
     try:
-        job_id = await enqueue_fetch_job(current_user.tenant_id)
+        job_id = await enqueue_fetch_job(
+            current_user.tenant_id, tenant_slug=tenant_slug
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     return {
@@ -622,6 +625,7 @@ async def reprocess_skipped_emails(
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
     session: AsyncSession = Depends(get_tenant_db),
+    tenant_slug: str = Depends(get_tenant_slug),
 ) -> dict:
     # Fan out to one arq job per email so a slow/hung attachment can't kill
     # the whole batch. See enqueue_reprocess_skipped_fanout for the details.
@@ -636,7 +640,7 @@ async def reprocess_skipped_emails(
 
     try:
         job_id = await enqueue_reprocess_skipped_fanout(
-            current_user.tenant_id, email_ids
+            current_user.tenant_id, email_ids, tenant_slug=tenant_slug
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
@@ -657,6 +661,7 @@ async def reprocess_stored_email_route(
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
     session: AsyncSession = Depends(get_tenant_db),
+    tenant_slug: str = Depends(get_tenant_slug),
 ) -> dict:
     email_result = await session.execute(
         select(IngestedEmail).where(
@@ -689,6 +694,7 @@ async def reprocess_stored_email_route(
             mode=mode,
             email_id=body.email_id,
             attachment_ids=body.attachment_ids or [],
+            tenant_slug=tenant_slug,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
@@ -711,6 +717,7 @@ async def bulk_reprocess_emails(
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
     session: AsyncSession = Depends(get_tenant_db),
+    tenant_slug: str = Depends(get_tenant_slug),
 ) -> dict:
     # Validate all email IDs belong to this tenant
     result = await session.execute(
@@ -731,6 +738,7 @@ async def bulk_reprocess_emails(
                 current_user.tenant_id,
                 mode="reprocess_email",
                 email_id=email_id,
+                tenant_slug=tenant_slug,
             )
             job_ids.append(job_id)
         except RuntimeError:

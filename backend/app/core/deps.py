@@ -347,6 +347,45 @@ def get_tenant_id(current_user: User = Depends(get_current_user)) -> int:
     return current_user.tenant_id
 
 
+def get_tenant_slug(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> str:
+    """Return the caller's tenant slug.
+
+    Mirrors ``get_tenant_db``'s slug-resolution rules so workers
+    enqueued from a route can pass the slug into the job payload
+    without paying a control-plane lookup later. Tenant-realm tokens
+    use the ``tenant_slug`` JWT claim; platform-realm tokens require
+    the ``X-Tenant-Slug`` header (so a platform admin acting on a
+    tenant must declare which one).
+
+    Raises 400 for platform-realm without header, 401 for invalid
+    token, 403 for tenant-realm tokens missing the slug claim
+    (which would only happen on tokens minted before 3.B).
+    """
+    payload = _decode_or_raise(credentials)
+    realm = payload.get("realm", "tenant")
+    if realm == "platform":
+        slug = request.headers.get("X-Tenant-Slug")
+        if not slug:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Platform-admin tokens must specify a tenant via the "
+                    "X-Tenant-Slug header to access tenant-scoped routes."
+                ),
+            )
+        return slug
+    slug = payload.get("tenant_slug")
+    if not slug:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Token has no tenant_slug claim; re-authenticate.",
+        )
+    return slug
+
+
 async def require_ingestion_enabled(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_tenant_db),

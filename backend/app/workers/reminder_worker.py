@@ -69,24 +69,47 @@ async def _eligible_internal_reminder_recipients(
 
 
 async def check_and_send_reminders(ctx: dict) -> None:
-    """arq task — check all tenants and send due reminders."""
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(Tenant).where(Tenant.status == "active")
-        )
-        tenants = result.scalars().all()
+    """arq task — check all tenants and send due reminders.
 
-        for tenant in tenants:
-            try:
-                # Pass the full tenant so the per-tenant timezone is available
-                # to downstream deadline math. NULL tenant.timezone falls back
-                # to UTC inside ``now_for_tenant``.
-                await _process_tenant_reminders(tenant, session)
-            except Exception as exc:
-                logger.error(
-                    "Reminder check failed for tenant %s: %s",
-                    tenant.id, exc
-                )
+    Lists active tenants from ``acufy_control.tenants`` (the
+    authoritative directory after 3.A), then opens a session per
+    tenant against that tenant's DB so reads of ``users`` /
+    ``time_entries`` / ``tenant_settings`` route correctly once
+    ``is_isolated`` flips. While ``is_isolated=False`` for every
+    tenant, ``tenant_session`` returns the shared timesheet_db --
+    behaviour is unchanged.
+    """
+    from app.db_control import AsyncControlSessionLocal
+    from app.db_tenant import tenant_session
+    from app.models.control import ControlTenant
+
+    async with AsyncControlSessionLocal() as control_session:
+        result = await control_session.execute(
+            select(ControlTenant).where(ControlTenant.status == "active")
+        )
+        control_tenants = list(result.scalars().all())
+
+    for control_tenant in control_tenants:
+        try:
+            async with tenant_session(control_tenant.slug) as session:
+                # Re-hydrate the per-tenant ``Tenant`` row so downstream
+                # code that reads ``tenant.timezone`` keeps working.
+                # That row exists on every tenant DB (additive
+                # split-out is still in place).
+                tenant_row = await session.get(Tenant, control_tenant.id)
+                if tenant_row is None:
+                    logger.warning(
+                        "Skipping reminders for control tenant %s (%s): "
+                        "no matching row in tenant DB",
+                        control_tenant.id, control_tenant.slug,
+                    )
+                    continue
+                await _process_tenant_reminders(tenant_row, session)
+        except Exception as exc:
+            logger.error(
+                "Reminder check failed for tenant %s (%s): %s",
+                control_tenant.id, control_tenant.slug, exc,
+            )
 
 
 async def _process_tenant_reminders(tenant: Tenant, session) -> None:

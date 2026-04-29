@@ -84,11 +84,38 @@ async def fetch_emails_for_tenant(
     mode: str = "fetch",
     email_id: int | None = None,
     attachment_ids: list[int] | None = None,
+    tenant_slug: str | None = None,
 ) -> dict:
-    """
-    arq job: fetch and process all new emails for a tenant, or reprocess stored emails.
+    """arq job: fetch and process emails for a tenant, or reprocess stored ones.
+
+    ``tenant_slug`` (Phase 3.C) routes the job's DB sessions to the
+    tenant's database via ``app.db_tenant.tenant_session``. If absent --
+    legacy enqueued jobs from before this change, or the
+    cron-scheduled fan-out -- the slug is resolved from
+    ``acufy_control.tenants`` once and reused for the lifetime of the
+    job. While every tenant has ``is_isolated=False`` the resolver
+    returns the shared timesheet_db URL, so adding the slug is a
+    behavioural no-op until cutover.
     """
     from app.db import AsyncSessionLocal
+    from app.db_tenant import resolve_slug_for_tenant_id, tenant_session
+
+    if tenant_slug is None:
+        try:
+            tenant_slug = await resolve_slug_for_tenant_id(tenant_id)
+        except LookupError:
+            # Tenant id not in control plane: surface the failure path
+            # below, where it's wrapped with a job-status update.
+            tenant_slug = None
+
+    def _open_session():
+        # One callable that workers below can invoke per session-open.
+        # When we have a slug we route through the registry; without
+        # one we keep the legacy behaviour so manual / replay paths
+        # still function.
+        if tenant_slug:
+            return tenant_session(tenant_slug)
+        return AsyncSessionLocal()
 
     job_id = ctx.get("job_id") or f"fetch_tenant_{tenant_id}"
     summary = _build_summary(tenant_id, mode)
@@ -103,7 +130,7 @@ async def fetch_emails_for_tenant(
     )
 
     # Session 1: validate tenant only, then close before any IMAP work.
-    async with AsyncSessionLocal() as session:
+    async with _open_session() as session:
         tenant = await session.get(Tenant, tenant_id)
         if not tenant:
             summary["errors"].append(f"Tenant {tenant_id} not found")
@@ -142,13 +169,19 @@ async def fetch_emails_for_tenant(
     # processing session, so asyncio.to_thread never runs inside a session.
     prefetched: list[tuple[Mailbox, list[dict]]] | None = None
     if mode == "fetch":
-        prefetched = await _prefetch_mailbox_messages(ctx, tenant_id, job_id, summary)
+        prefetched = await _prefetch_mailbox_messages(
+            ctx, tenant_id, job_id, summary, tenant_slug=tenant_slug
+        )
 
     # Session 2: processing session, opened after all IMAP work is done.
     try:
-        async with AsyncSessionLocal() as session:
+        async with _open_session() as session:
             if mode == "fetch":
-                await _run_fetch_job(ctx, session, tenant_id, job_id, summary, prefetched=prefetched)
+                await _run_fetch_job(
+                    ctx, session, tenant_id, job_id, summary,
+                    prefetched=prefetched,
+                    tenant_slug=tenant_slug,
+                )
             else:
                 await _run_reprocess_job(
                     ctx,
@@ -200,6 +233,8 @@ async def _prefetch_mailbox_messages(
     tenant_id: int,
     job_id: str,
     summary: dict[str, Any],
+    *,
+    tenant_slug: str | None = None,
 ) -> list[tuple[Mailbox, list[dict]]]:
     """
     Load mailboxes and fetch raw messages via IMAP/Graph.
@@ -207,8 +242,12 @@ async def _prefetch_mailbox_messages(
     so no session is open when asyncio.to_thread runs inside fetch_messages.
     """
     from app.db import AsyncSessionLocal
+    from app.db_tenant import tenant_session
 
-    async with AsyncSessionLocal() as session:
+    def _open_session():
+        return tenant_session(tenant_slug) if tenant_slug else AsyncSessionLocal()
+
+    async with _open_session() as session:
         result = await session.execute(
             select(Mailbox).where(
                 (Mailbox.tenant_id == tenant_id) & (Mailbox.is_active == True)
@@ -234,7 +273,7 @@ async def _prefetch_mailbox_messages(
         try:
             # Each fetch_messages call gets its own session that closes before
             # the next one opens — asyncio.to_thread never runs inside a session.
-            async with AsyncSessionLocal() as fetch_session:
+            async with _open_session() as fetch_session:
                 messages = await fetch_messages(mailbox, fetch_session)
             mailbox_messages.append((mailbox, messages))
         except Exception as exc:
@@ -253,6 +292,8 @@ async def _run_fetch_job(
     job_id: str,
     summary: dict[str, Any],
     prefetched: list[tuple[Mailbox, list[dict]]] | None = None,
+    *,
+    tenant_slug: str | None = None,
 ) -> None:
     if prefetched is None:
         return
@@ -293,6 +334,7 @@ async def _run_fetch_job(
             job_id=job_id,
             base_progress=mailbox_progress_start,
             progress_range=mailbox_progress_range,
+            tenant_slug=tenant_slug,
         )
         if mailbox_result["success"]:
             summary["mailboxes_processed"] += 1
@@ -420,6 +462,8 @@ async def _process_mailbox(
     job_id: str | None = None,
     base_progress: int = 10,
     progress_range: int = 70,
+    *,
+    tenant_slug: str | None = None,
 ) -> dict:
     """
     Process pre-fetched messages from a single mailbox.
@@ -451,6 +495,10 @@ async def _process_mailbox(
         # Each message gets its own DB session to avoid transaction conflicts.
         import asyncio
         from app.db import AsyncSessionLocal
+        from app.db_tenant import tenant_session
+
+        def _open_msg_session():
+            return tenant_session(tenant_slug) if tenant_slug else AsyncSessionLocal()
 
         total_messages = len(messages)
         CONCURRENCY = 5
@@ -472,7 +520,7 @@ async def _process_mailbox(
                     )
 
                 try:
-                    async with AsyncSessionLocal() as msg_session:
+                    async with _open_msg_session() as msg_session:
                         pipeline_result = await process_email(
                             raw_message=raw_message,
                             mailbox_id=mailbox.id,
@@ -547,6 +595,8 @@ async def _process_mailbox(
 async def enqueue_reprocess_skipped_fanout(
     tenant_id: int,
     email_ids: list[int],
+    *,
+    tenant_slug: str | None = None,
 ) -> str:
     """
     Enqueue one `reprocess_email` job per email id and return an umbrella
@@ -598,13 +648,19 @@ async def enqueue_reprocess_skipped_fanout(
                 progress=0,
                 message=f"Reprocess job queued for email {email_id}.",
             )
+            # Pass tenant_slug as a keyword arg so legacy queued jobs
+            # (without slug) deserialise into None and trigger the
+            # control-plane fallback inside fetch_emails_for_tenant.
+            enqueue_kwargs = {"_job_id": child_id}
+            if tenant_slug is not None:
+                enqueue_kwargs["tenant_slug"] = tenant_slug
             await redis.enqueue_job(
                 "fetch_emails_for_tenant",
                 tenant_id,
                 "reprocess_email",
                 email_id,
                 [],
-                _job_id=child_id,
+                **enqueue_kwargs,
             )
 
         await _write_job_status(
@@ -634,9 +690,15 @@ async def enqueue_fetch_job(
     mode: str = "fetch",
     email_id: int | None = None,
     attachment_ids: list[int] | None = None,
+    tenant_slug: str | None = None,
 ) -> str:
-    """
-    Enqueue a fetch or reprocess job for the tenant.
+    """Enqueue a fetch or reprocess job for the tenant.
+
+    ``tenant_slug`` (Phase 3.C) propagates into the job payload so the
+    worker can route DB sessions to the tenant's database. Optional;
+    when omitted the worker resolves the slug from the control plane
+    on first DB use. Existing routes pass it through to avoid the
+    extra round-trip.
     """
     from arq import create_pool
     from arq.constants import (
@@ -688,13 +750,19 @@ async def enqueue_fetch_job(
             ),
         )
 
+        # Pass tenant_slug as a keyword payload arg. arq serialises
+        # both args and kwargs, so the worker receives the slug via
+        # its kw-only parameter.
+        enqueue_kwargs = {"_job_id": job_id}
+        if tenant_slug is not None:
+            enqueue_kwargs["tenant_slug"] = tenant_slug
         job = await redis.enqueue_job(
             "fetch_emails_for_tenant",
             tenant_id,
             mode,
             email_id,
             attachment_ids or [],
-            _job_id=job_id,
+            **enqueue_kwargs,
         )
         if job is None:
             return job_id
@@ -706,50 +774,65 @@ async def enqueue_fetch_job(
 
 
 async def scheduled_fetch_emails(ctx: dict) -> None:
+    """arq cron task — runs every 15 minutes.
+
+    Lists active tenants from the control plane (post-3.A the
+    authoritative tenants directory), then for each one opens a
+    session against that tenant's DB to read ``tenant_settings`` and
+    decide whether to enqueue a fetch. The slug threads into the
+    enqueued job so the worker binds to the same tenant DB.
     """
-    arq cron task — runs every 15 minutes.
-    For each tenant with auto-fetch enabled, checks whether a fetch
-    should run now based on the tenant's configured schedule.
-    """
-    from app.models.tenant import Tenant
     from app.workers.reminder_worker import _load_tenant_settings
-    from app.db import AsyncSessionLocal
+    from app.db_control import AsyncControlSessionLocal
+    from app.db_tenant import tenant_session
+    from app.models.control import ControlTenant
 
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(Tenant).where(Tenant.status == "active")
+    async with AsyncControlSessionLocal() as control_session:
+        result = await control_session.execute(
+            select(ControlTenant).where(ControlTenant.status == "active")
         )
-        tenants = result.scalars().all()
+        control_tenants = list(result.scalars().all())
 
-        # Use configured timezone for fetch window checks.
-        # Reads TZ env var (e.g. "America/Chicago") or falls back to UTC.
-        # TODO: Migrate to per-tenant timezone (``tenant.timezone`` added in
-        # migration 029 / ``app.core.timezone_utils.now_for_tenant``). Left
-        # intentionally on the env-var path in this PR so behavior is
-        # identical when ``tenant.timezone`` is NULL — follow-up PR flips
-        # this to ``now_for_tenant(tenant.timezone)`` inside the per-tenant
-        # loop below.
-        import os, zoneinfo
+    # Use configured timezone for fetch window checks.
+    # Reads TZ env var (e.g. "America/Chicago") or falls back to UTC.
+    # TODO: Migrate to per-tenant timezone (``tenant.timezone`` added in
+    # migration 029 / ``app.core.timezone_utils.now_for_tenant``). Left
+    # intentionally on the env-var path in this PR so behavior is
+    # identical when ``tenant.timezone`` is NULL — follow-up PR flips
+    # this to ``now_for_tenant(tenant.timezone)`` inside the per-tenant
+    # loop below.
+    import os, zoneinfo
+    try:
+        tz = zoneinfo.ZoneInfo(os.environ.get("TZ", "UTC"))
+    except Exception:
+        tz = timezone.utc
+    now = datetime.now(tz)
+
+    for control_tenant in control_tenants:
         try:
-            tz = zoneinfo.ZoneInfo(os.environ.get("TZ", "UTC"))
-        except Exception:
-            tz = timezone.utc
-        now = datetime.now(tz)
+            async with tenant_session(control_tenant.slug) as session:
+                tenant_settings = await _load_tenant_settings(
+                    control_tenant.id, session
+                )
 
-        for tenant in tenants:
-            try:
-                tenant_settings = await _load_tenant_settings(tenant.id, session)
+            if tenant_settings.get("fetch_emails_enabled") != "true":
+                continue
 
-                if tenant_settings.get("fetch_emails_enabled") != "true":
-                    continue
+            if not _should_fetch_now(tenant_settings, now):
+                continue
 
-                if not _should_fetch_now(tenant_settings, now):
-                    continue
-
-                await enqueue_fetch_job(tenant.id)
-                logger.info("Auto-fetch enqueued for tenant %s", tenant.id)
-            except Exception as exc:
-                logger.error("Auto-fetch enqueue failed for tenant %s: %s", tenant.id, exc)
+            await enqueue_fetch_job(
+                control_tenant.id, tenant_slug=control_tenant.slug
+            )
+            logger.info(
+                "Auto-fetch enqueued for tenant %s (%s)",
+                control_tenant.id, control_tenant.slug,
+            )
+        except Exception as exc:
+            logger.error(
+                "Auto-fetch enqueue failed for tenant %s (%s): %s",
+                control_tenant.id, control_tenant.slug, exc,
+            )
 
 
 def _should_fetch_now(tenant_settings: dict, now: datetime) -> bool:

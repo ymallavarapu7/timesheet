@@ -210,6 +210,70 @@ async def get_session_factory_for_slug(slug: str):
     return _registry[slug].session_factory
 
 
+def tenant_session(slug: str):
+    """Async-context-manager session bound to the tenant's database.
+
+    Workers and other non-FastAPI callers use this in place of
+    ``app.db.AsyncSessionLocal()``. The first call for a slug pays a
+    one-shot control-plane lookup + engine warm-up; subsequent calls
+    reuse the cached engine via the registry.
+
+    Usage::
+
+        async with tenant_session(slug) as session:
+            ...
+
+    Raises ``LookupError`` (lazily, on enter) if the slug is not in
+    the control plane. Routes should not use this directly; they
+    should depend on ``app.core.deps.get_tenant_db`` so they get the
+    same routing plus 401-on-unknown-slug behaviour.
+    """
+    if not slug:
+        raise ValueError("tenant slug must be a non-empty string")
+
+    class _SessionCM:
+        def __init__(self, slug: str):
+            self._slug = slug
+            self._session = None
+
+        async def __aenter__(self):
+            factory = await get_session_factory_for_slug(self._slug)
+            self._session = factory()
+            await self._session.__aenter__()
+            return self._session
+
+        async def __aexit__(self, exc_type, exc, tb):
+            if self._session is not None:
+                await self._session.__aexit__(exc_type, exc, tb)
+                self._session = None
+
+    return _SessionCM(slug)
+
+
+async def resolve_slug_for_tenant_id(tenant_id: int) -> str:
+    """Return the tenant's slug given its numeric id.
+
+    Looks up the control-plane ``tenants`` row. The result is not
+    cached locally because the control-plane row is the authority on
+    slug-vs-id; we accept one indexed read per worker enqueue. For
+    hot-path callers (cron loops over many tenants), prefer iterating
+    rows that already carry the slug.
+
+    Raises ``LookupError`` if the id isn't in the control plane.
+    """
+    from app.db_control import AsyncControlSessionLocal
+    from app.models.control import ControlTenant
+
+    async with AsyncControlSessionLocal() as session:
+        slug = (await session.execute(
+            select(ControlTenant.slug).where(ControlTenant.id == tenant_id)
+        )).scalar_one_or_none()
+
+    if slug is None:
+        raise LookupError(f"tenant id={tenant_id} not found in control plane")
+    return slug
+
+
 async def dispose_all() -> None:
     """Dispose every registered engine. Idempotent."""
     async with _registry_lock:
