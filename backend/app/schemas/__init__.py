@@ -541,6 +541,86 @@ class TeamDailyOverviewResponse(BaseModel):
 
 
 # ============================================================================
+# Manager Team Overview (week-to-date roster + capacity)
+# ============================================================================
+
+class ManagerTeamMemberStatus(BaseModel):
+    """Per-employee week-to-date submission status for the roster grid.
+
+    `working_days_in_week` is the count of weekdays (Mon-Fri) up to and
+    including today. `submitted_days` is how many of those days the
+    employee already has a SUBMITTED or APPROVED time entry on. The
+    frontend renders the difference as `submitted/total` ("3/5 days").
+    """
+
+    user_id: int
+    full_name: str
+    working_days_in_week: int
+    submitted_days: int
+    is_on_pto_today: bool
+    is_on_pto_this_week: bool
+    upcoming_pto_starts_at: Optional[date] = None
+    # Pattern badge: did this employee miss the deadline at least 2 of
+    # the last 3 working days? Surfaced as a "repeatedly late" badge in
+    # the roster so the manager can act on patterns, not one-offs.
+    is_repeatedly_late: bool
+
+
+class ManagerTeamCapacityEntry(BaseModel):
+    """One row per active PTO occurrence within the lookahead window."""
+
+    user_id: int
+    full_name: str
+    leave_type: str
+    days_in_window: int
+
+
+class ManagerTeamOverviewResponse(BaseModel):
+    week_start: date
+    week_end: date
+    today: date
+    team_size: int
+    members: list[ManagerTeamMemberStatus]
+    pending_approvals_count: int
+    pending_time_off_count: int
+    rejected_recent_count: int
+    # Hours-old of the oldest pending approval. Surfaced as the "Avg
+    # approval age" / "oldest" tile on the dashboard. None when the
+    # queue is empty.
+    pending_approvals_oldest_hours: Optional[int] = None
+    pending_approvals_avg_hours: Optional[int] = None
+    capacity_this_week: list[ManagerTeamCapacityEntry]
+    capacity_next_week: list[ManagerTeamCapacityEntry]
+
+
+class ManagerProjectHealthRow(BaseModel):
+    """Per-project row for the manager dashboard project-health table.
+
+    Only includes projects that have time entries from the manager's
+    scoped team within the last lookback window. We don't list every
+    project in the tenant; that would be noise.
+    """
+
+    project_id: int
+    project_name: str
+    client_name: str
+    # Days remaining until end_date. Negative when overdue. None when
+    # the project has no end_date set ("Open").
+    days_until_end: Optional[int]
+    hours_this_week: Decimal
+    # Budget consumed as percentage. None when no estimated_hours set.
+    budget_pct: Optional[int]
+    # Hours remaining against the budget. Negative when over.
+    budget_hours_remaining: Optional[Decimal]
+    # 'good' | 'at-risk' | 'needs-attention' | 'not-set'
+    health: str
+
+
+class ManagerProjectHealthResponse(BaseModel):
+    rows: list[ManagerProjectHealthRow]
+
+
+# ============================================================================
 # Email Verification Schemas
 # ============================================================================
 

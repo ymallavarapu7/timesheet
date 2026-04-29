@@ -18,6 +18,7 @@ import {
   tenantSettingsAPI,
   departmentsAPI,
   leaveTypesAPI,
+  adminAPI,
 } from '@/api/endpoints';
 
 type TimeEntriesListParams = Parameters<typeof timeentriesAPI.list>[0];
@@ -426,6 +427,36 @@ export const useDashboardAnalytics = (params: {
     queryFn: () => dashboardAPI.analytics(params).then(res => res.data),
     enabled: !!params.start_date && !!params.end_date,
     placeholderData: keepPreviousData,
+  });
+};
+
+export const useManagerTeamOverview = (enabled: boolean = true) => {
+  return useQuery({
+    queryKey: ['dashboard', 'manager-team-overview'],
+    queryFn: () => dashboardAPI.managerTeamOverview().then((res) => res.data),
+    enabled,
+    staleTime: 30_000,
+  });
+};
+
+export const useManagerProjectHealth = (enabled: boolean = true) => {
+  return useQuery({
+    queryKey: ['dashboard', 'manager-project-health'],
+    queryFn: () => dashboardAPI.managerProjectHealth().then((res) => res.data),
+    enabled,
+    staleTime: 60_000,
+  });
+};
+
+export const useAdminSystemHealth = (enabled: boolean = true) => {
+  return useQuery({
+    queryKey: ['admin', 'system-health'],
+    queryFn: () => adminAPI.systemHealth().then((res) => res.data),
+    enabled,
+    // Health checks are cheap server-side and the user expects current
+    // values. 30s refresh keeps the panel honest without hammering.
+    refetchInterval: 30_000,
+    staleTime: 15_000,
   });
 };
 

@@ -10,6 +10,7 @@ from app.core.permissions import shadow_check
 from app.core.rate_limit import limiter
 from app.db import AsyncSessionLocal, init_db, close_db
 from app.api import (
+    admin,
     approvals,
     auth,
     clients,
@@ -162,6 +163,7 @@ app.include_router(sync.router)
 app.include_router(mailboxes.router, prefix="/api")
 app.include_router(mailboxes.oauth_router)
 app.include_router(ingestion.router, prefix="/api")
+app.include_router(admin.router)
 
 
 @app.get("/health")

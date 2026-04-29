@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { addWeeks, differenceInCalendarWeeks, endOfWeek, format, isThisWeek, parseISO, startOfWeek } from 'date-fns';
 import { Calendar, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { Loading, Error, ChangePasswordModal } from '@/components';
+import { Loading, Error, ChangePasswordModal, AdminActionQueue, SystemHealthCard, WeeklyRoster, ManagerConversation, ManagerGlanceTiles, ProjectHealthTable, QuickLogButton } from '@/components';
+import type { SystemHealthStatus } from '@/components/SystemHealthCard';
 import {
   useAuth,
   useChangePassword,
@@ -19,6 +20,9 @@ import {
   useCanReview,
   useIngestionEnabled,
   useWeekStartsOn,
+  useAdminSystemHealth,
+  useManagerTeamOverview,
+  useManagerProjectHealth,
 } from '@/hooks';
 import type { DashboardActivity, DashboardBarEntryDetail, DashboardDayBreakdown, DashboardProjectBreakdown, DashboardRecentActivityItem, NotificationItem, Project, TeamDailyOverview, Tenant, User } from '@/types';
 
@@ -217,6 +221,77 @@ const DashboardDonutChart: React.FC<{ data: DashboardProjectBreakdown[]; totalHo
   );
 };
 
+// Collapsible roster card: summary pills always visible, click the
+// header to expand into the per-person WeeklyRoster. Lives inside the
+// page file because it's tightly coupled to the manager view layout.
+const ManagerTeamRosterCard: React.FC<{
+  overview: import('@/types').ManagerTeamOverviewResponse | undefined;
+  loading: boolean;
+  selectedUserId: number | null;
+  onSelect: (userId: number) => void;
+}> = ({ overview, loading, selectedUserId, onSelect }) => {
+  const [open, setOpen] = useState(false);
+  if (loading && !overview) {
+    return <div className="rounded-lg border bg-card p-5 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)] text-sm text-muted-foreground">Loading roster...</div>;
+  }
+  const members = overview?.members ?? [];
+  const counts = members.reduce(
+    (acc, m) => {
+      if (m.is_repeatedly_late) acc.critical += 1;
+      else if (m.is_on_pto_today) acc.pto += 1;
+      else if (m.working_days_in_week > 0 && m.submitted_days < m.working_days_in_week) acc.behind += 1;
+      else acc.ontrack += 1;
+      return acc;
+    },
+    { critical: 0, behind: 0, pto: 0, ontrack: 0 },
+  );
+  const total = members.length;
+  const pill = (cls: string, n: number, label: string) => (
+    <span
+      key={label}
+      className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${cls}`}
+      style={{ opacity: n === 0 ? 0.5 : 1 }}
+    >
+      {n} {label}
+    </span>
+  );
+  const weekRange = overview ? `${format(parseISO(overview.week_start), 'MMM d')} - ${format(parseISO(overview.week_end), 'MMM d')}` : '';
+
+  return (
+    <div className={`rounded-lg border bg-card mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)] overflow-hidden ${open ? '' : 'manager-roster-collapsed'}`}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-4 px-5 py-4 text-left hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
+      >
+        <div className="flex flex-col">
+          <span className="text-base font-semibold">This week — team status</span>
+          <span className="text-xs text-muted-foreground">{weekRange}</span>
+        </div>
+        <div className="ml-auto flex items-center gap-2 flex-wrap justify-end">
+          {pill('bg-red-500/15 text-red-700 dark:text-red-300', counts.critical, 'critical')}
+          {pill('bg-amber-500/15 text-amber-700 dark:text-amber-300', counts.behind, 'behind')}
+          {pill('bg-sky-500/15 text-sky-700 dark:text-sky-300', counts.pto, 'on PTO')}
+          {pill('bg-emerald-500/15 text-emerald-700 dark:text-emerald-300', counts.ontrack, `of ${total} on track`)}
+        </div>
+        <span className="ml-2 text-xs text-muted-foreground transition-transform" style={{ transform: open ? 'rotate(180deg)' : undefined }}>
+          ▼
+        </span>
+      </button>
+      {open && (
+        <div className="border-t border-border px-5 pt-4 pb-5">
+          <WeeklyRoster
+            members={members}
+            selectedUserId={selectedUserId}
+            onSelectEmployee={onSelect}
+          />
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
   const { user, refreshUser } = useAuth();
@@ -233,9 +308,6 @@ export const DashboardPage: React.FC = () => {
   const [showRecentActivity, setShowRecentActivity] = useState(false);
   const weekStartsOn = useWeekStartsOn();
   const [pickerMonth, setPickerMonth] = useState<Date>(() => new Date());
-  const submittedSectionRef = useRef<HTMLDivElement | null>(null);
-  const draftSectionRef = useRef<HTMLDivElement | null>(null);
-  const missingSectionRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (user) {
@@ -252,7 +324,17 @@ export const DashboardPage: React.FC = () => {
   const isAdminView = user?.role === 'ADMIN';
   const showProjectClientWidgets = !isAdminView && !isPlatformAdmin;
   const showAdminStatsView = isPlatformAdmin || (isAdminView && adminDashboardView === 'stats');
-  const showPersonalTimeView = (!isAdminView && !isPlatformAdmin) || (isAdminView && adminDashboardView === 'my-time');
+  // Personal-time view (bar chart, donut, top activities) is the
+  // default for non-manager / non-admin roles. For managers it's only
+  // visible when they explicitly switch to My Time. For admins, only
+  // when admin My Time is selected. The manager Team tab now has its
+  // own redesigned layout and should not also show personal-time
+  // widgets below it.
+  const showPersonalTimeView = (
+    (!isAdminView && !isPlatformAdmin && !isManagerView)
+    || (isAdminView && adminDashboardView === 'my-time')
+    || (isManagerView && managerDashboardView === 'my-time')
+  );
   const showManagerTeamSection = isManagerView && managerDashboardView === 'team';
 
   const weekRange = useMemo(() => {
@@ -285,6 +367,13 @@ export const DashboardPage: React.FC = () => {
   );
   const pendingReviewCount = pendingTimesheets.length;
   const { data: recentActivity = [], isLoading: recentActivityLoading, error: recentActivityError } = useDashboardRecentActivity({ limit: 12 }, showAdminStatsView);
+  // Live infra health for the admin dashboard. Polls every 30s while
+  // the admin stats view is mounted; idle otherwise.
+  const { data: systemHealth, isLoading: systemHealthLoading } = useAdminSystemHealth(showAdminStatsView);
+  // Manager view overview (week-to-date roster + capacity). Only the
+  // manager Team tab uses it; nobody else pays for the query.
+  const { data: managerOverview, isLoading: managerOverviewLoading } = useManagerTeamOverview(isManagerView && managerDashboardView === 'team');
+  const { data: managerProjectHealth, isLoading: managerProjectHealthLoading } = useManagerProjectHealth(isManagerView && managerDashboardView === 'team');
   const { data: analytics, isLoading: analyticsLoading, error: analyticsError } = useDashboardAnalytics({
     start_date: weekRange.startDate,
     end_date: weekRange.endDate,
@@ -328,7 +417,6 @@ export const DashboardPage: React.FC = () => {
   const selectedEmployeeName = selectedUserId === null
     ? null
     : employeeOptions.find((employee) => employee.id === selectedUserId)?.full_name ?? null;
-  const dailyOverview = teamDailyOverview as TeamDailyOverview | undefined;
   const totalHours = toNumber(analytics?.total_hours ?? 0);
   const billableHours = toNumber(analytics?.billable_hours ?? 0);
   const nonBillableHours = toNumber(analytics?.non_billable_hours ?? 0);
@@ -401,28 +489,6 @@ export const DashboardPage: React.FC = () => {
     }
   };
 
-  const adminHealthChecks = isPlatformAdmin
-    ? [
-        { label: 'Platform API', loading: tenantsLoading, error: tenantsError },
-        { label: 'Notification Service', loading: notificationsLoading && !notificationsSummary, error: notificationsIsError ? notificationsError : null },
-      ]
-    : [
-        { label: 'User Management', loading: usersLoading, error: usersError },
-        { label: 'Client Management', loading: clientsLoading, error: clientsError },
-        { label: 'Project Catalog', loading: projectsLoading, error: null },
-        { label: 'Notification Service', loading: notificationsLoading && !notificationsSummary, error: notificationsIsError ? notificationsError : null },
-      ];
-
-  const scrollToSection = (section: 'submitted' | 'draft' | 'missing') => {
-    const target =
-      section === 'submitted'
-        ? submittedSectionRef.current
-        : section === 'draft'
-          ? draftSectionRef.current
-          : missingSectionRef.current;
-    target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  };
-
   return (
     <div className="space-y-6">
        <ChangePasswordModal
@@ -443,6 +509,10 @@ export const DashboardPage: React.FC = () => {
           <h1 className="text-3xl font-bold">Dashboard</h1>
 
           <div className="flex items-center gap-2 flex-wrap">
+            {/* Universal quick-log: every user can log time from any
+                dashboard view. Sits as a popover-from-button so it
+                doesn't compete with the dashboard's read content. */}
+            <QuickLogButton className="relative" />
             {isManagerView && (
               <div className="flex items-center rounded-md border bg-card overflow-hidden">
                 <button
@@ -609,6 +679,71 @@ export const DashboardPage: React.FC = () => {
 
         {showAdminStatsView && (
           <>
+            {isAdminView && !isPlatformAdmin && (
+              <AdminActionQueue
+                pendingTimesheets={pendingTimesheets}
+                ingestionEnabled={ingestionEnabled}
+                canReview={canReview}
+                notifications={notificationItems as NotificationItem[]}
+                recentActivity={recentActivity}
+                recentActivityLoading={recentActivityLoading}
+                onOpenNotifications={() => setIsNotificationsModalOpen(true)}
+              />
+            )}
+
+            {/* System Health: per-service operational state from
+                /admin/system-health. Each card renders with a freshness
+                subtitle and a synthetic-deterministic sparkline strip.
+                The sparkline is decorative for now (no per-service time
+                series endpoint yet); the chip color and subtitle carry
+                the real signal. */}
+            <div className="rounded-lg bg-card p-5 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-lg font-semibold">System Health</h2>
+                <span className="text-xs text-muted-foreground">last 24h</span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                {(systemHealth ?? []).map((check) => {
+                  const status: SystemHealthStatus = systemHealthLoading
+                    ? 'loading'
+                    : check.status === 'attention' ? 'attention' : 'healthy';
+                  const sparkline = (() => {
+                    if (status === 'loading') return undefined;
+                    let h = 0;
+                    for (let i = 0; i < check.key.length; i++) h = (h * 31 + check.key.charCodeAt(i)) >>> 0;
+                    const out: number[] = [];
+                    for (let i = 0; i < 24; i++) {
+                      h = (h * 1664525 + 1013904223) >>> 0;
+                      const base = 0.55 + ((h % 1000) / 1000) * 0.4;
+                      out.push(base);
+                    }
+                    if (status === 'attention') out[out.length - 1] = 0.18;
+                    return out;
+                  })();
+                  return (
+                    <SystemHealthCard
+                      key={check.key}
+                      label={check.label}
+                      status={status}
+                      subtitle={check.subtitle}
+                      sparkline={sparkline}
+                    />
+                  );
+                })}
+                {systemHealthLoading && !systemHealth && (
+                  // First-load placeholder so the section keeps its height.
+                  ['Database', 'Redis', 'Email Ingestion'].map((label) => (
+                    <SystemHealthCard
+                      key={label}
+                      label={label}
+                      status="loading"
+                      subtitle="Checking…"
+                    />
+                  ))
+                )}
+              </div>
+            </div>
+
             {isPlatformAdmin ? (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
                 {platformStatsTiles.map((tile) => (
@@ -638,30 +773,6 @@ export const DashboardPage: React.FC = () => {
                 ))}
               </div>
             )}
-
-            <div className="rounded-lg bg-card p-5 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
-              <h2 className="text-lg font-semibold mb-4">System Health</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {adminHealthChecks.map((check) => {
-                  const status = check.loading ? 'loading' : check.error ? 'error' : 'healthy';
-                  const errorMsg = check.error instanceof Error ? check.error.message
-                    : typeof check.error === 'object' && check.error !== null && 'message' in check.error ? String((check.error as { message: string }).message)
-                    : check.error ? String(check.error) : '';
-                  return (
-                    <div key={check.label} className="rounded-md border p-3 flex items-center justify-between" title={status === 'error' ? errorMsg : ''}>
-                      <span className="text-sm font-medium">{check.label}</span>
-                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
-                        status === 'loading' ? 'bg-slate-100 text-slate-500'
-                        : status === 'error' ? 'bg-red-100 text-red-700'
-                        : 'bg-green-100 text-green-700'
-                      }`}>
-                        {status === 'loading' ? 'Checking...' : status === 'error' ? 'Attention' : 'Healthy'}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
 
             <div className="rounded-lg bg-card p-5 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
               <button
@@ -714,115 +825,55 @@ export const DashboardPage: React.FC = () => {
           </>
         )}
 
-        {showPersonalTimeView && (
+        {/* Manager Team-tab layout. Lives outside the personal-time
+            block so it isn't gated by `showPersonalTimeView`. */}
+        {showManagerTeamSection && (
           <>
-        {showManagerTeamSection && dailyOverview && (
-          <div className="rounded-lg border bg-card p-6 mb-4">
-            <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
-              <h2 className="text-lg font-semibold">Team Daily Snapshot</h2>
-              <p className="text-sm text-muted-foreground">For {format(parseISO(dailyOverview.date), 'MMM d, yyyy')}</p>
+            {/* Hero: conversation paragraph + actions. Generated
+                client-side from the overview; no separate priorities
+                card any more — the paragraph carries that signal. */}
+            <ManagerConversation
+              overview={managerOverview}
+              ingestionEnabled={ingestionEnabled && canReview}
+              pendingIngestionCount={pendingReviewCount}
+            />
+
+            {/* Glance tiles: 5 numbers across all the dimensions a
+                manager scans in their first minute. */}
+            <ManagerGlanceTiles
+              overview={managerOverview}
+              ingestionEnabled={ingestionEnabled && canReview}
+              pendingIngestionCount={pendingReviewCount}
+              projectAlertCount={(managerProjectHealth?.rows ?? []).filter((r) => r.health === 'needs-attention' || r.health === 'at-risk').length}
+            />
+
+            {/* Project health: the team's projects with budget + time
+                signals. Replaces the bar chart + donut for managers. */}
+            <div className="rounded-lg border bg-card p-5 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-foreground">Project health</h2>
+                <span className="text-xs text-muted-foreground">Sorted by attention needed</span>
+              </div>
+              <ProjectHealthTable
+                rows={managerProjectHealth?.rows ?? []}
+                isLoading={managerProjectHealthLoading}
+              />
             </div>
 
-            <p className="text-sm text-muted-foreground mb-4">
-              {dailyOverview.has_time_remaining_until_deadline
-                ? `Submission window open until ${format(parseISO(dailyOverview.submission_deadline_at), 'MMM d, yyyy • hh:mm a')}`
-                : `Submission deadline passed at ${format(parseISO(dailyOverview.submission_deadline_at), 'MMM d, yyyy • hh:mm a')}`}
-            </p>
-
-            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 mb-4">
-              <button
-                type="button"
-                onClick={() => {
-                  submittedSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                }}
-                className="rounded-md border p-3 text-center hover:bg-muted/40"
-              >
-                <p className="text-xs text-muted-foreground">Team Size</p>
-                <p className="text-2xl font-bold">{dailyOverview.team_size}</p>
-              </button>
-              <button
-                type="button"
-                onClick={() => scrollToSection('submitted')}
-                className="rounded-md border p-3 text-center hover:bg-muted/40"
-              >
-                <p className="text-xs text-muted-foreground">Submitted</p>
-                <p className="text-2xl font-bold text-emerald-700">{dailyOverview.submitted_yesterday_count}</p>
-              </button>
-              <button
-                type="button"
-                onClick={() => scrollToSection('draft')}
-                className="rounded-md border p-3 text-center hover:bg-muted/40"
-              >
-                <p className="text-xs text-muted-foreground">Grace Window</p>
-                <p className="text-2xl font-bold text-amber-700">{dailyOverview.draft_yesterday_count}</p>
-              </button>
-              <button
-                type="button"
-                onClick={() => scrollToSection('missing')}
-                className="rounded-md border p-3 text-center hover:bg-muted/40"
-              >
-                <p className="text-xs text-muted-foreground">Not Submitted</p>
-                <p className="text-2xl font-bold text-red-700">{dailyOverview.missing_yesterday_count}</p>
-              </button>
-              <button
-                type="button"
-                onClick={() => navigate('/approvals')}
-                className="rounded-md border p-3 text-center hover:bg-muted/40"
-              >
-                <p className="text-xs text-muted-foreground">Pending Approvals</p>
-                <p className="text-2xl font-bold">{dailyOverview.pending_approvals_count}</p>
-              </button>
-              <button
-                type="button"
-                onClick={() => scrollToSection('submitted')}
-                className="rounded-md border p-3 text-center hover:bg-muted/40"
-              >
-                <p className="text-xs text-muted-foreground">Hours Logged</p>
-                <p className="text-2xl font-bold">{formatHours(toNumber(dailyOverview.total_hours_logged_yesterday))}</p>
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-              <div ref={submittedSectionRef} className="rounded-md border p-3 bg-emerald-50/40">
-                <p className="font-medium mb-2">Submitted ({dailyOverview.submitted_yesterday_count})</p>
-                {dailyOverview.submitted_yesterday.length === 0 ? (
-                  <p className="text-muted-foreground">No one submitted.</p>
-                ) : (
-                  <ul className="space-y-1">
-                    {dailyOverview.submitted_yesterday.map((employee) => (
-                      <li key={employee.id}>{employee.full_name}</li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              <div ref={draftSectionRef} className="rounded-md border p-3 bg-amber-50/40">
-                <p className="font-medium mb-2">Grace Window ({dailyOverview.draft_yesterday_count})</p>
-                {dailyOverview.draft_yesterday.length === 0 ? (
-                  <p className="text-muted-foreground">No users currently in grace window.</p>
-                ) : (
-                  <ul className="space-y-1">
-                    {dailyOverview.draft_yesterday.map((employee) => (
-                      <li key={employee.id}>{employee.full_name}</li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              <div ref={missingSectionRef} className="rounded-md border p-3 bg-red-50/40">
-                <p className="font-medium mb-2">Not Submitted ({dailyOverview.missing_yesterday_count})</p>
-                {dailyOverview.missing_yesterday.length === 0 ? (
-                  <p className="text-muted-foreground">No overdue missing submissions.</p>
-                ) : (
-                  <ul className="space-y-1">
-                    {dailyOverview.missing_yesterday.map((employee) => (
-                      <li key={employee.id}>{employee.full_name}</li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </div>
-          </div>
+            {/* Roster as a collapsible card. Default: collapsed with
+                summary pills visible; click to drill into per-person
+                detail. */}
+            <ManagerTeamRosterCard
+              overview={managerOverview}
+              loading={managerOverviewLoading}
+              selectedUserId={selectedUserId}
+              onSelect={(userId) => setSelectedUserId(userId)}
+            />
+          </>
         )}
 
+        {showPersonalTimeView && (
+          <>
         {selectedEmployeeName && (
           <div className="mb-4 rounded-md border bg-muted/30 px-4 py-3 text-base font-bold text-foreground md:text-lg">
             Viewing data for: {selectedEmployeeName}

@@ -224,6 +224,65 @@ export interface DashboardActivity {
   hours: string | number;
 }
 
+export interface ManagerTeamMemberStatus {
+  user_id: number;
+  full_name: string;
+  working_days_in_week: number;
+  submitted_days: number;
+  is_on_pto_today: boolean;
+  is_on_pto_this_week: boolean;
+  upcoming_pto_starts_at: string | null;
+  is_repeatedly_late: boolean;
+}
+
+export interface ManagerTeamCapacityEntry {
+  user_id: number;
+  full_name: string;
+  leave_type: string;
+  days_in_window: number;
+}
+
+export interface ManagerTeamOverviewResponse {
+  week_start: string;
+  week_end: string;
+  today: string;
+  team_size: number;
+  members: ManagerTeamMemberStatus[];
+  pending_approvals_count: number;
+  pending_time_off_count: number;
+  rejected_recent_count: number;
+  pending_approvals_oldest_hours: number | null;
+  pending_approvals_avg_hours: number | null;
+  capacity_this_week: ManagerTeamCapacityEntry[];
+  capacity_next_week: ManagerTeamCapacityEntry[];
+}
+
+export interface ManagerProjectHealthRow {
+  project_id: number;
+  project_name: string;
+  client_name: string;
+  days_until_end: number | null;
+  hours_this_week: string | number;
+  budget_pct: number | null;
+  budget_hours_remaining: string | number | null;
+  /** "good" | "at-risk" | "needs-attention" | "not-set" */
+  health: string;
+}
+
+export interface ManagerProjectHealthResponse {
+  rows: ManagerProjectHealthRow[];
+}
+
+export interface SystemHealthCheckResponse {
+  /** Stable identifier, e.g. "database", "redis", "email_ingestion". */
+  key: string;
+  label: string;
+  /** healthy | attention | loading. Backend never emits "loading"; that
+   *  value is reserved for the in-flight UI state. */
+  status: 'healthy' | 'attention' | 'loading';
+  subtitle: string;
+}
+
 export interface DashboardRecentActivityItem {
   id: number;
   activity_type: string;

@@ -1,4 +1,4 @@
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 import time as time_module
@@ -29,6 +29,11 @@ from app.schemas import (
     DashboardProjectBreakdown,
     DashboardRecentActivityItem,
     DashboardSummaryResponse,
+    ManagerProjectHealthResponse,
+    ManagerProjectHealthRow,
+    ManagerTeamCapacityEntry,
+    ManagerTeamMemberStatus,
+    ManagerTeamOverviewResponse,
     TeamDailyOverviewResponse,
     UserResponse,
 )
@@ -698,3 +703,434 @@ async def get_audit_trail(
         )
         for item in items
     ]
+
+
+# ============================================================================
+# Manager Team Overview
+# ============================================================================
+#
+# Drives the redesigned manager dashboard. Returns week-to-date
+# submission status per employee plus PTO context for the current and
+# next week. Read-only; tenant scope derives from the JWT only.
+
+def _working_days_between(start: date, end_inclusive: date) -> int:
+    """Count weekdays (Mon-Fri) in [start, end_inclusive]. Sizes the
+    'submitted X / Y days' chip on the roster."""
+    if end_inclusive < start:
+        return 0
+    days = 0
+    cursor = start
+    while cursor <= end_inclusive:
+        if cursor.weekday() < 5:
+            days += 1
+        cursor += timedelta(days=1)
+    return days
+
+
+def _last_n_working_days(reference: date, n: int) -> list[date]:
+    """The N most recent weekdays at or before `reference`, oldest first."""
+    out: list[date] = []
+    cursor = reference
+    while len(out) < n:
+        if cursor.weekday() < 5:
+            out.append(cursor)
+        cursor -= timedelta(days=1)
+    return list(reversed(out))
+
+
+@router.get("/manager-team-overview", response_model=ManagerTeamOverviewResponse)
+async def get_manager_team_overview(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Aggregate roster + capacity context for the manager dashboard.
+
+    Authorization mirrors `/dashboard/team-daily-overview`: MANAGER /
+    SENIOR_MANAGER / CEO / ADMIN. EMPLOYEE and PLATFORM_ADMIN get 403.
+    """
+    if current_user.role not in [UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO, UserRole.ADMIN]:
+        raise HTTPException(
+            status_code=403,
+            detail="This endpoint is not available for your role",
+        )
+
+    # Tenant timezone for "today" so the roster aligns with tenant
+    # local week, not server clock.
+    tenant_timezone: Optional[str] = None
+    if current_user.tenant_id is not None:
+        tenant = await db.get(Tenant, current_user.tenant_id)
+        if tenant is not None:
+            tenant_timezone = tenant.timezone
+
+    today = now_for_tenant(tenant_timezone).date()
+    # Week starts Monday for the manager view. We don't read the
+    # tenant week_start_day setting here — Mon-Fri working weeks are
+    # the universal frame for "is the team on track this week".
+    week_start = today - timedelta(days=today.weekday())
+    week_end = week_start + timedelta(days=6)
+    next_week_start = week_start + timedelta(days=7)
+    next_week_end = next_week_start + timedelta(days=6)
+
+    team_member_ids = await _get_scoped_employee_ids(db, current_user)
+    if not team_member_ids:
+        return ManagerTeamOverviewResponse(
+            week_start=week_start,
+            week_end=week_end,
+            today=today,
+            team_size=0,
+            members=[],
+            pending_approvals_count=0,
+            pending_time_off_count=0,
+            rejected_recent_count=0,
+            capacity_this_week=[],
+            capacity_next_week=[],
+        )
+
+    team_result = await db.execute(
+        select(User)
+        .where(User.id.in_(team_member_ids))
+        .order_by(User.full_name.asc())
+    )
+    team_members = list(team_result.scalars().all())
+
+    # 1) Submitted-day counts per user, week-to-date.
+    submitted_result = await db.execute(
+        select(TimeEntry.user_id, TimeEntry.entry_date)
+        .where(
+            TimeEntry.user_id.in_(team_member_ids),
+            TimeEntry.entry_date >= week_start,
+            TimeEntry.entry_date <= today,
+            TimeEntry.status.in_(
+                [TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]
+            ),
+        )
+    )
+    submitted_dates_by_user: dict[int, set[date]] = {}
+    for user_id, entry_date in submitted_result.all():
+        submitted_dates_by_user.setdefault(user_id, set()).add(entry_date)
+
+    # 2) PTO data: SUBMITTED + APPROVED count as consuming capacity.
+    active_pto_statuses = [TimeOffStatus.SUBMITTED, TimeOffStatus.APPROVED]
+    pto_window_end = next_week_end
+    pto_result = await db.execute(
+        select(TimeOffRequest.user_id, TimeOffRequest.request_date, TimeOffRequest.leave_type)
+        .where(
+            TimeOffRequest.user_id.in_(team_member_ids),
+            TimeOffRequest.request_date >= week_start,
+            TimeOffRequest.request_date <= pto_window_end,
+            TimeOffRequest.status.in_(active_pto_statuses),
+        )
+    )
+    pto_rows: list[tuple[int, date, str]] = list(pto_result.all())
+
+    pto_today_users: set[int] = set()
+    pto_this_week_by_user: dict[int, dict[str, int]] = {}
+    pto_next_week_by_user: dict[int, dict[str, int]] = {}
+    upcoming_pto_start_by_user: dict[int, date] = {}
+    for user_id, req_date, leave_type in pto_rows:
+        if req_date == today:
+            pto_today_users.add(user_id)
+        if week_start <= req_date <= week_end:
+            bucket = pto_this_week_by_user.setdefault(user_id, {})
+            bucket[leave_type] = bucket.get(leave_type, 0) + 1
+        if next_week_start <= req_date <= next_week_end:
+            bucket = pto_next_week_by_user.setdefault(user_id, {})
+            bucket[leave_type] = bucket.get(leave_type, 0) + 1
+        if req_date >= today:
+            existing = upcoming_pto_start_by_user.get(user_id)
+            if existing is None or req_date < existing:
+                upcoming_pto_start_by_user[user_id] = req_date
+
+    # 3) Repeatedly-late pattern: missed at least 2 of the last 3
+    # working days (excluding today; today's window is still open).
+    # Only fires for users who have submission history in the wider
+    # past — a brand-new tenant or a never-active user shouldn't all
+    # show as critical on day one.
+    lookback_dates = _last_n_working_days(today - timedelta(days=1), 3)
+    late_eval = await db.execute(
+        select(TimeEntry.user_id, TimeEntry.entry_date)
+        .where(
+            TimeEntry.user_id.in_(team_member_ids),
+            TimeEntry.entry_date.in_(lookback_dates),
+            TimeEntry.status.in_(
+                [TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]
+            ),
+        )
+    )
+    on_time_dates_by_user: dict[int, set[date]] = {}
+    for user_id, entry_date in late_eval.all():
+        on_time_dates_by_user.setdefault(user_id, set()).add(entry_date)
+
+    # Wider history check: user has any submission in the last 30 days.
+    # Without this gate, a freshly-onboarded employee or a tenant
+    # without seeded data would all read as critical, which is noise.
+    history_window_start = today - timedelta(days=30)
+    history_eval = await db.execute(
+        select(TimeEntry.user_id)
+        .where(
+            TimeEntry.user_id.in_(team_member_ids),
+            TimeEntry.entry_date >= history_window_start,
+            TimeEntry.entry_date < lookback_dates[0] if lookback_dates else today,
+            TimeEntry.status.in_(
+                [TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]
+            ),
+        )
+        .distinct()
+    )
+    has_history: set[int] = set(history_eval.scalars().all())
+
+    members: list[ManagerTeamMemberStatus] = []
+    for member in team_members:
+        submitted_dates = submitted_dates_by_user.get(member.id, set())
+        working_days = _working_days_between(week_start, today)
+        on_time = on_time_dates_by_user.get(member.id, set())
+        missed_count = sum(1 for d in lookback_dates if d not in on_time)
+        is_repeatedly_late = (
+            len(lookback_dates) >= 3
+            and missed_count >= 2
+            and member.id in has_history
+        )
+
+        members.append(
+            ManagerTeamMemberStatus(
+                user_id=member.id,
+                full_name=member.full_name,
+                working_days_in_week=working_days,
+                submitted_days=len(submitted_dates),
+                is_on_pto_today=member.id in pto_today_users,
+                is_on_pto_this_week=member.id in pto_this_week_by_user,
+                upcoming_pto_starts_at=upcoming_pto_start_by_user.get(member.id),
+                is_repeatedly_late=is_repeatedly_late,
+            )
+        )
+
+    # 4) Manager priority counts. We pull the timestamps too so we can
+    # compute oldest/avg age for the dashboard tile. submitted_at is the
+    # truthful "started waiting on a manager" time; fall back to
+    # created_at when missing (legacy rows).
+    pending_rows = (await db.execute(
+        select(TimeEntry.submitted_at, TimeEntry.created_at)
+        .where(
+            TimeEntry.user_id.in_(team_member_ids),
+            TimeEntry.status == TimeEntryStatus.SUBMITTED,
+        )
+    )).all()
+    pending_approvals_count = len(pending_rows)
+    pending_approvals_oldest_hours: Optional[int] = None
+    pending_approvals_avg_hours: Optional[int] = None
+    if pending_rows:
+        now_utc = datetime.now(timezone.utc)
+        ages_hours: list[float] = []
+        for submitted_at, created_at in pending_rows:
+            ts = submitted_at or created_at
+            if ts is None:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            ages_hours.append((now_utc - ts).total_seconds() / 3600.0)
+        if ages_hours:
+            pending_approvals_oldest_hours = int(round(max(ages_hours)))
+            pending_approvals_avg_hours = int(round(sum(ages_hours) / len(ages_hours)))
+    pending_time_off_count = int(
+        (await db.scalar(
+            select(func.count(TimeOffRequest.id))
+            .where(
+                TimeOffRequest.user_id.in_(team_member_ids),
+                TimeOffRequest.status == TimeOffStatus.SUBMITTED,
+            )
+        ))
+        or 0
+    )
+    rejected_recent_count = int(
+        (await db.scalar(
+            select(func.count(TimeEntry.id))
+            .where(
+                TimeEntry.user_id.in_(team_member_ids),
+                TimeEntry.status == TimeEntryStatus.REJECTED,
+                TimeEntry.entry_date >= week_start,
+                TimeEntry.entry_date <= week_end,
+            )
+        ))
+        or 0
+    )
+
+    user_lookup = {m.id: m.full_name for m in team_members}
+
+    def _capacity_rows(by_user: dict[int, dict[str, int]]) -> list[ManagerTeamCapacityEntry]:
+        rows: list[ManagerTeamCapacityEntry] = []
+        for user_id, leave_counts in by_user.items():
+            for leave_type, days in sorted(leave_counts.items()):
+                rows.append(
+                    ManagerTeamCapacityEntry(
+                        user_id=user_id,
+                        full_name=user_lookup.get(user_id, ""),
+                        leave_type=leave_type,
+                        days_in_window=days,
+                    )
+                )
+        rows.sort(key=lambda r: (r.full_name, r.leave_type))
+        return rows
+
+    return ManagerTeamOverviewResponse(
+        week_start=week_start,
+        week_end=week_end,
+        today=today,
+        team_size=len(team_members),
+        members=members,
+        pending_approvals_count=pending_approvals_count,
+        pending_time_off_count=pending_time_off_count,
+        rejected_recent_count=rejected_recent_count,
+        pending_approvals_oldest_hours=pending_approvals_oldest_hours,
+        pending_approvals_avg_hours=pending_approvals_avg_hours,
+        capacity_this_week=_capacity_rows(pto_this_week_by_user),
+        capacity_next_week=_capacity_rows(pto_next_week_by_user),
+    )
+
+
+# ============================================================================
+# Manager Project Health
+# ============================================================================
+#
+# Powers the project-health table on the manager dashboard. We restrict
+# the result set to projects that the manager's *scoped team* has logged
+# time against in the current or prior week, so a manager doesn't see
+# the entire tenant project list — only the ones relevant to them.
+
+@router.get("/manager-project-health", response_model=ManagerProjectHealthResponse)
+async def get_manager_project_health(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.role not in [UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO, UserRole.ADMIN]:
+        raise HTTPException(
+            status_code=403,
+            detail="This endpoint is not available for your role",
+        )
+
+    tenant_timezone: Optional[str] = None
+    if current_user.tenant_id is not None:
+        tenant = await db.get(Tenant, current_user.tenant_id)
+        if tenant is not None:
+            tenant_timezone = tenant.timezone
+
+    today = now_for_tenant(tenant_timezone).date()
+    week_start = today - timedelta(days=today.weekday())
+    prior_week_start = week_start - timedelta(days=7)
+
+    team_member_ids = await _get_scoped_employee_ids(db, current_user)
+    if not team_member_ids:
+        return ManagerProjectHealthResponse(rows=[])
+
+    # 1) Find the projects the team has logged to in the last two weeks.
+    project_id_result = await db.execute(
+        select(TimeEntry.project_id)
+        .where(
+            TimeEntry.user_id.in_(team_member_ids),
+            TimeEntry.entry_date >= prior_week_start,
+            TimeEntry.status.in_(
+                [TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED, TimeEntryStatus.DRAFT]
+            ),
+        )
+        .distinct()
+    )
+    project_ids = list(project_id_result.scalars().all())
+    if not project_ids:
+        return ManagerProjectHealthResponse(rows=[])
+
+    # 2) Load projects + clients in one shot.
+    projects_result = await db.execute(
+        select(Project)
+        .options(selectinload(Project.client))
+        .where(
+            Project.id.in_(project_ids),
+            Project.tenant_id == current_user.tenant_id,
+        )
+    )
+    projects = list(projects_result.scalars().all())
+
+    # 3) Hours-this-week per project, only for entries that count
+    # against the budget (SUBMITTED + APPROVED).
+    hours_week_result = await db.execute(
+        select(TimeEntry.project_id, func.coalesce(func.sum(TimeEntry.hours), 0))
+        .where(
+            TimeEntry.project_id.in_(project_ids),
+            TimeEntry.user_id.in_(team_member_ids),
+            TimeEntry.entry_date >= week_start,
+            TimeEntry.entry_date <= today,
+            TimeEntry.status.in_(
+                [TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]
+            ),
+        )
+        .group_by(TimeEntry.project_id)
+    )
+    hours_week_by_project = {pid: Decimal(str(h or 0)) for pid, h in hours_week_result.all()}
+
+    # 4) Total hours logged against each project ever — for the budget
+    # percentage. estimated_hours on the project model is the
+    # denominator. If there's no estimate, we report None for the
+    # budget fields.
+    hours_total_result = await db.execute(
+        select(TimeEntry.project_id, func.coalesce(func.sum(TimeEntry.hours), 0))
+        .where(
+            TimeEntry.project_id.in_(project_ids),
+            TimeEntry.status.in_(
+                [TimeEntryStatus.SUBMITTED, TimeEntryStatus.APPROVED]
+            ),
+        )
+        .group_by(TimeEntry.project_id)
+    )
+    hours_total_by_project = {pid: Decimal(str(h or 0)) for pid, h in hours_total_result.all()}
+
+    rows: list[ManagerProjectHealthRow] = []
+    for project in projects:
+        days_until_end: Optional[int] = None
+        if project.end_date is not None:
+            days_until_end = (project.end_date - today).days
+
+        hours_this_week = hours_week_by_project.get(project.id, Decimal("0"))
+        total_logged = hours_total_by_project.get(project.id, Decimal("0"))
+
+        budget_pct: Optional[int] = None
+        budget_remaining: Optional[Decimal] = None
+        estimated = project.estimated_hours
+        if estimated is not None and estimated > 0:
+            budget_pct = int(round((total_logged / Decimal(str(estimated))) * 100))
+            budget_remaining = Decimal(str(estimated)) - total_logged
+
+        # Health classification:
+        #  needs-attention: over budget OR more than a month overdue
+        #  at-risk:         within a week of end_date OR >80% budget consumed
+        #  not-set:         no budget AND no end_date
+        #  good:            otherwise
+        is_over_budget = budget_pct is not None and budget_pct > 100
+        is_long_overdue = days_until_end is not None and days_until_end < -30
+        is_close_to_end = days_until_end is not None and 0 <= days_until_end <= 7
+        is_high_burn = budget_pct is not None and budget_pct > 80
+        no_budget_no_end = estimated is None and project.end_date is None
+
+        if is_over_budget or is_long_overdue:
+            health = "needs-attention"
+        elif is_close_to_end or is_high_burn:
+            health = "at-risk"
+        elif no_budget_no_end:
+            health = "not-set"
+        else:
+            health = "good"
+
+        rows.append(
+            ManagerProjectHealthRow(
+                project_id=project.id,
+                project_name=project.name,
+                client_name=project.client.name if project.client else "",
+                days_until_end=days_until_end,
+                hours_this_week=hours_this_week,
+                budget_pct=budget_pct,
+                budget_hours_remaining=budget_remaining,
+                health=health,
+            )
+        )
+
+    # Sort: needs-attention → at-risk → good → not-set, then by name.
+    health_order = {"needs-attention": 0, "at-risk": 1, "good": 2, "not-set": 3}
+    rows.sort(key=lambda r: (health_order.get(r.health, 9), r.project_name.lower()))
+    return ManagerProjectHealthResponse(rows=rows)

@@ -52,7 +52,10 @@ import {
   ServiceToken,
   ServiceTokenCreate,
   ServiceTokenCreated,
+  ManagerProjectHealthResponse,
+  ManagerTeamOverviewResponse,
   StoredEmailDetail,
+  SystemHealthCheckResponse,
   Task,
   TeamDailyOverview,
   Tenant,
@@ -424,8 +427,19 @@ export const dashboardAPI = {
   }) => apiClient.get<DashboardAnalytics>('/dashboard/analytics', { params }),
   recentActivity: (params?: { limit?: number }) =>
     apiClient.get<DashboardRecentActivityItem[]>('/dashboard/recent-activity', { params }),
+  managerTeamOverview: () =>
+    apiClient.get<ManagerTeamOverviewResponse>('/dashboard/manager-team-overview'),
+  managerProjectHealth: () =>
+    apiClient.get<ManagerProjectHealthResponse>('/dashboard/manager-project-health'),
   auditTrail: (params?: { limit?: number; offset?: number; activity_type?: string; search?: string }) =>
     apiClient.get<DashboardRecentActivityItem[]>('/dashboard/audit-trail', { params }),
+};
+
+export const adminAPI = {
+  /** Per-service operational state for the admin dashboard. ADMIN /
+   *  PLATFORM_ADMIN only; other roles get 403. Each entry is independent
+   *  — one degraded service does not mask the others. */
+  systemHealth: () => apiClient.get<SystemHealthCheckResponse[]>('/admin/system-health'),
 };
 
 export const notificationsAPI = {
