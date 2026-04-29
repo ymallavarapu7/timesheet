@@ -141,19 +141,6 @@ const ReasonPopover: React.FC<{
   );
 };
 
-// R2: small `~` marker the field labels show when the LLM listed that
-// field in extracted_data.uncertain_fields. Hover for the per-field
-// reason; the wider context lives on the AI badge in the topbar.
-const UncertaintyMarker: React.FC<{ title: string }> = ({ title }) => (
-  <span
-    className="ml-1 inline-flex h-4 min-w-[1rem] items-center justify-center rounded border border-amber-400/50 bg-amber-500/10 px-1 text-[10px] font-bold text-amber-700 dark:text-amber-300"
-    title={title}
-    aria-label={title}
-  >
-    ~
-  </span>
-);
-
 // Personal email providers — never bind to a Client domain. Mirror of
 // the backend PERSONAL_EMAIL_DOMAINS set; the cascade endpoint refuses
 // to create a domain mapping for these. Same set used by InboxPage.
@@ -621,6 +608,30 @@ export const ReviewPanelPage: React.FC = () => {
   const [rejectingLineItemId, setRejectingLineItemId] = React.useState<number | null>(null);
   const [lineItemRejectReason, setLineItemRejectReason] = React.useState('');
 
+  // R10: reprocess scope dropdown. Declared here (before any early
+  // returns) so the hook count is stable across loading and loaded
+  // renders — moving these below the loading guard breaks Rules of
+  // Hooks.
+  const [reprocessMenuOpen, setReprocessMenuOpen] = React.useState(false);
+  const reprocessMenuRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (!reprocessMenuOpen) return;
+    const onClickOutside = (e: MouseEvent) => {
+      if (!reprocessMenuRef.current?.contains(e.target as Node)) {
+        setReprocessMenuOpen(false);
+      }
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setReprocessMenuOpen(false);
+    };
+    window.addEventListener('mousedown', onClickOutside);
+    window.addEventListener('keydown', onEsc);
+    return () => {
+      window.removeEventListener('mousedown', onClickOutside);
+      window.removeEventListener('keydown', onEsc);
+    };
+  }, [reprocessMenuOpen]);
+
   // Splitter drag state
   const [leftPct, setLeftPct] = React.useState(62);
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -713,20 +724,6 @@ export const ReviewPanelPage: React.FC = () => {
     ? clients.some((c: { id: number; name: string }) =>
         c.name.trim().toLowerCase() === extractedClientHint.toLowerCase())
     : false;
-  // R2: per-field uncertainty markers. The LLM returns
-  // `extracted_data.uncertain_fields` (an array of field names) when it
-  // wasn't sure. We surface that as a small `~` next to the field
-  // labels the array names. Hovering shows the full list and a hint to
-  // verify before approving. Replaces the global "AI self-rated" badge
-  // as the primary signal — the badge stays as a fallback.
-  const uncertainFields = React.useMemo<Set<string>>(() => {
-    const raw = (timesheet?.extracted_data as { uncertain_fields?: unknown } | undefined)?.uncertain_fields;
-    if (!Array.isArray(raw)) return new Set();
-    return new Set(raw.map((v) => String(v).trim().toLowerCase()).filter(Boolean));
-  }, [timesheet?.extracted_data]);
-  const isFieldUncertain = (...names: string[]) =>
-    names.some((name) => uncertainFields.has(name.toLowerCase()));
-
   // Sender domain drives both the cascade target and the smart-guess
   // pre-fill for the "+ Add client" popover. Prefer the forwarded-from
   // address (the actual submitter on a forwarded email); fall back to
@@ -823,32 +820,6 @@ export const ReviewPanelPage: React.FC = () => {
     }
     setLineItemModalOpen(true);
   };
-
-  // ── Reprocess scope dropdown (R10) ──
-  // Replaces two scattered reprocess affordances (a topbar button that
-  // re-runs the whole email, and a small text link near the attachment
-  // card that re-runs just the linked attachment) with one icon-only
-  // dropdown in the topbar. Both scopes live in the same place so the
-  // reviewer doesn't have to remember which control does which.
-  const [reprocessMenuOpen, setReprocessMenuOpen] = React.useState(false);
-  const reprocessMenuRef = React.useRef<HTMLDivElement>(null);
-  React.useEffect(() => {
-    if (!reprocessMenuOpen) return;
-    const onClickOutside = (e: MouseEvent) => {
-      if (!reprocessMenuRef.current?.contains(e.target as Node)) {
-        setReprocessMenuOpen(false);
-      }
-    };
-    const onEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setReprocessMenuOpen(false);
-    };
-    window.addEventListener('mousedown', onClickOutside);
-    window.addEventListener('keydown', onEsc);
-    return () => {
-      window.removeEventListener('mousedown', onClickOutside);
-      window.removeEventListener('keydown', onEsc);
-    };
-  }, [reprocessMenuOpen]);
 
   // Confirm handler for the "+ Add client" popover. If the sender domain
   // is a real (non-personal) domain we use the cascade endpoint so other
@@ -1435,12 +1406,7 @@ export const ReviewPanelPage: React.FC = () => {
                 <div className="space-y-3">
                   <div>
                     <div className="mb-1.5 flex items-center justify-between gap-3">
-                      <label className="block text-sm font-medium text-foreground">
-                        Client
-                        {isFieldUncertain('client_name', 'client') && (
-                          <UncertaintyMarker title="The model wasn't certain about the client. Verify against the document before approving." />
-                        )}
-                      </label>
+                      <label className="block text-sm font-medium text-foreground">Client</label>
                       <button
                         type="button"
                         onClick={(event) => setAddClientAnchor(event.currentTarget)}
@@ -1480,12 +1446,7 @@ export const ReviewPanelPage: React.FC = () => {
                     )}
                   </div>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-foreground">
-                      Employee
-                      {isFieldUncertain('employee_name') && (
-                        <UncertaintyMarker title="The model wasn't certain about the employee. Verify against the document before approving." />
-                      )}
-                    </label>
+                    <label className="mb-1.5 block text-sm font-medium text-foreground">Employee</label>
                     <select
                       className="field-input"
                       value={employeeSelectValue}
@@ -1521,12 +1482,7 @@ export const ReviewPanelPage: React.FC = () => {
                     field is what carries to TimeEntry.supervisor_name on
                     approval. */}
                 <div className="mt-3">
-                  <label className="mb-1.5 block text-sm font-medium text-foreground">
-                    Supervisor
-                    {isFieldUncertain('supervisor_name') && (
-                      <UncertaintyMarker title="The model wasn't certain about the supervisor. Verify against the document before approving." />
-                    )}
-                  </label>
+                  <label className="mb-1.5 block text-sm font-medium text-foreground">Supervisor</label>
                   <input
                     type="text"
                     className="field-input"
@@ -1549,30 +1505,15 @@ export const ReviewPanelPage: React.FC = () => {
                 <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">Week &amp; Hours</p>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-foreground">
-                      Week Start
-                      {isFieldUncertain('period_start') && (
-                        <UncertaintyMarker title="The model wasn't certain about the period start. Verify against the document before approving." />
-                      )}
-                    </label>
+                    <label className="mb-1.5 block text-sm font-medium text-foreground">Week Start</label>
                     <input type="date" className="field-input" value={summaryForm.period_start} onChange={(e) => setSummaryForm((c) => ({ ...c, period_start: e.target.value }))} />
                   </div>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-foreground">
-                      Week End
-                      {isFieldUncertain('period_end') && (
-                        <UncertaintyMarker title="The model wasn't certain about the period end. Verify against the document before approving." />
-                      )}
-                    </label>
+                    <label className="mb-1.5 block text-sm font-medium text-foreground">Week End</label>
                     <input type="date" className="field-input" value={summaryForm.period_end} onChange={(e) => setSummaryForm((c) => ({ ...c, period_end: e.target.value }))} />
                   </div>
                   <div>
-                    <label className="mb-1.5 block text-sm font-medium text-foreground">
-                      Total Hours
-                      {isFieldUncertain('total_hours') && (
-                        <UncertaintyMarker title="The model wasn't certain about the total hours. Verify against the document before approving." />
-                      )}
-                    </label>
+                    <label className="mb-1.5 block text-sm font-medium text-foreground">Total Hours</label>
                     <input className="field-input" value={summaryForm.total_hours} onChange={(e) => setSummaryForm((c) => ({ ...c, total_hours: e.target.value }))} />
                   </div>
                 </div>
