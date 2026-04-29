@@ -21,6 +21,55 @@ DEFAULT_MAX_FAILED_ATTEMPTS = 5
 DEFAULT_LOCKOUT_DURATION_MINUTES = 15
 
 
+# ─────────── JWT payload helpers (Phase 3.B) ───────────
+# Tokens carry a `realm` claim (`tenant` for tenant users,
+# `platform` for platform admins) and a `tenant_slug` claim that the
+# request pipeline uses to resolve the right per-tenant DB engine.
+# Tokens minted before 3.B have neither claim; the auth pipeline treats
+# missing values as `realm=tenant` and resolves the tenant DB through
+# the legacy single-DB path. This keeps existing sessions valid across
+# the upgrade.
+async def _resolve_tenant_slug(db: AsyncSession, tenant_id: int | None) -> str | None:
+    """Look up the slug for a tenant_id.
+
+    Reads from the legacy ``tenants`` table that still lives in the
+    tenant DB during the 3.B → 3.C transition. Once 3.C is complete
+    and the legacy table is dropped, the lookup moves to the control
+    plane. Returns None when there's no tenant (platform admins).
+    """
+    if tenant_id is None:
+        return None
+    from sqlalchemy import text
+    row = (await db.execute(
+        text("SELECT slug FROM tenants WHERE id = :tid"),
+        {"tid": tenant_id},
+    )).first()
+    return row[0] if row else None
+
+
+def _build_token_payload(
+    *,
+    user_id: int,
+    tenant_id: int | None,
+    can_review: bool,
+    realm: str,
+    tenant_slug: str | None,
+) -> dict:
+    """Assemble the JWT payload for both access and refresh tokens.
+
+    Single source of truth so login + refresh always agree on the
+    claim shape. ``realm`` is the boundary marker; ``tenant_slug`` is
+    what the per-request tenant resolver consumes.
+    """
+    return {
+        "sub": str(user_id),
+        "tenant_id": tenant_id,
+        "tenant_slug": tenant_slug,
+        "realm": realm,
+        "can_review": can_review,
+    }
+
+
 async def _lockout_policy(db: AsyncSession, tenant_id: int | None) -> tuple[int, int]:
     """(max_attempts, lockout_minutes) — per tenant with defaults."""
     if tenant_id is None:
@@ -118,7 +167,77 @@ async def login(
     """
     Login with email and password, return JWT tokens.
     Account is locked for 15 minutes after 5 consecutive failed attempts.
+
+    Phase 3.B: platform-admin accounts authenticate against the
+    control-plane database. We try that path first; on miss, fall
+    through to the per-tenant ``users`` table. This means the same
+    email cannot be both a platform admin and a tenant user (which
+    matches the model anyway — platform admins are intentionally
+    separate identities).
     """
+    # Try platform-admin auth first (control plane).
+    from app.db_control import AsyncControlSessionLocal
+    from app.models.control import PlatformAdmin
+    async with AsyncControlSessionLocal() as control_db:
+        pa_row = (await control_db.execute(
+            select(PlatformAdmin).where(PlatformAdmin.email == login_request.email)
+        )).scalar_one_or_none()
+
+    if pa_row is not None:
+        if not verify_password(login_request.password, pa_row.hashed_password):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password",
+            )
+        if not pa_row.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User account is inactive",
+            )
+        # Mint platform-realm token. ``sub`` is the platform admin's
+        # control-plane id, NOT any legacy users.id. tenant_id and
+        # tenant_slug are null for the platform realm.
+        pa_payload = _build_token_payload(
+            user_id=pa_row.id,
+            tenant_id=None,
+            can_review=False,
+            realm="platform",
+            tenant_slug=None,
+        )
+        pa_access = create_access_token(pa_payload)
+        pa_refresh, pa_jti, pa_expires = create_refresh_token(pa_payload)
+        # Refresh tokens for platform admins live in the control plane
+        # too — but the existing RefreshToken model is bound to the
+        # tenant DB. For 3.B we simply don't persist platform-admin
+        # refresh tokens; refresh keeps working from the JWT signature
+        # alone and a future tightening will add control-plane storage.
+        return {
+            "access_token": pa_access,
+            "refresh_token": pa_refresh,
+            "token_type": "bearer",
+            "user": {
+                "id": pa_row.id,
+                "tenant_id": None,
+                "email": pa_row.email,
+                "username": pa_row.username,
+                "full_name": pa_row.full_name,
+                "title": None,
+                "department": None,
+                "timezone": "UTC",
+                "role": UserRole.PLATFORM_ADMIN,
+                "is_active": pa_row.is_active,
+                "manager_id": None,
+                "project_ids": [],
+                "default_client_id": None,
+                "has_changed_password": pa_row.has_changed_password,
+                "email_verified": pa_row.email_verified,
+                "can_review": False,
+                "is_external": False,
+                "created_at": pa_row.created_at,
+                "updated_at": pa_row.updated_at,
+            },
+        }
+
     # Find user
     user = await get_user_by_email(db, login_request.email)
 
@@ -183,13 +302,19 @@ async def login(
     db.add(user)
     await db.commit()
 
-    # Create tokens — include tenant_id so the server can verify it on each request.
-    # tenant_id is None for PLATFORM_ADMIN users.
-    token_payload = {
-        "sub": str(user.id),
-        "tenant_id": user.tenant_id,
-        "can_review": user.can_review,
-    }
+    # Create tokens — include tenant_id so the server can verify it on
+    # each request. tenant_id is None for PLATFORM_ADMIN users; the
+    # `realm` + `tenant_slug` claims drive per-tenant DB resolution
+    # added in Phase 3.B.
+    realm = "platform" if user.role == UserRole.PLATFORM_ADMIN else "tenant"
+    tenant_slug = await _resolve_tenant_slug(db, user.tenant_id)
+    token_payload = _build_token_payload(
+        user_id=user.id,
+        tenant_id=user.tenant_id,
+        can_review=user.can_review,
+        realm=realm,
+        tenant_slug=tenant_slug,
+    )
     access_token = create_access_token(token_payload)
     refresh_token, jti, expires_at = create_refresh_token(token_payload)
 
@@ -260,11 +385,15 @@ async def refresh_token(
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
 
-    token_payload = {
-        "sub": str(user.id),
-        "tenant_id": user.tenant_id,
-        "can_review": user.can_review,
-    }
+    realm = "platform" if user.role == UserRole.PLATFORM_ADMIN else "tenant"
+    tenant_slug = await _resolve_tenant_slug(db, user.tenant_id)
+    token_payload = _build_token_payload(
+        user_id=user.id,
+        tenant_id=user.tenant_id,
+        can_review=user.can_review,
+        realm=realm,
+        tenant_slug=tenant_slug,
+    )
     access_token = create_access_token(token_payload)
     new_refresh_token, new_jti, new_expires_at = create_refresh_token(token_payload)
 

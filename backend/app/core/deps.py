@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import decode_token, verify_service_token
 from app.db import get_db
+from app.db_tenant import get_session_factory_for_slug
 from app.models import User
 from app.models.user import UserRole
 from app.models.service_token import ServiceToken
@@ -11,6 +12,74 @@ import logging
 
 logger = logging.getLogger(__name__)
 security = HTTPBearer()
+
+
+def _decode_or_raise(credentials: HTTPAuthorizationCredentials) -> dict:
+    """Decode the JWT or raise 401. Shared by every dep that needs the
+    payload before the user object is loaded."""
+    payload = decode_token(credentials.credentials)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return payload
+
+
+async def get_tenant_db(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """FastAPI dependency: yield a session bound to the caller's
+    tenant database.
+
+    Phase 3.B note: this dep is wired and available, but no endpoint
+    uses it yet. Every tenant still points at the shared ``timesheet_db``
+    so swapping ``Depends(get_db)`` to ``Depends(get_tenant_db)`` is a
+    behavioral no-op today. The bulk endpoint refactor lands in 3.C
+    alongside the actual per-tenant database split, which is when the
+    resolver materially changes behavior.
+
+    Resolution order (when callers do start using it):
+      1. ``X-Tenant-Slug`` header. Only honored for ``realm=platform``
+         tokens (platform admins acting as a tenant). Tenant-realm
+         tokens ignore the header to prevent tenant escape.
+      2. ``tenant_slug`` claim on the JWT.
+      3. Legacy fallback when no slug is resolvable (tokens minted
+         before 3.B): use the shared ``app.db.get_db`` session. Phase
+         3.C removes this path once every issued token has a slug.
+
+    Routes that operate on cross-tenant data (tenants directory,
+    platform settings, system health) should depend on
+    ``app.db_control.get_control_db`` instead.
+    """
+    payload = _decode_or_raise(credentials)
+    realm = payload.get("realm", "tenant")
+    slug: str | None = None
+
+    if realm == "platform":
+        header_slug = request.headers.get("X-Tenant-Slug")
+        if not header_slug:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Platform-admin tokens must specify a tenant via the "
+                    "X-Tenant-Slug header to access tenant-scoped routes."
+                ),
+            )
+        slug = header_slug
+    else:
+        slug = payload.get("tenant_slug")
+
+    if not slug:
+        async for session in get_db():
+            yield session
+        return
+
+    factory = await get_session_factory_for_slug(slug)
+    async with factory() as session:
+        yield session
 
 
 async def get_current_user(
@@ -65,6 +134,55 @@ async def get_current_user(
 
         # Extract tenant_id from token — may be None for PLATFORM_ADMIN
         token_tenant_id = payload.get("tenant_id")
+        token_realm = payload.get("realm", "tenant")
+
+        # Phase 3.B: realm-aware lookup. Platform-admin tokens load
+        # against the control plane and return a synthetic ``User``-
+        # shaped record so existing routes that read scalar columns
+        # off ``current_user`` continue to work unchanged. The adapter
+        # is intentionally not bound to either session — every code
+        # path we audited reads columns only, never relationships, so
+        # a detached object is sufficient.
+        if token_realm == "platform":
+            from app.db_control import AsyncControlSessionLocal
+            from app.models.control import PlatformAdmin
+            async with AsyncControlSessionLocal() as control_db:
+                pa = await control_db.get(PlatformAdmin, user_id)
+            if pa is None:
+                logger.warning(f"PlatformAdmin {user_id} not found")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User not found",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            if not pa.is_active:
+                logger.warning(f"PlatformAdmin {user_id} is inactive")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Inactive user",
+                )
+            adapter = User()
+            adapter.id = pa.id
+            adapter.tenant_id = None
+            adapter.email = pa.email
+            adapter.username = pa.username
+            adapter.full_name = pa.full_name
+            adapter.title = None
+            adapter.department = None
+            adapter.timezone = "UTC"
+            adapter.role = UserRole.PLATFORM_ADMIN
+            adapter.is_active = pa.is_active
+            adapter.has_changed_password = pa.has_changed_password
+            adapter.email_verified = pa.email_verified
+            adapter.can_review = False
+            adapter.is_external = False
+            adapter.timesheet_locked = False
+            adapter.failed_login_attempts = 0
+            adapter.locked_until = None
+            adapter.created_at = pa.created_at
+            adapter.updated_at = pa.updated_at
+            request.state.current_user = adapter
+            return adapter
 
         user = await get_user_by_id(db, user_id)
         if user is None:
