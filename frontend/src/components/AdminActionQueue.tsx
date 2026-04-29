@@ -1,8 +1,8 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertCircle, AlertTriangle, ArrowRight, Bell, CheckCircle2, FileWarning, Inbox, UserSquare } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ArrowRight, Bell, CheckCircle2, FileWarning, MailQuestion, UserPlus } from 'lucide-react';
 
-import type { DashboardRecentActivityItem, IngestionTimesheetSummary, NotificationItem } from '@/types';
+import type { DashboardRecentActivityItem, NotificationItem, User } from '@/types';
 
 type Urgency = 'urgent' | 'warn' | 'info';
 
@@ -17,46 +17,18 @@ interface ActionItem {
 }
 
 interface AdminActionQueueProps {
-  /** Full pending list. We derive count + per-domain breakdown from this. */
-  pendingTimesheets: IngestionTimesheetSummary[];
-  ingestionEnabled: boolean;
-  canReview: boolean;
+  /** Tenant users. Used to surface users-without-manager and stale
+      unverified invitations. The dashboard already loads this list for
+      its glance tiles, so this is a free re-use. */
+  users: User[];
   notifications: NotificationItem[];
   recentActivity: DashboardRecentActivityItem[];
   recentActivityLoading: boolean;
   onOpenNotifications: () => void;
 }
 
-const domainOf = (email: string | null | undefined): string | null => {
-  if (!email) return null;
-  const at = email.lastIndexOf('@');
-  if (at < 0) return null;
-  const dom = email.slice(at + 1).trim().toLowerCase();
-  return dom || null;
-};
-
-const PERSONAL_DOMAINS = new Set([
-  'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com',
-  'yahoo.com', 'icloud.com', 'me.com', 'aol.com', 'proton.me', 'protonmail.com',
-]);
-
-const formatRelativeAge = (iso: string | null | undefined): string => {
-  if (!iso) return '';
-  const ts = Date.parse(iso);
-  if (!Number.isFinite(ts)) return '';
-  const diffMs = Date.now() - ts;
-  if (diffMs < 60_000) return 'just now';
-  const mins = Math.floor(diffMs / 60_000);
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-};
-
-const PENDING_REVIEW_WARN_THRESHOLD = 5;
-const PENDING_REVIEW_URGENT_THRESHOLD = 15;
 const RECENT_ERROR_LOOKBACK_HOURS = 24;
+const STALE_INVITATION_DAYS = 7;
 const MAX_VISIBLE = 5;
 
 const urgencyDot: Record<Urgency, string> = {
@@ -88,86 +60,60 @@ const buildRouteWithParams = (
 };
 
 export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
-  pendingTimesheets,
-  ingestionEnabled,
-  canReview,
+  users,
   notifications,
   recentActivity,
   recentActivityLoading,
   onOpenNotifications,
 }) => {
   const navigate = useNavigate();
-
-  const pendingReviewCount = pendingTimesheets.length;
   const items: ActionItem[] = [];
 
-  // Pending ingestion reviews. Urgency tiers based on backlog size:
-  // small backlog is just informational, growing backlog warns, large
-  // backlog is urgent (reviewers can fall behind quickly when emails
-  // pile up over a weekend).
-  if (canReview && ingestionEnabled && pendingReviewCount > 0) {
-    const urgency: Urgency =
-      pendingReviewCount >= PENDING_REVIEW_URGENT_THRESHOLD ? 'urgent'
-      : pendingReviewCount >= PENDING_REVIEW_WARN_THRESHOLD ? 'warn'
-      : 'info';
-    // Detail line shows oldest age so the reviewer knows whether the
-    // backlog is fresh or stale. Sort by created_at ascending and read
-    // the first row.
-    const sortedByOldest = [...pendingTimesheets].sort((a, b) => {
-      const aTs = Date.parse(a.created_at);
-      const bTs = Date.parse(b.created_at);
-      return (Number.isFinite(aTs) ? aTs : 0) - (Number.isFinite(bTs) ? bTs : 0);
-    });
-    const oldestAge = formatRelativeAge(sortedByOldest[0]?.created_at);
+  // Active employees and managers without a direct manager assigned.
+  // ADMIN, PLATFORM_ADMIN, and CEO legitimately may not have one;
+  // anyone else lacking a manager_id is an org-chart gap that breaks
+  // the approval chain.
+  const orphanRoles = new Set(['EMPLOYEE', 'MANAGER', 'SENIOR_MANAGER']);
+  const usersWithoutManager = users.filter(
+    (u) => u.is_active && orphanRoles.has(u.role) && (u.manager_id == null),
+  );
+  if (usersWithoutManager.length > 0) {
+    const sample = usersWithoutManager.slice(0, 3).map((u) => u.full_name).join(', ');
     items.push({
-      id: 'pending-reviews',
-      urgency,
-      icon: Inbox,
-      title: `${pendingReviewCount} timesheet${pendingReviewCount === 1 ? '' : 's'} awaiting review`,
-      detail: oldestAge
-        ? `Email ingestion has staged submissions. Oldest ${oldestAge}.`
-        : 'Email ingestion has staged submissions that need reviewer action.',
-      cta: 'Open inbox',
-      onClick: () => navigate('/ingestion/inbox'),
+      id: 'no-manager',
+      urgency: 'urgent',
+      icon: UserPlus,
+      title: `${usersWithoutManager.length} user${usersWithoutManager.length === 1 ? '' : 's'} without a manager`,
+      detail: sample
+        ? `${sample}${usersWithoutManager.length > 3 ? ` and ${usersWithoutManager.length - 3} more` : ''}. Approval chain is broken until assigned.`
+        : 'Approval chain is broken until assigned.',
+      cta: 'Assign managers',
+      onClick: () => navigate('/user-management?status=NO_MANAGER'),
     });
   }
 
-  // Pending client assignment: rows where ingestion has not yet
-  // resolved a client. We bucket by sender domain (skipping personal
-  // domains) so the reviewer sees the cascade target. A single click
-  // through the inbox cascade button on each domain resolves all of
-  // them at once.
-  if (canReview && ingestionEnabled && pendingTimesheets.length > 0) {
-    const domainCounts = new Map<string, number>();
-    let totalUnassigned = 0;
-    for (const t of pendingTimesheets) {
-      if (t.client_id != null) continue;
-      totalUnassigned += 1;
-      const dom = domainOf(t.sender_email);
-      if (!dom || PERSONAL_DOMAINS.has(dom)) continue;
-      domainCounts.set(dom, (domainCounts.get(dom) ?? 0) + 1);
-    }
-    if (totalUnassigned > 0 && domainCounts.size > 0) {
-      const top = [...domainCounts.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 3)
-        .map(([d, n]) => `${n} from ${d}`)
-        .join(' · ');
-      items.push({
-        id: 'unassigned-clients',
-        urgency: 'warn',
-        icon: UserSquare,
-        title: `${totalUnassigned} email${totalUnassigned === 1 ? '' : 's'} awaiting client assignment`,
-        detail: top || 'Sender domain not yet mapped to a client.',
-        cta: 'Resolve',
-        onClick: () => navigate('/ingestion/inbox'),
-      });
-    }
+  // Stale invitations: active accounts whose email is still unverified
+  // after a week. These are people who got invited but never confirmed.
+  const staleCutoff = Date.now() - STALE_INVITATION_DAYS * 24 * 60 * 60 * 1000;
+  const staleInvites = users.filter((u) => {
+    if (!u.is_active) return false;
+    if (u.email_verified) return false;
+    const created = u.created_at ? Date.parse(u.created_at) : NaN;
+    return Number.isFinite(created) && created < staleCutoff;
+  });
+  if (staleInvites.length > 0) {
+    items.push({
+      id: 'stale-invitations',
+      urgency: 'warn',
+      icon: MailQuestion,
+      title: `${staleInvites.length} unverified invitation${staleInvites.length === 1 ? '' : 's'} > ${STALE_INVITATION_DAYS}d old`,
+      detail: 'Resend or revoke. Unverified accounts can\'t log in.',
+      cta: 'Open users',
+      onClick: () => navigate('/user-management?verified=NO'),
+    });
   }
 
-  // Error-severity activity from the last 24 hours. These are the
-  // signals an admin most likely wants to act on first; lower-severity
-  // activity stays in the Recent Activity card below.
+  // Error-severity activity from the last 24 hours.
   const recentErrorCutoff = Date.now() - RECENT_ERROR_LOOKBACK_HOURS * 60 * 60 * 1000;
   const recentErrors = recentActivity.filter((item) => {
     if (item.severity !== 'error') return false;
@@ -186,8 +132,7 @@ export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
     });
   });
 
-  // Warning-severity activity (also last 24h). One row per warning,
-  // capped so a noisy day doesn't flood the queue.
+  // Warning-severity activity (also last 24h).
   const recentWarnings = recentActivity.filter((item) => {
     if (item.severity !== 'warning') return false;
     const ts = Date.parse(item.created_at);
@@ -205,9 +150,7 @@ export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
     });
   });
 
-  // Unread notifications, grouped (the notifications endpoint already
-  // collapses by route + count). Surface anything with count > 0 as
-  // info; the notifications modal shows the full list.
+  // Unread notifications. Severity bumps urgency.
   const unreadNotifications = notifications.filter((n) => !n.is_read && n.count > 0);
   if (unreadNotifications.length > 0) {
     const total = unreadNotifications.reduce((sum, n) => sum + n.count, 0);
@@ -224,7 +167,6 @@ export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
     });
   }
 
-  // Sort by urgency, preserving insertion order within a tier.
   items.sort((a, b) => urgencyOrder[a.urgency] - urgencyOrder[b.urgency]);
 
   const visible = items.slice(0, MAX_VISIBLE);
@@ -232,7 +174,7 @@ export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
 
   if (recentActivityLoading && items.length === 0) {
     return (
-      <div className="rounded-lg border bg-card p-5 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+      <div className="rounded-lg border bg-card p-4 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
         <p className="text-sm text-muted-foreground">Loading action queue...</p>
       </div>
     );
@@ -240,7 +182,7 @@ export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
 
   if (items.length === 0) {
     return (
-      <div className="rounded-lg border bg-card p-5 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+      <div className="rounded-lg border bg-card p-4 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
             <CheckCircle2 className="h-5 w-5" />
@@ -248,7 +190,7 @@ export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
           <div className="min-w-0">
             <p className="text-sm font-semibold text-foreground">All caught up</p>
             <p className="text-xs text-muted-foreground">
-              No pending reviews, no recent errors, no unread notifications.
+              No org-chart gaps, no stale invitations, no recent errors, no unread notifications.
             </p>
           </div>
         </div>
@@ -258,8 +200,8 @@ export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
 
   return (
     <div className="rounded-lg border bg-card p-5 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-foreground">Admin priorities</h2>
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="text-base font-semibold text-foreground">Admin priorities</h2>
         <span className="text-xs text-muted-foreground">
           {items.length} {items.length === 1 ? 'item' : 'items'}
         </span>
@@ -272,7 +214,7 @@ export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
               <button
                 type="button"
                 onClick={item.onClick}
-                className="group flex w-full items-center gap-3 rounded-md border border-border/60 bg-background/40 px-3 py-3 text-left transition hover:border-primary/40 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+                className="group flex w-full items-center gap-3 rounded-md border border-border/60 bg-background/40 px-3 py-2.5 text-left transition hover:border-primary/40 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
               >
                 <span
                   aria-hidden

@@ -63,9 +63,9 @@ export const SystemHealthCard: React.FC<SystemHealthCardProps> = ({ label, statu
           {statusChipLabel[status]}
         </span>
       </div>
-      <div className="mt-3 flex h-6 items-end gap-[2px]" aria-hidden>
+      <div className="mt-3 flex h-8 items-end gap-[2px]" aria-hidden>
         {buckets.map((value, i) => {
-          const height = Math.max(2, Math.min(1, value) * 22);
+          const height = Math.max(2, Math.min(1, value) * 30);
           const isTip = status === 'attention' && i === buckets.length - 1;
           const cls = isTip ? tipBarClass[status] : baseBarClass[status];
           return (

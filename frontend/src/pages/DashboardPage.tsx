@@ -58,16 +58,13 @@ type SelectedBarSegment = {
   entries: DashboardBarEntryDetail[];
 };
 
-type AdminStatsTileKey = 'active-users' | 'employees' | 'managers' | 'admins' | 'clients' | 'active-projects' | 'notifications' | 'pending-reviews';
+type AdminStatsTileKey = 'people' | 'clients' | 'active-projects' | 'pending-invites' | 'notifications';
 
 const getAdminTileActionLabel = (tileKey: AdminStatsTileKey) => {
-  if (tileKey === 'active-users') return 'Opens User Management filtered to Active users.';
-  if (tileKey === 'employees') return 'Opens User Management filtered to Employees.';
-  if (tileKey === 'managers') return 'Opens User Management filtered to Managers.';
-  if (tileKey === 'admins') return 'Opens User Management filtered to Admins.';
+  if (tileKey === 'people') return 'Opens User Management.';
   if (tileKey === 'clients') return 'Opens Client Management.';
   if (tileKey === 'active-projects') return 'Opens Client Management in Projects view filtered to Active projects.';
-  if (tileKey === 'pending-reviews') return 'Opens Email Inbox to review pending timesheets.';
+  if (tileKey === 'pending-invites') return 'Opens User Management filtered to unverified accounts.';
   return 'Opens notifications dialog.';
 };
 
@@ -305,7 +302,12 @@ export const DashboardPage: React.FC = () => {
   const [isNotificationsModalOpen, setIsNotificationsModalOpen] = useState(false);
   const [isPasswordChangeModalOpen, setIsPasswordChangeModalOpen] = useState(false);
   const [showWeekPicker, setShowWeekPicker] = useState(false);
-  const [showRecentActivity, setShowRecentActivity] = useState(false);
+  // Recent Activity is the admin's "what happened while I was away"
+  // feed; we want it visible by default rather than hidden behind a
+  // chevron. Stays as an explicit collapse for the rare cases where
+  // an admin wants to focus on the action queue alone.
+  const [showRecentActivity, setShowRecentActivity] = useState(true);
+  const [recentActivityExpanded, setRecentActivityExpanded] = useState(false);
   const weekStartsOn = useWeekStartsOn();
   const [pickerMonth, setPickerMonth] = useState<Date>(() => new Date());
 
@@ -361,9 +363,12 @@ export const DashboardPage: React.FC = () => {
   const { data: notificationsSummary, isLoading: notificationsLoading, error: notificationsError, isFetching: notificationsFetching, isError: notificationsIsError } = useNotifications();
   const canReview = useCanReview();
   const ingestionEnabled = useIngestionEnabled();
+  // Admin dashboard no longer surfaces review queue size, so we don't
+  // fetch it when the user is an admin. Managers and reviewers still
+  // need it for their own tiles.
   const { data: pendingTimesheets = [] } = useIngestionTimesheets(
     { status_filter: 'pending', limit: 200 },
-    canReview && ingestionEnabled,
+    canReview && ingestionEnabled && !isAdminView,
   );
   const pendingReviewCount = pendingTimesheets.length;
   const { data: recentActivity = [], isLoading: recentActivityLoading, error: recentActivityError } = useDashboardRecentActivity({ limit: 12 }, showAdminStatsView);
@@ -432,15 +437,33 @@ export const DashboardPage: React.FC = () => {
   const adminsCount = allUsers.filter((member) => member.role === 'ADMIN').length;
   const totalNotifications = notificationsSummary?.total_count ?? 0;
 
-  const adminStatsTiles: { key: AdminStatsTileKey; label: string; value: number }[] = [
-    { key: 'active-users', label: 'Active Users', value: activeUsersCount },
-    { key: 'employees', label: 'Employees', value: employeesCount },
-    { key: 'managers', label: 'Managers', value: managersCount },
-    { key: 'admins', label: 'Admins', value: adminsCount },
+  // Pending invitations: active accounts whose email is unverified.
+  // Same definition as the Action Queue's stale-invitation rule, just
+  // without the >7d cutoff (this tile is a glance count; the Action
+  // Queue surfaces only the ones old enough to act on).
+  const pendingInvitesCount = allUsers.filter(
+    (u) => u.is_active && !u.email_verified,
+  ).length;
+
+  const adminStatsTiles: {
+    key: AdminStatsTileKey;
+    label: string;
+    value: number;
+    hint?: string;
+  }[] = [
+    {
+      key: 'people',
+      label: 'People',
+      value: activeUsersCount,
+      // Compact role breakdown sits below the headline number so the
+      // tile carries the same information as the four old tiles in
+      // one card.
+      hint: `${employeesCount} emp · ${managersCount} mgr · ${adminsCount} adm`,
+    },
     { key: 'clients', label: 'Clients', value: allClients.length },
     { key: 'active-projects', label: 'Active Projects', value: activeProjectCount },
+    { key: 'pending-invites', label: 'Pending Invites', value: pendingInvitesCount },
     { key: 'notifications', label: 'Notifications', value: totalNotifications },
-    ...(canReview && ingestionEnabled ? [{ key: 'pending-reviews' as AdminStatsTileKey, label: 'Pending Reviews', value: pendingReviewCount }] : []),
   ];
 
   const platformStatsTiles = [
@@ -451,20 +474,8 @@ export const DashboardPage: React.FC = () => {
   ];
 
   const handleAdminTileClick = (tileKey: AdminStatsTileKey) => {
-    if (tileKey === 'active-users') {
+    if (tileKey === 'people') {
       navigate('/user-management?status=ACTIVE');
-      return;
-    }
-    if (tileKey === 'employees') {
-      navigate('/user-management?role=EMPLOYEE');
-      return;
-    }
-    if (tileKey === 'managers') {
-      navigate('/user-management?role=MANAGER');
-      return;
-    }
-    if (tileKey === 'admins') {
-      navigate('/user-management?role=ADMIN');
       return;
     }
     if (tileKey === 'clients') {
@@ -475,8 +486,8 @@ export const DashboardPage: React.FC = () => {
       navigate('/client-management?view=projects&status=ACTIVE');
       return;
     }
-    if (tileKey === 'pending-reviews') {
-      navigate('/ingestion/inbox');
+    if (tileKey === 'pending-invites') {
+      navigate('/user-management?verified=NO');
       return;
     }
     setIsNotificationsModalOpen(true);
@@ -679,11 +690,12 @@ export const DashboardPage: React.FC = () => {
 
         {showAdminStatsView && (
           <>
+            {/* 1. Action Queue: what does the org need from me right now?
+                Top of the page so urgent items aren't pushed below the
+                fold by infra checks that are usually green. */}
             {isAdminView && !isPlatformAdmin && (
               <AdminActionQueue
-                pendingTimesheets={pendingTimesheets}
-                ingestionEnabled={ingestionEnabled}
-                canReview={canReview}
+                users={allUsers}
                 notifications={notificationItems as NotificationItem[]}
                 recentActivity={recentActivity}
                 recentActivityLoading={recentActivityLoading}
@@ -691,15 +703,127 @@ export const DashboardPage: React.FC = () => {
               />
             )}
 
-            {/* System Health: per-service operational state from
-                /admin/system-health. Each card renders with a freshness
-                subtitle and a synthetic-deterministic sparkline strip.
-                The sparkline is decorative for now (no per-service time
-                series endpoint yet); the chip color and subtitle carry
-                the real signal. */}
-            <div className="rounded-lg bg-card p-5 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-lg font-semibold">System Health</h2>
+            {/* 2. Tile row: primary navigation. Most admin clicks land on
+                People / Clients / Projects management; keeping these
+                above the fold means fewer scrolls per session. */}
+            {isPlatformAdmin ? (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                {platformStatsTiles.map((tile) => (
+                  <div
+                    key={tile.label}
+                    className="rounded-lg bg-card p-4 text-center shadow-[0_1px_2px_rgba(0,0,0,0.05)]"
+                  >
+                    <p className="text-xs text-muted-foreground">{tile.label}</p>
+                    <p className="text-2xl font-bold mt-1">{tile.value}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3 mb-4">
+                {adminStatsTiles.map((tile) => (
+                  <button
+                    key={tile.key}
+                    type="button"
+                    onClick={() => handleAdminTileClick(tile.key)}
+                    onKeyDown={(event) => handleAdminTileKeyDown(event, tile.key)}
+                    aria-label={`${tile.label}: ${tile.value}${tile.hint ? `. ${tile.hint}` : ''}. ${getAdminTileActionLabel(tile.key)}`}
+                    className="rounded-lg bg-card p-3 text-center shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+                  >
+                    <p className="text-xs text-muted-foreground">{tile.label}</p>
+                    <p className="text-2xl font-bold mt-1 leading-tight">{tile.value}</p>
+                    {tile.hint && (
+                      <p className="mt-1 text-[11px] text-muted-foreground">{tile.hint}</p>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* 3. Recent Activity: "what happened in the org while I was
+                away." Expanded by default with a 5-row preview; collapse
+                stays an option, and a Show more reveals the full list. */}
+            <div className="rounded-lg bg-card p-4 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+              <button
+                type="button"
+                onClick={() => setShowRecentActivity((v) => !v)}
+                className="flex w-full items-center justify-between gap-3"
+              >
+                <h2 className="text-base font-semibold">
+                  {isPlatformAdmin ? 'Recent Platform Activity' : 'Recent Org Activity'}
+                </h2>
+                <div className="flex items-center gap-2">
+                  <p className="text-xs text-muted-foreground">{recentActivity.length || 0} items</p>
+                  <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${showRecentActivity ? 'rotate-180' : ''}`} />
+                </div>
+              </button>
+
+              {showRecentActivity && (
+                <div className="mt-3">
+                  {recentActivityLoading ? (
+                    <p className="text-sm text-muted-foreground">Loading recent activity…</p>
+                  ) : recentActivity.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No recent activity yet.</p>
+                  ) : (() => {
+                    const visibleActivity = recentActivityExpanded
+                      ? recentActivity
+                      : recentActivity.slice(0, 5);
+                    const hiddenCount = recentActivity.length - visibleActivity.length;
+                    return (
+                      <>
+                        <div className="space-y-2">
+                          {visibleActivity.map((item: DashboardRecentActivityItem) => (
+                            <button
+                              key={item.id}
+                              type="button"
+                              onClick={() => navigate(buildRouteWithParams(item.route, item.route_params))}
+                              className="w-full rounded-md border px-3 py-2 text-left transition-colors hover:bg-muted/30"
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="text-sm font-medium text-foreground">{item.summary}</p>
+                                  <p className="mt-0.5 text-xs text-muted-foreground">
+                                    {format(parseISO(item.created_at), 'MMM d, yyyy • h:mm a')}
+                                  </p>
+                                </div>
+                                <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${getActivitySeverityClasses(item.severity)}`}>
+                                  {getActivitySeverityLabel(item.severity)}
+                                </span>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                        {hiddenCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setRecentActivityExpanded(true)}
+                            className="mt-2 text-xs font-medium text-primary hover:underline"
+                          >
+                            Show {hiddenCount} more
+                          </button>
+                        )}
+                        {recentActivityExpanded && recentActivity.length > 5 && (
+                          <button
+                            type="button"
+                            onClick={() => setRecentActivityExpanded(false)}
+                            className="mt-2 text-xs font-medium text-muted-foreground hover:underline"
+                          >
+                            Show less
+                          </button>
+                        )}
+                      </>
+                    );
+                  })()}
+                </div>
+              )}
+            </div>
+
+            {/* 4. System Health: demoted to bottom. Infra is healthy 99%
+                of the time; when it's not, the issue surfaces in the
+                Action Queue at the top. This card is a confirmation, not
+                a primary signal. */}
+            <div className="rounded-lg bg-card p-4 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+              <div className="mb-2 flex items-center justify-between">
+                <h2 className="text-base font-semibold">System Health</h2>
                 <span className="text-xs text-muted-foreground">last 24h</span>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
@@ -731,7 +855,6 @@ export const DashboardPage: React.FC = () => {
                   );
                 })}
                 {systemHealthLoading && !systemHealth && (
-                  // First-load placeholder so the section keeps its height.
                   ['Database', 'Redis', 'Email Ingestion'].map((label) => (
                     <SystemHealthCard
                       key={label}
@@ -742,85 +865,6 @@ export const DashboardPage: React.FC = () => {
                   ))
                 )}
               </div>
-            </div>
-
-            {isPlatformAdmin ? (
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-                {platformStatsTiles.map((tile) => (
-                  <div
-                    key={tile.label}
-                    className="rounded-lg bg-card p-4 text-center shadow-[0_1px_2px_rgba(0,0,0,0.05)]"
-                  >
-                    <p className="text-xs text-muted-foreground">{tile.label}</p>
-                    <p className="text-2xl font-bold mt-1">{tile.value}</p>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3 mb-4">
-                {adminStatsTiles.map((tile) => (
-                  <button
-                    key={tile.key}
-                    type="button"
-                    onClick={() => handleAdminTileClick(tile.key)}
-                    onKeyDown={(event) => handleAdminTileKeyDown(event, tile.key)}
-                    aria-label={`${tile.label}: ${tile.value}. ${getAdminTileActionLabel(tile.key)}`}
-                    className="rounded-lg bg-card p-4 text-center shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-                  >
-                    <p className="text-xs text-muted-foreground">{tile.label}</p>
-                    <p className="text-2xl font-bold mt-1">{tile.value}</p>
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <div className="rounded-lg bg-card p-5 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
-              <button
-                type="button"
-                onClick={() => setShowRecentActivity((v) => !v)}
-                className="flex w-full items-center justify-between gap-3"
-              >
-                <h2 className="text-lg font-semibold">
-                  {isPlatformAdmin ? 'Recent Platform Activity' : 'Recent Org Activity'}
-                </h2>
-                <div className="flex items-center gap-2">
-                  <p className="text-xs text-muted-foreground">{recentActivity.length || 0} items</p>
-                  <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${showRecentActivity ? 'rotate-180' : ''}`} />
-                </div>
-              </button>
-
-              {showRecentActivity && (
-                <div className="mt-4">
-                  {recentActivityLoading ? (
-                    <p className="text-sm text-muted-foreground">Loading recent activity…</p>
-                  ) : recentActivity.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No recent activity yet.</p>
-                  ) : (
-                    <div className="space-y-3">
-                      {recentActivity.map((item: DashboardRecentActivityItem) => (
-                        <button
-                          key={item.id}
-                          type="button"
-                          onClick={() => navigate(buildRouteWithParams(item.route, item.route_params))}
-                          className="w-full rounded-md border px-4 py-3 text-left transition-colors hover:bg-muted/30"
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="text-sm font-medium text-foreground">{item.summary}</p>
-                              <p className="mt-1 text-xs text-muted-foreground">
-                                {format(parseISO(item.created_at), 'MMM d, yyyy • h:mm a')}
-                              </p>
-                            </div>
-                            <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${getActivitySeverityClasses(item.severity)}`}>
-                              {getActivitySeverityLabel(item.severity)}
-                            </span>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           </>
         )}

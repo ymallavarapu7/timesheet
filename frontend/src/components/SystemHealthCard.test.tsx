@@ -25,7 +25,7 @@ describe('SystemHealthCard', () => {
     const { container } = render(
       <SystemHealthCard label="X" status="healthy" subtitle="Reachable" />,
     );
-    const bars = container.querySelectorAll('.flex.h-6 > span');
+    const bars = container.querySelectorAll('.flex.h-8 > span');
     expect(bars).toHaveLength(24);
   });
 
@@ -34,7 +34,7 @@ describe('SystemHealthCard', () => {
     const { container } = render(
       <SystemHealthCard label="X" status="healthy" subtitle="Reachable" sparkline={tooMany} />,
     );
-    const bars = container.querySelectorAll('.flex.h-6 > span');
+    const bars = container.querySelectorAll('.flex.h-8 > span');
     expect(bars).toHaveLength(24);
   });
 
@@ -42,7 +42,7 @@ describe('SystemHealthCard', () => {
     const { container } = render(
       <SystemHealthCard label="X" status="healthy" subtitle="Reachable" sparkline={[0.6, 0.7, 0.8]} />,
     );
-    const bars = container.querySelectorAll('.flex.h-6 > span');
+    const bars = container.querySelectorAll('.flex.h-8 > span');
     expect(bars).toHaveLength(24);
   });
 });
