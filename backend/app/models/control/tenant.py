@@ -61,5 +61,24 @@ class ControlTenant(ControlBase, TimestampMixin):
         String(64), nullable=True, default=None
     )
 
+    # ─── Phase 3.C: per-tenant database connection details ───
+    # Filled in by ``scripts/provision_tenant_db.py`` once the dedicated
+    # database has been created and migrated. ``is_isolated`` is the
+    # cutover flag: while False, the tenant continues to read/write
+    # against the shared ``timesheet_db``; flip it to True only after
+    # the data migration has been verified end-to-end.
+    db_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    db_host: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    db_port: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Credentials are stored encrypted using the same AES-256-GCM key
+    # rotation scheme as OAuth tokens (see app.services.encryption).
+    # Storing them on the tenant row keeps the resolver self-contained;
+    # a future iteration can move them to a secrets manager.
+    db_user_enc: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    db_password_enc: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    is_isolated: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+
     def __repr__(self) -> str:
         return f"<ControlTenant(id={self.id}, slug={self.slug}, status={self.status})>"

@@ -107,6 +107,51 @@ async def test_platform_settings_unique_key(control_session):
 
 
 @pytest.mark.asyncio
+async def test_tenant_db_connection_columns_default_to_shared(control_session):
+    """Phase 3.C.1: a freshly-inserted tenant must default to
+    ``is_isolated=False`` and have no connection details set. The
+    resolver relies on this to keep new tenants on the shared DB
+    until provisioning explicitly flips them over."""
+    control_session.add(ControlTenant(name="Fresh", slug="fresh"))
+    await control_session.commit()
+    fetched = (
+        await control_session.execute(
+            ControlTenant.__table__.select().where(ControlTenant.slug == "fresh")
+        )
+    ).first()
+    assert fetched.is_isolated is False
+    assert fetched.db_name is None
+    assert fetched.db_host is None
+    assert fetched.db_port is None
+    assert fetched.db_user_enc is None
+    assert fetched.db_password_enc is None
+
+
+@pytest.mark.asyncio
+async def test_tenant_db_connection_columns_round_trip(control_session):
+    """A fully-provisioned tenant carries DB details + is_isolated."""
+    control_session.add(ControlTenant(
+        name="Provisioned",
+        slug="provisioned",
+        db_name="acufy_tenant_provisioned",
+        db_host="db",
+        db_port=5432,
+        db_user_enc="enc-user",
+        db_password_enc="enc-pw",
+        is_isolated=True,
+    ))
+    await control_session.commit()
+    fetched = (
+        await control_session.execute(
+            ControlTenant.__table__.select().where(ControlTenant.slug == "provisioned")
+        )
+    ).first()
+    assert fetched.is_isolated is True
+    assert fetched.db_name == "acufy_tenant_provisioned"
+    assert fetched.db_port == 5432
+
+
+@pytest.mark.asyncio
 async def test_provisioning_job_lifecycle(control_session):
     tenant = ControlTenant(name="X", slug="x")
     control_session.add(tenant)
