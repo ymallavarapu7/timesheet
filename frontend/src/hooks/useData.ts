@@ -32,11 +32,12 @@ type TimeOffApprovalsHistoryParams = Parameters<typeof timeOffApprovalsAPI.histo
 type GenericQueryParams = Record<string, unknown>;
 
 // TimeEntries queries
-export const useTimeEntries = (params?: GenericQueryParams) => {
+export const useTimeEntries = (params?: GenericQueryParams, enabled: boolean = true) => {
   return useQuery({
     queryKey: ['timeentries', params],
     queryFn: () => timeentriesAPI.list(params as TimeEntriesListParams).then(res => res.data),
     placeholderData: keepPreviousData,
+    enabled,
   });
 };
 

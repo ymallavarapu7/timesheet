@@ -19,6 +19,7 @@ import {
   useIngestionTimesheets,
   useCanReview,
   useIngestionEnabled,
+  useTimeEntries,
   useWeekStartsOn,
   useAdminSystemHealth,
   useManagerTeamOverview,
@@ -375,6 +376,13 @@ export const DashboardPage: React.FC = () => {
   // Live infra health for the admin dashboard. Polls every 30s while
   // the admin stats view is mounted; idle otherwise.
   const { data: systemHealth, isLoading: systemHealthLoading } = useAdminSystemHealth(showAdminStatsView);
+  // Draft count for the admin's own time entries this week. Surfaced
+  // as a chip on the Weekly View card in the My Time view. Endpoint
+  // scopes to the current user, so no user_id param needed.
+  const { data: adminDraftEntries = [] } = useTimeEntries(
+    { start_date: weekRange.startDate, end_date: weekRange.endDate, status: 'draft', limit: 200 },
+    isAdminView && !isPlatformAdmin && adminDashboardView === 'my-time',
+  );
   // Manager view overview (week-to-date roster + capacity). Only the
   // manager Team tab uses it; nobody else pays for the query.
   const { data: managerOverview, isLoading: managerOverviewLoading } = useManagerTeamOverview(isManagerView && managerDashboardView === 'team');
@@ -929,6 +937,19 @@ export const DashboardPage: React.FC = () => {
             <div className="flex items-center gap-2">
               <span className="text-xs font-semibold uppercase tracking-wide text-primary">Weekly View</span>
               <span className="text-sm font-medium text-foreground">{weekRange.label}</span>
+              {/* Drafts-pending chip: only meaningful when an admin is
+                  looking at their own week. Surfaces work-in-progress
+                  that the Weekly View totals already include but the
+                  reader might miss is still draft. */}
+              {isAdminView && !isPlatformAdmin && (selectedUserId == null || selectedUserId === user?.id) && (adminDraftEntries as { id: number }[]).length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => navigate('/my-time')}
+                  className="rounded-full border border-amber-400/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300 hover:bg-amber-500/20"
+                >
+                  {(adminDraftEntries as { id: number }[]).length} draft{(adminDraftEntries as { id: number }[]).length === 1 ? '' : 's'} pending
+                </button>
+              )}
             </div>
             <p className="text-xs text-muted-foreground">
               {format(parseISO(weekRange.startDate), 'EEE, MMM d')} to {format(parseISO(weekRange.endDate), 'EEE, MMM d')}
