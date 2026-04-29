@@ -418,9 +418,16 @@ async def require_can_review(
 ) -> User:
     """
     Verify the current user can access the reviewer inbox.
+
+    Admin is intentionally excluded: a user who is both an admin and a
+    reviewer logs in with their manager account for review work. The
+    admin portal carries admin duties only.
     """
     if current_user.role == UserRole.ADMIN:
-        return current_user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin role does not have reviewer access. Log in with your manager account.",
+        )
     if not current_user.can_review:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

@@ -317,7 +317,10 @@ async def _build_notification_summary(
         )
 
     scoped_roles = (UserRole.MANAGER, UserRole.SENIOR_MANAGER)
-    tenant_wide_roles = (UserRole.CEO, UserRole.ADMIN)
+    # Admin role is intentionally absent: approval tiles belong on
+    # the manager-side dashboard. A user who is both admin and a
+    # manager logs in with their manager account for that work.
+    tenant_wide_roles = (UserRole.CEO,)
     if current_user.role in scoped_roles + tenant_wide_roles:
         if current_user.role in scoped_roles:
             assigned_employee_ids = await _get_managed_employee_ids(db, current_user.id)

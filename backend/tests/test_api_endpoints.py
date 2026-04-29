@@ -592,7 +592,11 @@ def test_senior_manager_manager_hierarchy_visibility_and_analytics(
     assert float(analytics_response.json()['total_hours']) >= 2.5
 
 
-def test_admin_has_dashboard_scope_and_approval_access(api_client: TestClient, admin_auth_headers: dict):
+def test_admin_has_dashboard_scope_but_not_approval_access(api_client: TestClient, admin_auth_headers: dict):
+    """Admin can list users and read dashboard analytics but is denied
+    the approval queue. Approval and review live under the manager
+    role; an admin who is also a manager logs in with their manager
+    account for that work."""
     users_response = api_client.get('/users', headers=admin_auth_headers)
     assert users_response.status_code == 200
     users = users_response.json()
@@ -602,7 +606,7 @@ def test_admin_has_dashboard_scope_and_approval_access(api_client: TestClient, a
 
     pending_response = api_client.get(
         '/approvals/pending', headers=admin_auth_headers)
-    assert pending_response.status_code == 200
+    assert pending_response.status_code == 403
 
     analytics_response = api_client.get(
         '/dashboard/analytics',

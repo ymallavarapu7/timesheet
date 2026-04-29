@@ -212,9 +212,11 @@ async def test_ceo_sees_pending_time_approvals_tile(
 
 
 @pytest.mark.asyncio
-async def test_admin_sees_pending_time_approvals_tile(
+async def test_admin_does_not_see_pending_time_approvals_tile(
     db_session: AsyncSession, tenant_with_pending: dict
 ):
+    """Admin no longer carries approval surface; the pending-approvals
+    tile belongs on the manager dashboard."""
     client = _make_app(db_session)
     with client:
         response = client.get(
@@ -222,8 +224,7 @@ async def test_admin_sees_pending_time_approvals_tile(
         )
     assert response.status_code == 200
     body = response.json()
-    assert "pending-time-approvals" in _tile_ids(body)
-    assert _tile_count(body, "pending-time-approvals") >= 1
+    assert "pending-time-approvals" not in _tile_ids(body)
 
 
 @pytest.mark.asyncio
@@ -292,9 +293,11 @@ async def test_ceo_sees_pending_timeoff_approvals_tile(
 
 
 @pytest.mark.asyncio
-async def test_admin_sees_pending_timeoff_approvals_tile(
+async def test_admin_does_not_see_pending_timeoff_approvals_tile(
     db_session: AsyncSession, tenant_with_pending: dict
 ):
+    """Admin no longer carries approval surface; the pending-timeoff
+    tile belongs on the manager dashboard."""
     client = _make_app(db_session)
     with client:
         response = client.get(
@@ -302,8 +305,7 @@ async def test_admin_sees_pending_timeoff_approvals_tile(
         )
     assert response.status_code == 200
     body = response.json()
-    assert "pending-timeoff-approvals" in _tile_ids(body)
-    assert _tile_count(body, "pending-timeoff-approvals") >= 1
+    assert "pending-timeoff-approvals" not in _tile_ids(body)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

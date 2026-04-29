@@ -130,7 +130,7 @@ async def get_pending_approvals(
     limit: int = Query(100, ge=1, le=1000),
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
-        "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
+        "MANAGER", "SENIOR_MANAGER", "CEO")),
 ) -> list:
     """
     Get pending time entries for approval (Manager/Senior Manager/CEO only).
@@ -163,7 +163,7 @@ async def get_approval_history(
     limit: int = Query(100, ge=1, le=1000),
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
-        "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
+        "MANAGER", "SENIOR_MANAGER", "CEO")),
 ) -> list[TimeEntry]:
     employee_ids = None
     if current_user.role.value != "CEO":
@@ -229,7 +229,7 @@ async def get_approval_history_grouped(
     status_filter: str | None = Query(None, pattern="^(approved|rejected|mixed)$"),
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
-        "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
+        "MANAGER", "SENIOR_MANAGER", "CEO")),
 ) -> list[dict]:
     """
     Returns approval history grouped by (employee, week_start).
@@ -331,7 +331,7 @@ async def approve_entry_batch(
     approve_request: TimeEntryBatchApproveRequest,
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
-        "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
+        "MANAGER", "SENIOR_MANAGER", "CEO")),
 ) -> list[TimeEntry]:
     entries = await get_time_entries_by_ids(db, approve_request.entry_ids, tenant_id=current_user.tenant_id)
     await _validate_weekly_batch(db, current_user, entries)
@@ -368,7 +368,7 @@ async def reject_entry_batch(
     reject_request: TimeEntryBatchRejectRequest,
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
-        "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
+        "MANAGER", "SENIOR_MANAGER", "CEO")),
 ) -> list[TimeEntry]:
     entries = await get_time_entries_by_ids(db, reject_request.entry_ids, tenant_id=current_user.tenant_id)
     await _validate_weekly_batch(db, current_user, entries)
@@ -408,7 +408,7 @@ async def approve_entry(
     approve_request: TimeEntryApproveRequest,
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
-        "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
+        "MANAGER", "SENIOR_MANAGER", "CEO")),
 ) -> dict:
     """
     Approve a time entry (Manager/Senior Manager/CEO/Admin only).
@@ -419,7 +419,7 @@ async def approve_entry(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Time entry not found")
 
-    if current_user.role.value not in ("CEO", "ADMIN") and entry.user_id not in await _get_direct_report_ids(db, current_user.id):
+    if current_user.role.value != "CEO" and entry.user_id not in await _get_direct_report_ids(db, current_user.id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only approve entries for your direct reports",
@@ -475,7 +475,7 @@ async def reject_entry(
     reject_request: TimeEntryRejectRequest,
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
-        "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
+        "MANAGER", "SENIOR_MANAGER", "CEO")),
 ) -> dict:
     """
     Reject a time entry with a reason (Manager/Senior Manager/CEO/Admin only).
@@ -485,7 +485,7 @@ async def reject_entry(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Time entry not found")
 
-    if current_user.role.value not in ("CEO", "ADMIN") and entry.user_id not in await _get_direct_report_ids(db, current_user.id):
+    if current_user.role.value != "CEO" and entry.user_id not in await _get_direct_report_ids(db, current_user.id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only reject entries for your direct reports",
@@ -538,7 +538,7 @@ async def reject_entry(
 async def revert_entry_rejection(
     entry_id: int,
     db: AsyncSession = Depends(get_tenant_db),
-    current_user: User = Depends(require_role("MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
+    current_user: User = Depends(require_role("MANAGER", "SENIOR_MANAGER", "CEO")),
 ) -> dict:
     """
     Revert a rejected time entry back to SUBMITTED so the manager
