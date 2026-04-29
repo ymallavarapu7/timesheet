@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.deps import require_ingestion_enabled, require_role
+from app.core.deps import get_tenant_db, require_ingestion_enabled, require_role
 from app.crud.mailbox import (
     create_mailbox,
     delete_mailbox,
@@ -23,7 +23,6 @@ from app.crud.mailbox import (
     list_mailboxes,
     update_mailbox,
 )
-from app.db import get_db
 from app.models.client import Client
 from app.models.mailbox import Mailbox, MailboxAuthType, MailboxProtocol, OAuthProvider
 from app.models.tenant import Tenant
@@ -485,7 +484,7 @@ async def _upsert_oauth_mailbox(
 async def list_tenant_mailboxes(
     current_user=Depends(require_role("ADMIN")),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> list[dict]:
     mailboxes = await list_mailboxes(session, current_user.tenant_id)
     return [_mask_mailbox(mailbox) for mailbox in mailboxes]
@@ -496,7 +495,7 @@ async def create_tenant_mailbox(
     body: MailboxCreate,
     current_user=Depends(require_role("ADMIN")),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     await _validate_linked_client(session, current_user.tenant_id, body.linked_client_id)
     await _enforce_mailbox_cap(session, current_user.tenant_id)
@@ -513,7 +512,7 @@ async def get_tenant_mailbox(
     mailbox_id: int,
     current_user=Depends(require_role("ADMIN")),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     mailbox = await get_mailbox(session, mailbox_id, current_user.tenant_id)
     if not mailbox:
@@ -527,7 +526,7 @@ async def update_tenant_mailbox(
     body: MailboxUpdate,
     current_user=Depends(require_role("ADMIN")),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     mailbox = await get_mailbox(session, mailbox_id, current_user.tenant_id)
     if not mailbox:
@@ -545,7 +544,7 @@ async def delete_tenant_mailbox(
     mailbox_id: int,
     current_user=Depends(require_role("ADMIN")),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> None:
     mailbox = await get_mailbox(session, mailbox_id, current_user.tenant_id)
     if not mailbox:
@@ -562,7 +561,7 @@ async def bulk_delete_mailboxes(
     body: BulkDeleteMailboxesRequest,
     current_user=Depends(require_role("ADMIN")),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     deleted = 0
     for mailbox_id in body.mailbox_ids:
@@ -578,7 +577,7 @@ async def reset_mailbox_cursor(
     mailbox_id: int,
     current_user=Depends(require_role("ADMIN")),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> None:
     mailbox = await get_mailbox(session, mailbox_id, current_user.tenant_id)
     if not mailbox:
@@ -592,7 +591,7 @@ async def test_mailbox_connection(
     mailbox_id: int,
     current_user=Depends(require_role("ADMIN")),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     mailbox = await get_mailbox(session, mailbox_id, current_user.tenant_id)
     if not mailbox:
@@ -657,7 +656,7 @@ async def oauth_callback(
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
     error_description: str | None = Query(default=None),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> HTMLResponse:
     if error:
         message = error_description or error.replace("_", " ")

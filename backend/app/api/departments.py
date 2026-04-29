@@ -3,8 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_user, require_role
-from app.db import get_db
+from app.core.deps import get_current_user, get_tenant_db, require_role
 from app.models.department import Department
 from app.models.user import User
 from app.schemas import DepartmentCreate, DepartmentResponse
@@ -14,7 +13,7 @@ router = APIRouter(prefix="/departments", tags=["departments"])
 
 @router.get("", response_model=list[DepartmentResponse])
 async def list_departments(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> list[Department]:
     """Any authenticated user can read the tenant's department list (used in dropdowns)."""
@@ -31,7 +30,7 @@ async def list_departments(
 @router.post("", response_model=DepartmentResponse, status_code=status.HTTP_201_CREATED)
 async def create_department(
     body: DepartmentCreate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> Department:
     if current_user.tenant_id is None:
@@ -53,7 +52,7 @@ async def create_department(
 @router.delete("/{department_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_department(
     department_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> None:
     result = await db.execute(

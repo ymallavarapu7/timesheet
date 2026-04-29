@@ -6,11 +6,10 @@ from pydantic import BaseModel as PydanticBaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db import get_db
 from app.schemas import UserResponse, UserCreate, UserUpdate, UserSelfUpdate, UserProfileResponse, ChangePasswordRequest, MessageResponse, UserCreateResponse, AdminPasswordResetRequest
 from app.crud.user import get_user_by_id, create_user, update_user, delete_user, list_users
 from app.core.permissions import get_user_permissions, shadow_check
-from app.core.deps import get_current_user, require_role, require_same_tenant
+from app.core.deps import get_current_user, get_tenant_db, require_role, require_same_tenant
 from app.models.user import User
 from app.models.assignments import EmployeeManagerAssignment
 from app.core.security import verify_password, get_password_hash
@@ -117,7 +116,7 @@ def _validate_new_password(password: str) -> None:
 async def list_all_users(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> list[User]:
     """
@@ -170,7 +169,7 @@ async def list_all_users(
 @router.get("/me/permissions")
 async def get_my_permissions(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     perms = await get_user_permissions(db, current_user)
     return {"permissions": sorted(perms)}
@@ -178,7 +177,7 @@ async def get_my_permissions(
 
 @router.get("/me/profile", response_model=UserProfileResponse)
 async def get_my_profile(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
     """Return the logged-in user's read-only profile fields."""
@@ -225,7 +224,7 @@ async def get_my_profile(
 @router.patch("/me/profile", response_model=UserResponse)
 async def update_my_profile(
     payload: UserSelfUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> User:
     """Self-update profile. Regular users can edit name/title/timezone/username.
@@ -288,7 +287,7 @@ async def update_my_profile(
 @router.post("/me/password", response_model=MessageResponse)
 async def change_my_password(
     payload: ChangePasswordRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> MessageResponse:
     """Allow a user to change password by providing current password first."""
@@ -331,7 +330,7 @@ async def change_my_password(
 @router.get("/tenant-settings", response_model=dict)
 async def get_tenant_settings(
     current_user: User = Depends(require_role("ADMIN")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     """Get all settings for the current user's tenant. Returns every key
     from the ``setting_definitions`` catalog, typed, with the catalog
@@ -346,7 +345,7 @@ async def get_tenant_settings(
 @router.get("/tenant-settings/catalog", response_model=list)
 async def get_tenant_settings_catalog(
     current_user: User = Depends(require_role("ADMIN")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ) -> list:
     """Return the full setting-definition catalog — type, label, description,
     validation rules, category, sort order. Drives the catalog-based admin
@@ -359,7 +358,7 @@ async def get_tenant_settings_catalog(
 @router.get("/tenant-settings/public", response_model=dict)
 async def get_public_tenant_settings(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     """Whitelisted tenant settings readable by any authenticated user."""
     from app.core.tenant_settings import get_public_settings
@@ -373,7 +372,7 @@ async def get_public_tenant_settings(
 async def update_tenant_settings(
     body: dict,
     current_user: User = Depends(require_role("ADMIN")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     """Upsert one or more settings for the current user's tenant. Each
     key is validated against the ``setting_definitions`` catalog before
@@ -425,7 +424,7 @@ class BulkDeleteUsersRequest(PydanticBaseModel):
 @router.post("/bulk-delete")
 async def bulk_delete_users(
     body: BulkDeleteUsersRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> dict:
     deleted = 0
@@ -447,7 +446,7 @@ async def bulk_delete_users(
 async def reset_user_password(
     user_id: int,
     payload: AdminPasswordResetRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> MessageResponse:
     """Admin resets a user's password. User will be prompted to change it on next login."""
@@ -472,7 +471,7 @@ async def reset_user_password(
 @router.post("/{user_id}/resend-verification", response_model=MessageResponse)
 async def resend_verification_email_endpoint(
     user_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> MessageResponse:
     """Admin resends the verification email for an unverified user. Generates a
@@ -525,7 +524,7 @@ async def resend_verification_email_endpoint(
 @router.get("/{user_id}", response_model=UserResponse)
 async def get_user(
     user_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> User:
     """
@@ -551,7 +550,7 @@ async def get_user(
 async def create_new_user(
     user_create: UserCreate,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> dict:
     """
@@ -682,7 +681,7 @@ async def update_user_endpoint(
     user_id: int,
     user_update: UserUpdate,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> User:
     """
@@ -922,7 +921,7 @@ async def update_user_endpoint(
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user_endpoint(
     user_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> None:
     """
@@ -964,7 +963,7 @@ async def delete_user_endpoint(
 async def unlock_user_timesheet(
     user_id: int,
     current_user: User = Depends(require_role("ADMIN")),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     """Admin manually unlocks a user's timesheet."""
     result = await db.execute(select(User).where(

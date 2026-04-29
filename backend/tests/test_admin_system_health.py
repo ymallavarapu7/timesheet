@@ -31,6 +31,7 @@ def _compile_jsonb_sqlite(element, compiler, **kw):  # pragma: no cover - test s
 from app.api import admin as admin_api
 from app.core.security import create_access_token, get_password_hash
 from app.db import get_db
+from app.core.deps import get_tenant_db
 from app.models.base import Base
 from app.models.mailbox import Mailbox, MailboxAuthType, MailboxProtocol
 from app.models.tenant import Tenant, TenantStatus
@@ -62,6 +63,7 @@ def _make_app(db_session: AsyncSession) -> TestClient:
         yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_tenant_db] = override_get_db
     return TestClient(app)
 
 

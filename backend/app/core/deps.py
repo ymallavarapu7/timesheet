@@ -349,7 +349,7 @@ def get_tenant_id(current_user: User = Depends(get_current_user)) -> int:
 
 async def require_ingestion_enabled(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ) -> User:
     """
     Verify the current user's tenant has ingestion enabled.

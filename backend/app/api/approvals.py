@@ -5,7 +5,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.deps import get_current_user, require_role
+from app.core.deps import get_current_user, get_tenant_db, require_role
 from app.services.notification_emails import notify_timesheet_approved, notify_timesheet_rejected
 from app.services.activity import (
     TENANT_ADMIN_ACTIVITY_SCOPE,
@@ -21,7 +21,6 @@ from app.crud.time_entry import (
     reject_time_entries_batch,
     reject_time_entry,
 )
-from app.db import get_db
 from app.schemas import (
     TimeEntryBatchApproveRequest,
     TimeEntryBatchRejectRequest,
@@ -129,7 +128,7 @@ async def get_pending_approvals(
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
         "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
 ) -> list:
@@ -162,7 +161,7 @@ async def get_approval_history(
     include_older: bool = Query(False),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
         "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
 ) -> list[TimeEntry]:
@@ -228,7 +227,7 @@ async def get_approval_history(
 async def get_approval_history_grouped(
     days_back: int = Query(30, ge=1, le=365),
     status_filter: str | None = Query(None, pattern="^(approved|rejected|mixed)$"),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
         "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
 ) -> list[dict]:
@@ -330,7 +329,7 @@ async def get_approval_history_grouped(
 @router.post("/batch-approve", response_model=list[TimeEntryResponse])
 async def approve_entry_batch(
     approve_request: TimeEntryBatchApproveRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
         "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
 ) -> list[TimeEntry]:
@@ -367,7 +366,7 @@ async def approve_entry_batch(
 @router.post("/batch-reject", response_model=list[TimeEntryResponse])
 async def reject_entry_batch(
     reject_request: TimeEntryBatchRejectRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
         "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
 ) -> list[TimeEntry]:
@@ -407,7 +406,7 @@ async def reject_entry_batch(
 async def approve_entry(
     entry_id: int,
     approve_request: TimeEntryApproveRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
         "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
 ) -> dict:
@@ -474,7 +473,7 @@ async def approve_entry(
 async def reject_entry(
     entry_id: int,
     reject_request: TimeEntryRejectRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
         "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
 ) -> dict:
@@ -538,7 +537,7 @@ async def reject_entry(
 @router.post("/{entry_id}/revert-rejection")
 async def revert_entry_rejection(
     entry_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
 ) -> dict:
     """

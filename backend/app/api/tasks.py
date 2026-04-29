@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_user, require_role
+from app.core.deps import get_current_user, get_tenant_db, require_role
 from app.crud.task import (
     create_task,
     delete_task,
@@ -13,7 +13,6 @@ from app.crud.task import (
     update_task,
 )
 from app.crud.project import get_project_by_id
-from app.db import get_db
 from app.models.user import User
 from app.schemas import TaskCreate, TaskResponse, TaskUpdate, TaskWithProject
 from app.services.activity import (
@@ -31,7 +30,7 @@ async def list_tasks(
     active_only: bool = Query(True),
     skip: int = Query(0, ge=0),
     limit: int = Query(500, ge=1, le=1000),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     return await list_tasks_for_user(
@@ -47,7 +46,7 @@ async def list_tasks(
 @router.get("/{task_id}", response_model=TaskWithProject)
 async def get_task(
     task_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     task = await get_task_by_id(db, task_id, tenant_id=current_user.tenant_id)
@@ -73,7 +72,7 @@ async def get_task(
 @router.post("", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
 async def create_task_endpoint(
     payload: TaskCreate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ):
     project = await get_project_by_id(db, payload.project_id, tenant_id=current_user.tenant_id)
@@ -115,7 +114,7 @@ async def create_task_endpoint(
 async def update_task_endpoint(
     task_id: int,
     payload: TaskUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ):
     task = await get_task_by_id(db, task_id, tenant_id=current_user.tenant_id)
@@ -162,7 +161,7 @@ async def update_task_endpoint(
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_task_endpoint(
     task_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ):
     task = await get_task_by_id(db, task_id, tenant_id=current_user.tenant_id)

@@ -5,8 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_user, require_role
-from app.db import get_db
+from app.core.deps import get_current_user, get_tenant_db, require_role
 from app.models.leave_type import LeaveType
 from app.models.user import User
 from app.schemas import LeaveTypeCreate, LeaveTypeResponse, LeaveTypeUpdate
@@ -23,7 +22,7 @@ def _derive_code(label: str) -> str:
 @router.get("", response_model=list[LeaveTypeResponse])
 async def list_leave_types(
     include_inactive: bool = False,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> list[LeaveType]:
     """Any authenticated user can read their tenant's leave types."""
@@ -40,7 +39,7 @@ async def list_leave_types(
 @router.post("", response_model=LeaveTypeResponse, status_code=status.HTTP_201_CREATED)
 async def create_leave_type(
     body: LeaveTypeCreate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> LeaveType:
     if current_user.tenant_id is None:
@@ -65,7 +64,7 @@ async def create_leave_type(
 async def update_leave_type(
     leave_type_id: int,
     body: LeaveTypeUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> LeaveType:
     result = await db.execute(select(LeaveType).where(LeaveType.id == leave_type_id))
@@ -84,7 +83,7 @@ async def update_leave_type(
 @router.delete("/{leave_type_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_leave_type(
     leave_type_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> None:
     """Hard-delete a leave type. Blocked if any time-off requests reference it;

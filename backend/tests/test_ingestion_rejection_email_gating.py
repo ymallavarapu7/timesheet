@@ -24,6 +24,7 @@ def _compile_jsonb_sqlite(element, compiler, **kw):  # pragma: no cover - test s
 from app.api import ingestion as ingestion_api
 from app.core.security import create_access_token, get_password_hash
 from app.db import get_db
+from app.core.deps import get_tenant_db
 from app.models.base import Base
 from app.models.ingested_email import IngestedEmail
 from app.models.ingestion_timesheet import IngestionTimesheet, IngestionTimesheetStatus
@@ -58,6 +59,7 @@ def _make_app(db_session: AsyncSession) -> TestClient:
         yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_tenant_db] = override_get_db
     return TestClient(app)
 
 

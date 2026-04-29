@@ -4,9 +4,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_user
+from app.core.deps import get_current_user, get_tenant_db
 from app.core.timezone_utils import now_for_tenant
-from app.db import get_db
 from app.models.assignments import EmployeeManagerAssignment, UserProjectAccess
 from app.models.notification import UserNotificationDismissal, UserNotificationState
 from app.models.tenant import Tenant
@@ -126,7 +125,7 @@ async def _get_pending_time_off_stats(
 
 @router.get("/summary", response_model=NotificationSummaryResponse)
 async def get_notification_summary(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     import logging
@@ -588,7 +587,7 @@ async def _build_notification_summary(
 @router.post("/read", response_model=NotificationActionResponse)
 async def mark_notification_read(
     payload: NotificationReadRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     existing_result = await db.execute(
@@ -617,7 +616,7 @@ async def mark_notification_read(
 @router.post("/delete", response_model=NotificationActionResponse)
 async def delete_notification(
     payload: NotificationReadRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     existing_result = await db.execute(
@@ -645,7 +644,7 @@ async def delete_notification(
 
 @router.post("/read-all", response_model=NotificationActionResponse)
 async def mark_all_notifications_read(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     await db.execute(
@@ -667,7 +666,7 @@ async def mark_all_notifications_read(
 
 @router.post("/delete-all", response_model=NotificationActionResponse)
 async def delete_all_notifications(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     await db.execute(

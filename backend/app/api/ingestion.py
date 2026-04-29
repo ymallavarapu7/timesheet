@@ -11,13 +11,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.deps import require_can_review, require_ingestion_enabled
+from app.core.deps import get_tenant_db, require_can_review, require_ingestion_enabled
 from app.crud.ingestion_timesheet import (
     get_ingestion_timesheet,
     list_ingestion_timesheets,
     write_audit_log,
 )
-from app.db import get_db
 from app.models.client import Client
 from app.models.email_attachment import EmailAttachment
 from app.models.ingested_email import IngestedEmail
@@ -509,7 +508,7 @@ async def list_skipped_emails(
     limit: int = Query(10, ge=1, le=50),
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     result = await session.execute(
         select(IngestedEmail)
@@ -568,7 +567,7 @@ async def list_skipped_emails(
 async def cleanup_skipped_email_noise(
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     result = await session.execute(
         select(IngestedEmail)
@@ -622,7 +621,7 @@ async def cleanup_skipped_email_noise(
 async def reprocess_skipped_emails(
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     # Fan out to one arq job per email so a slow/hung attachment can't kill
     # the whole batch. See enqueue_reprocess_skipped_fanout for the details.
@@ -657,7 +656,7 @@ async def reprocess_stored_email_route(
     body: ReprocessStoredEmailRequest,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     email_result = await session.execute(
         select(IngestedEmail).where(
@@ -711,7 +710,7 @@ async def bulk_reprocess_emails(
     body: BulkReprocessRequest,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     # Validate all email IDs belong to this tenant
     result = await session.execute(
@@ -750,7 +749,7 @@ async def get_stored_email(
     email_id: int,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     email_record = await _load_ingested_email_for_delete(session, email_id, current_user.tenant_id)
     if email_record is None:
@@ -765,7 +764,7 @@ async def reprocess_single_email(
     email_id: int,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     from app.models.mailbox import Mailbox
     from app.services.imap import fetch_single_message
@@ -840,7 +839,7 @@ async def delete_ingested_email(
     refetch: bool = Query(False, description="Reset mailbox cursor so the next Fetch Emails will re-ingest this email"),
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> None:
     email_record = await _load_ingested_email_for_delete(session, email_id, current_user.tenant_id)
     if email_record is None:
@@ -879,7 +878,7 @@ async def bulk_delete_ingested_emails(
     body: BulkDeleteEmailsRequest,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     deleted = 0
     all_storage_keys: list[str] = []
@@ -904,7 +903,7 @@ async def get_attachment_file(
     attachment_id: int,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> Response:
     attachment_result = await session.execute(
         select(EmailAttachment)
@@ -937,7 +936,7 @@ async def get_attachment_full_html(
     attachment_id: int,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     """Return an unbounded HTML render of a spreadsheet attachment.
 
@@ -982,7 +981,7 @@ async def get_attachment_full_html(
 async def reapply_client_routing(
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     """
     Re-run client + employee resolution on timesheets where either field is
@@ -1092,7 +1091,7 @@ async def list_review_timesheets(
     offset: int = Query(0, ge=0),
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> list[dict]:
     timesheets = await list_ingestion_timesheets(
         session=session,
@@ -1125,7 +1124,7 @@ async def get_review_timesheet(
     timesheet_id: int,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     timesheet = await get_ingestion_timesheet(session, timesheet_id, current_user.tenant_id)
     if not timesheet:
@@ -1142,7 +1141,7 @@ async def assign_chain_candidate(
     body: AssignChainCandidateRequest,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     """
     Bind an ingestion timesheet to an employee picked from the forward
@@ -1276,7 +1275,7 @@ async def update_timesheet_data(
     body: TimesheetDataUpdate,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     timesheet = await get_ingestion_timesheet(session, timesheet_id, current_user.tenant_id)
     if not timesheet:
@@ -1335,7 +1334,7 @@ async def add_line_item(
     body: LineItemCreate,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> IngestionTimesheetLineItem:
     timesheet = await get_ingestion_timesheet(session, timesheet_id, current_user.tenant_id)
     if not timesheet:
@@ -1375,7 +1374,7 @@ async def update_line_item(
     body: LineItemUpdate,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> IngestionTimesheetLineItem:
     timesheet = await get_ingestion_timesheet(session, timesheet_id, current_user.tenant_id)
     if not timesheet:
@@ -1429,7 +1428,7 @@ async def delete_line_item(
     item_id: int,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> None:
     timesheet = await get_ingestion_timesheet(session, timesheet_id, current_user.tenant_id)
     if not timesheet:
@@ -1474,7 +1473,7 @@ async def approve_timesheet(
     body: ApproveRequest,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     timesheet = await get_ingestion_timesheet(session, timesheet_id, current_user.tenant_id)
     if not timesheet:
@@ -1589,7 +1588,7 @@ async def reject_timesheet(
     body: RejectRequest,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     timesheet = await get_ingestion_timesheet(session, timesheet_id, current_user.tenant_id)
     if not timesheet:
@@ -1676,7 +1675,7 @@ async def hold_timesheet(
     body: HoldRequest,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     timesheet = await get_ingestion_timesheet(session, timesheet_id, current_user.tenant_id)
     if not timesheet:
@@ -1706,7 +1705,7 @@ async def reject_line_item(
     body: RejectRequest,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     """Reject a single line item within a staged timesheet."""
     timesheet = await get_ingestion_timesheet(session, timesheet_id, current_user.tenant_id)
@@ -1753,7 +1752,7 @@ async def unreject_line_item(
     item_id: int,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     """Restore a previously rejected line item."""
     timesheet = await get_ingestion_timesheet(session, timesheet_id, current_user.tenant_id)
@@ -1792,7 +1791,7 @@ async def revert_timesheet_rejection(
     timesheet_id: int,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     """Revert a rejected ingested timesheet back to pending status."""
     timesheet = await get_ingestion_timesheet(session, timesheet_id, current_user.tenant_id)
@@ -1821,7 +1820,7 @@ async def draft_timesheet_comment(
     body: DraftCommentRequest,
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     timesheet = await get_ingestion_timesheet(session, timesheet_id, current_user.tenant_id)
     if not timesheet:
@@ -1846,7 +1845,7 @@ async def draft_timesheet_comment(
 async def simulate_ingestion(
     current_user=Depends(require_can_review),
     _: object = Depends(require_ingestion_enabled),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
     """
     DEV/TEST ONLY: Inject sample timesheets from sample_timesheets/ folder

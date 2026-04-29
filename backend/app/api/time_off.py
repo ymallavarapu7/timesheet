@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_user
+from app.core.deps import get_current_user, get_tenant_db
 from app.crud.time_off_request import (
     create_time_off_request,
     delete_time_off_request,
@@ -14,7 +14,6 @@ from app.crud.time_off_request import (
     submit_time_off_requests,
     update_time_off_request,
 )
-from app.db import get_db
 from app.models.time_entry import TimeEntry
 from app.models.time_off_request import TimeOffStatus, TimeOffType
 from app.models.user import User
@@ -41,7 +40,7 @@ async def get_my_time_off(
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     return await list_user_time_off_requests(
@@ -62,7 +61,7 @@ async def get_my_time_off(
 @router.get("/{request_id}", response_model=TimeOffRequestWithUser)
 async def get_time_off_item(
     request_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     item = await get_time_off_request_by_id(db, request_id, tenant_id=current_user.tenant_id)
@@ -80,7 +79,7 @@ async def get_time_off_item(
 @router.post("", response_model=TimeOffRequestResponse, status_code=status.HTTP_201_CREATED)
 async def create_time_off_item(
     payload: TimeOffRequestCreate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     # Any tenanted user can request their own time off. Platform admins aren't
@@ -113,7 +112,7 @@ async def create_time_off_item(
 async def update_time_off_item(
     request_id: int,
     payload: TimeOffRequestUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     item = await get_time_off_request_by_id(db, request_id, tenant_id=current_user.tenant_id)
@@ -133,7 +132,7 @@ async def update_time_off_item(
 @router.delete("/{request_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_time_off_item(
     request_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     item = await get_time_off_request_by_id(db, request_id, tenant_id=current_user.tenant_id)
@@ -153,7 +152,7 @@ async def delete_time_off_item(
 @router.post("/submit", response_model=list[TimeOffRequestResponse])
 async def submit_time_off(
     submit_request: TimeOffSubmitRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     try:

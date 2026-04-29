@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.api import sync as sync_router_module
 from app.core.security import hash_service_token
 from app.db import get_db
+from app.core.deps import get_tenant_db
 from app.models.base import Base
 from app.models.client import Client
 from app.models.project import Project
@@ -178,7 +179,7 @@ async def sync_client(db_session: AsyncSession, tenant_and_token: dict):
         yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
-
+    app.dependency_overrides[get_tenant_db] = override_get_db
     with TestClient(app) as client:
         yield client
 
@@ -975,7 +976,7 @@ async def test_client_update_triggers_outbound_webhook(
         yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
-
+    app.dependency_overrides[get_tenant_db] = override_get_db
     # Login as admin requires auth — patch JWT instead by creating a minimal admin user
     from app.core.security import create_access_token, get_password_hash
     admin = User(
@@ -1027,7 +1028,7 @@ def test_client_without_ingestion_id_does_not_trigger_webhook(
         yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
-
+    app.dependency_overrides[get_tenant_db] = override_get_db
     async def setup():
         # Native client (no ingestion_client_id)
         native_client = Client(
@@ -1084,7 +1085,7 @@ def test_webhook_failure_does_not_fail_client_update(
         yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
-
+    app.dependency_overrides[get_tenant_db] = override_get_db
     async def setup_admin():
         admin = User(
             tenant_id=tid,

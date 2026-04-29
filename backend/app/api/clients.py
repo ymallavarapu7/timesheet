@@ -2,10 +2,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, 
 from pydantic import BaseModel as PydanticBaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db import get_db
 from app.schemas import ClientResponse, ClientCreate, ClientUpdate
 from app.crud.client import get_client_by_id, create_client, update_client, delete_client, list_clients
-from app.core.deps import get_current_user, require_role
+from app.core.deps import get_current_user, get_tenant_db, require_role
 from app.models.client import Client
 from app.models.client_email_domain import ClientEmailDomain
 from app.models.ingested_email import IngestedEmail
@@ -38,7 +37,7 @@ async def _try_outbound_webhook(**kwargs) -> None:
 async def list_all_clients(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> list:
     """
@@ -51,7 +50,7 @@ async def list_all_clients(
 @router.get("/{client_id}", response_model=ClientResponse)
 async def get_client(
     client_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
     """
@@ -67,7 +66,7 @@ async def get_client(
 @router.post("", response_model=ClientResponse, status_code=status.HTTP_201_CREATED)
 async def create_new_client(
     client_create: ClientCreate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> dict:
     """
@@ -146,7 +145,7 @@ def _email_domains_for_ingestion_timesheet(ts: IngestionTimesheet, email: Ingest
 )
 async def create_client_from_domain(
     body: CreateClientFromDomainRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> dict:
     """
@@ -298,7 +297,7 @@ async def update_client_endpoint(
     client_id: int,
     client_update: ClientUpdate,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> dict:
     """
@@ -342,7 +341,7 @@ class BulkDeleteClientsRequest(PydanticBaseModel):
 async def bulk_delete_clients(
     body: BulkDeleteClientsRequest,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> dict:
     deleted = 0
@@ -374,7 +373,7 @@ async def bulk_delete_clients(
 async def delete_client_endpoint(
     client_id: int,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> None:
     """

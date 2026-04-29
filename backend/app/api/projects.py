@@ -1,13 +1,12 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db import get_db
 from app.schemas import ProjectResponse, ProjectCreate, ProjectUpdate, ProjectWithClient
 from app.crud.project import (
     get_project_by_id, create_project, update_project, delete_project,
     list_projects_for_user
 )
 from app.crud.client import get_client_by_id
-from app.core.deps import get_current_user, require_role
+from app.core.deps import get_current_user, get_tenant_db, require_role
 from app.models.user import User
 from app.services.ingestion_sync import _send_outbound_webhook
 from app.services.activity import (
@@ -25,7 +24,7 @@ async def list_all_projects(
     active_only: bool = Query(False),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> list:
     """
@@ -45,7 +44,7 @@ async def list_all_projects(
 @router.get("/{project_id}", response_model=ProjectWithClient)
 async def get_project(
     project_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
     """
@@ -61,7 +60,7 @@ async def get_project(
 @router.post("", response_model=ProjectWithClient, status_code=status.HTTP_201_CREATED)
 async def create_new_project(
     project_create: ProjectCreate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> dict:
     """
@@ -99,7 +98,7 @@ async def update_project_endpoint(
     project_id: int,
     project_update: ProjectUpdate,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> dict:
     """
@@ -145,7 +144,7 @@ async def update_project_endpoint(
 async def delete_project_endpoint(
     project_id: int,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> None:
     """

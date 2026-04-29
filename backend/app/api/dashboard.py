@@ -8,10 +8,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.deps import get_current_user, require_role
+from app.core.deps import get_current_user, get_tenant_db, require_role
 from app.core.permissions import shadow_check
 from app.core.timezone_utils import combine_tenant, now_for_tenant
-from app.db import get_db
 from app.models.assignments import EmployeeManagerAssignment
 from app.models.activity_log import ActivityLog
 from app.models.client import Client
@@ -180,7 +179,7 @@ def _next_working_day(reference: date) -> date:
 
 @router.get("/summary", response_model=DashboardSummaryResponse)
 async def get_dashboard_summary(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     hours_logged_timesheet = await db.scalar(
@@ -260,7 +259,7 @@ async def get_dashboard_summary(
 
 @router.get("/team", response_model=list[UserResponse])
 async def get_dashboard_team(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     if current_user.role not in [UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO, UserRole.ADMIN]:
@@ -291,7 +290,7 @@ async def get_dashboard_team(
 
 @router.get("/team-daily-overview", response_model=TeamDailyOverviewResponse)
 async def get_team_daily_overview(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     # Load tenant.timezone for deadline math. ``get_current_user`` does not
@@ -435,7 +434,7 @@ async def get_dashboard_analytics(
     end_date: date = Query(...),
     project_id: Optional[int] = Query(None),
     user_id: Optional[int] = Query(None),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     target_user_ids = [current_user.id]
@@ -611,7 +610,7 @@ async def get_dashboard_analytics(
 @router.get("/recent-activity", response_model=list[DashboardRecentActivityItem])
 async def get_recent_activity(
     limit: int = Query(8, ge=1, le=20),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> list[DashboardRecentActivityItem]:
     if current_user.role == UserRole.PLATFORM_ADMIN:
@@ -658,7 +657,7 @@ async def get_audit_trail(
     offset: int = Query(0, ge=0),
     activity_type: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> list[DashboardRecentActivityItem]:
     """Full audit trail for admins. Supports pagination, filtering by type, and text search."""
@@ -740,7 +739,7 @@ def _last_n_working_days(reference: date, n: int) -> list[date]:
 
 @router.get("/manager-team-overview", response_model=ManagerTeamOverviewResponse)
 async def get_manager_team_overview(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     """Aggregate roster + capacity context for the manager dashboard.
@@ -998,7 +997,7 @@ async def get_manager_team_overview(
 
 @router.get("/manager-project-health", response_model=ManagerProjectHealthResponse)
 async def get_manager_project_health(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     if current_user.role not in [UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO, UserRole.ADMIN]:

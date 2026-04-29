@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.api import approvals, auth, clients, notifications, projects, tasks, timesheets, dashboard, time_off, time_off_approvals, users
 from app.db import get_db
+from app.core.deps import get_tenant_db
 from app.core.security import get_password_hash
 from app.models.base import Base
 from app.models.client import Client
@@ -230,7 +231,7 @@ async def api_client(db_session: AsyncSession, seeded_data: dict):
         yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
-
+    app.dependency_overrides[get_tenant_db] = override_get_db
     with TestClient(app) as client:
         yield client
 

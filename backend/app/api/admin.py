@@ -22,8 +22,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.deps import require_role
-from app.db import get_db
+from app.core.deps import get_tenant_db, require_role
 from app.models.mailbox import Mailbox
 from app.models.user import User
 
@@ -190,19 +189,23 @@ async def _check_email_ingestion(db: AsyncSession) -> SystemHealthCheck:
 
 @router.get("/system-health", response_model=list[SystemHealthCheck])
 async def get_system_health(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     _: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> list[SystemHealthCheck]:
     """Aggregate operational status for the admin dashboard.
 
     Each check is independent and isolated: a failure in one (e.g. Redis
-    down) does not mask the result of another. Checks run concurrently
-    but each catches its own exceptions and returns a sentinel
-    `attention` payload, so the response shape stays stable.
+    down) does not mask the result of another. Each catches its own
+    exceptions and returns a sentinel ``attention`` payload, so the
+    response shape stays stable.
+
+    The two DB-bound checks share a single session, so they run
+    sequentially (AsyncSession does not support concurrent operations
+    on the same session). Redis, which is independent of the session,
+    runs concurrently with them.
     """
-    database, redis_check, email_ingestion = await asyncio.gather(
-        _check_database(db),
-        _check_redis(),
-        _check_email_ingestion(db),
-    )
+    redis_task = asyncio.create_task(_check_redis())
+    database = await _check_database(db)
+    email_ingestion = await _check_email_ingestion(db)
+    redis_check = await redis_task
     return [database, redis_check, email_ingestion]

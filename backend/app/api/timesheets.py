@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db import get_db
 from app.models.assignments import EmployeeManagerAssignment
 from app.schemas import (
     TimeEntryResponse, TimeEntryCreate, TimeEntryUpdate,
@@ -16,7 +15,7 @@ from app.crud.time_entry import (
 )
 from app.crud.project import user_has_project_access, get_project_by_id
 from app.crud.task import get_task_by_id
-from app.core.deps import get_current_user
+from app.core.deps import get_current_user, get_tenant_db
 from app.core.permissions import shadow_check
 from app.models.user import User, UserRole
 from app.models.time_entry import TimeEntryStatus
@@ -36,7 +35,7 @@ class NaturalLanguageRequest(BaseModel):
 @router.post("/parse-natural")
 async def parse_natural_language(
     body: NaturalLanguageRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     """
@@ -62,7 +61,7 @@ async def get_my_timesheets(
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> list:
     """
@@ -84,7 +83,7 @@ async def get_my_timesheets(
 
 @router.get("/weekly-submit-status", response_model=WeeklySubmissionStatusResponse)
 async def get_weekly_submit_status(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     can_submit, reason, due_date = await get_weekly_submission_status(db, current_user.id)
@@ -105,7 +104,7 @@ async def get_all_timesheets(
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     skip: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=1000),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> list:
     """
@@ -168,7 +167,7 @@ async def export_time_entries(
     start_date: Optional[date] = Query(None),
     end_date: Optional[date] = Query(None),
     status_filter: Optional[TimeEntryStatus] = Query(None, alias="status"),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
     """Export time entries as CSV. Admins/Managers get all tenant entries; employees get their own."""
@@ -239,7 +238,7 @@ async def export_time_entries(
 @router.get("/{entry_id}", response_model=TimeEntryWithUser)
 async def get_timesheet_entry(
     entry_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
     """
@@ -262,7 +261,7 @@ async def get_timesheet_entry(
 @router.post("", response_model=TimeEntryResponse, status_code=status.HTTP_201_CREATED)
 async def create_timesheet_entry(
     entry_create: TimeEntryCreate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
     """
@@ -333,7 +332,7 @@ async def create_timesheet_entry(
 async def update_timesheet_entry(
     entry_id: int,
     entry_update: TimeEntryUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
     """
@@ -404,7 +403,7 @@ async def update_timesheet_entry(
 @router.delete("/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_timesheet_entry(
     entry_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> None:
     """
@@ -432,7 +431,7 @@ async def delete_timesheet_entry(
 @router.post("/submit", response_model=list[TimeEntryResponse])
 async def submit_timesheets(
     submit_request: TimeEntrySubmitRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> list:
     """

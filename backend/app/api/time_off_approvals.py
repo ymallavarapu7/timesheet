@@ -5,7 +5,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.deps import require_role
+from app.core.deps import get_tenant_db, require_role
 from app.services.notification_emails import notify_time_off_approved, notify_time_off_rejected
 from app.services.activity import (
     TENANT_ADMIN_ACTIVITY_SCOPE,
@@ -18,7 +18,6 @@ from app.crud.time_off_request import (
     list_pending_time_off_approvals,
     reject_time_off_request,
 )
-from app.db import get_db
 from app.models.assignments import EmployeeManagerAssignment
 from app.models.time_off_request import TimeOffRequest, TimeOffStatus
 from app.models.user import User
@@ -49,7 +48,7 @@ async def get_pending_time_off(
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
         "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
 ):
@@ -79,7 +78,7 @@ async def get_time_off_approval_history(
     include_older: bool = Query(False),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
         "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
 ) -> list[TimeOffRequest]:
@@ -141,7 +140,7 @@ async def get_time_off_approval_history(
 async def approve_time_off_item(
     request_id: int,
     approve_request: TimeOffApproveRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
         "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
 ):
@@ -194,7 +193,7 @@ async def approve_time_off_item(
 async def reject_time_off_item(
     request_id: int,
     reject_request: TimeOffRejectRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
         "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
 ):
