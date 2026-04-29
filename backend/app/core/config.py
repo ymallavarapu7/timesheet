@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 ENV_FIELD_MAP = {
     "database_url": "DATABASE_URL",
+    "control_database_url": "CONTROL_DATABASE_URL",
     "secret_key": "SECRET_KEY",
     "algorithm": "ALGORITHM",
     "access_token_expire_minutes": "ACCESS_TOKEN_EXPIRE_MINUTES",
@@ -112,7 +113,16 @@ class Settings(BaseModel):
     # Database
     database_url: str = Field(
         default="postgresql+asyncpg://timesheet_user:timesheet_pass@localhost:5432/timesheet_db",
-        description="PostgreSQL connection URL"
+        description="PostgreSQL connection URL for the per-tenant data."
+    )
+    # Control-plane database. Holds tenants, platform_admins,
+    # platform_settings, and provisioning audit logs. Lives separate
+    # from any tenant data. Defaults to the same Postgres instance with
+    # a `acufy_control` database; production should run it on a
+    # dedicated instance for blast-radius reasons.
+    control_database_url: str = Field(
+        default="postgresql+asyncpg://timesheet_user:timesheet_pass@localhost:5432/acufy_control",
+        description="PostgreSQL connection URL for the control-plane database."
     )
 
     # JWT

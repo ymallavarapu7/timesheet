@@ -1,10 +1,10 @@
-# Environment files with secrets — never commit these
+# Secrets
 .env
 .env.local
 .env.production
 .env.*.local
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
 
@@ -13,42 +13,35 @@ Thumbs.db
 .idea/
 *.swp
 
-# Node
+# Deps
 node_modules/
-
-# Python
 __pycache__/
 *.pyc
 .venv/
 .venv*/
 venv/
 
-# Uploads
+# Runtime
 uploads/
-
-# Local dev artifacts
 runtime-logs/
 backups/
 *.bat
 *.dump
-
-# Local-only dev quick login
 frontend/src/pages/DevQuickLogin.tsx
 
-# Workshop / design artifacts - kept local, never committed
-inbox-mockup.html
-inbox-comparison.html
-dashboard-comparison.html
-review-comparison.html
+# Local-only artifacts (mockups, plan docs, dev overlay)
+local/
 docs/redesign-roadmap.md
-cleanup-cascade-test.sh
-
-# Local dev tooling - per-developer, kept out of the shared repo
+docs/db-per-tenant-plan.md
 docker-compose.dev.yml
+
+# Pytest scratch
+backend/.tmp_pytest*/
+backend/.pytest_cache/
 
 # Claude Code
 .claude/
 CLAUDE.md
 
-# TypeScript build info
+# Build output
 frontend/tsconfig.tsbuildinfo
