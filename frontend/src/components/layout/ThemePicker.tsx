@@ -5,8 +5,10 @@ import { THEME_VARIANTS } from '@/contexts/themeVariants';
 import { cn } from '@/lib/utils';
 
 /**
- * Theme picker dropdown — opens on click, shows all 8 variants
- * with a preview swatch + logo thumbnail. Clicking a variant applies it.
+ * Theme picker dropdown — opens on click and shows the variants in a
+ * 4-per-row grid. Each option is the variant's logo thumbnail (logo
+ * over the variant's app background) with the variant name below.
+ * The active variant gets a check overlay on its thumbnail.
  */
 export const ThemePicker: React.FC = () => {
   const { variantKey, setVariant, variants } = useTheme();
@@ -39,12 +41,8 @@ export const ThemePicker: React.FC = () => {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-11 z-50 w-[380px] rounded-2xl border border-border bg-card p-2 shadow-[0_18px_40px_rgba(0,0,0,0.15)]">
-          <div className="px-3 py-2">
-            <p className="text-sm font-semibold text-foreground">Theme</p>
-            <p className="text-xs text-muted-foreground">Pick a color scheme and logo.</p>
-          </div>
-          <div className="max-h-[420px] overflow-y-auto p-1">
+        <div className="absolute right-0 top-11 z-50 w-[640px] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-card p-4 shadow-[0_18px_40px_rgba(0,0,0,0.15)]">
+          <div className="grid grid-cols-4 gap-3">
             {variants.map((key) => {
               const v = THEME_VARIANTS[key];
               const active = key === variantKey;
@@ -54,33 +52,42 @@ export const ThemePicker: React.FC = () => {
                   type="button"
                   onClick={() => { setVariant(key); setOpen(false); }}
                   className={cn(
-                    'flex w-full items-center gap-3 rounded-xl p-2 text-left transition',
-                    active ? 'bg-primary/10' : 'hover:bg-muted/50',
+                    'flex flex-col items-center gap-2 rounded-lg p-2 text-center transition',
+                    active ? 'bg-primary/10 ring-1 ring-primary/40' : 'hover:bg-muted/50',
                   )}
+                  title={v.label}
+                  aria-label={`Apply ${v.label} theme`}
+                  aria-pressed={active}
                 >
-                  <div className="min-w-0 flex-1 flex items-center gap-3">
-                    <div
-                      className="flex-shrink-0 h-9 w-32 rounded-md overflow-hidden flex items-center justify-center"
-                      style={{ backgroundColor: v.legacy.bgApp }}
-                    >
-                      <img
-                        src={v.logoPath}
-                        alt=""
-                        style={{ width: '100%', height: 'auto', display: 'block' }}
-                      />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-foreground">{v.label}</p>
-                      <p className="text-xs text-muted-foreground capitalize">{v.mode}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <span
-                      className="h-4 w-4 rounded-full border border-border/60"
-                      style={{ backgroundColor: v.legacy.accentBlue }}
+                  <div
+                    className="relative h-20 w-full rounded-md overflow-hidden"
+                    style={{ backgroundColor: v.legacy.bgApp }}
+                  >
+                    <img
+                      src={v.logoPath}
+                      alt=""
+                      className="absolute inset-0 m-auto"
+                      style={{
+                        maxHeight: '100%',
+                        maxWidth: '100%',
+                        width: 'auto',
+                        height: 'auto',
+                        objectFit: 'contain',
+                        display: 'block',
+                      }}
                     />
-                    {active && <Check className="h-4 w-4 text-primary" />}
+                    {active && (
+                      <span
+                        className="absolute right-1 top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-primary text-primary-foreground shadow"
+                        aria-hidden
+                      >
+                        <Check className="h-3 w-3" strokeWidth={3} />
+                      </span>
+                    )}
                   </div>
+                  <span className="block text-xs font-medium leading-tight text-foreground truncate w-full">
+                    {v.label}
+                  </span>
                 </button>
               );
             })}
