@@ -8,6 +8,8 @@ export { ChangePasswordModal } from './ChangePasswordModal';
 export { DateRangePickerCalendar } from './DateRangePickerCalendar';
 export { SearchInput } from './SearchInput';
 export { AdminActionQueue } from './AdminActionQueue';
+export { DashboardGreeting } from './DashboardGreeting';
+export { PortalPickerModal } from './PortalPickerModal';
 export { SystemHealthCard } from './SystemHealthCard';
 export { TeamRosterGrid } from './TeamRosterGrid';
 export { ManagerPriorities, WeeklyRoster, TeamCapacity, ManagerConversation, ManagerGlanceTiles, ProjectHealthTable } from './manager';

@@ -4,7 +4,7 @@ import axios from 'axios';
 
 import { authAPI, ingestionAPI, mailboxesAPI, tenantsAPI } from '@/api/endpoints';
 import { queryClient } from '@/lib/queryClient';
-import type { Tenant, User } from '@/types';
+import type { Tenant, User, UserRole } from '@/types';
 
 interface AuthContextType {
   user: User | null;
@@ -13,6 +13,15 @@ interface AuthContextType {
   isLoading: boolean;
   error: string | null;
   login: (email: string, password: string) => Promise<User>;
+  loginWithRoleHandoff: (handoffToken: string) => Promise<User>;
+  switchRole: (role: UserRole) => Promise<User>;
+  /** True when the just-authenticated user has more than one role and
+   *  hasn't yet picked one for this session. The AppLayout reads this
+   *  to render the portal-picker modal blocking-style. */
+  needsRolePick: boolean;
+  /** Dismiss the picker without switching (the user accepts the
+   *  active role from login). */
+  dismissRolePick: () => void;
   logout: () => void;
   refreshUser: () => Promise<void>;
   refreshTenant: (nextUser?: User | null) => Promise<void>;
@@ -79,7 +88,27 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [needsRolePick, setNeedsRolePick] = useState(false);
   const sessionVersionRef = useRef(0);
+
+  const dismissRolePick = useCallback(() => setNeedsRolePick(false), []);
+
+  // Flip needsRolePick based on the just-authenticated user. We trip
+  // it true only when login establishes a new session (vs a passive
+  // /auth/me refresh or a token-exchange flow that already targets a
+  // specific role). Callers pass `arrivedFresh=true` in those cases.
+  const reconcileRolePick = useCallback((nextUser: User | null, arrivedFresh: boolean) => {
+    if (!nextUser) {
+      setNeedsRolePick(false);
+      return;
+    }
+    const roles = nextUser.roles ?? [];
+    if (arrivedFresh && roles.length > 1) {
+      setNeedsRolePick(true);
+    } else {
+      setNeedsRolePick(false);
+    }
+  }, []);
 
   const persistAuthState = useCallback((_nextUser: User | null, _nextTenant: Tenant | null, nextToken: string | null) => {
     // We cache the token (axios interceptor reads it synchronously) but NOT the
@@ -193,6 +222,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       setTenant(nextTenant);
       persistAuthState(nextUser, nextTenant, access_token);
+      // Fresh login: if multi-role, the layout will show the picker
+      // before letting the user interact with the dashboard.
+      reconcileRolePick(nextUser, true);
       return nextUser;
     } catch (err: unknown) {
       const message = extractErrorMessage(err);
@@ -201,7 +233,110 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } finally {
       setIsLoading(false);
     }
-  }, [persistAuthState]);
+  }, [persistAuthState, reconcileRolePick]);
+
+  // Multi-role new-tab handoff: the new tab opened by the topbar
+  // chip lands here with ?role-handoff=<token>. We exchange the
+  // token for an independent session, store it in this tab's
+  // sessionStorage, and let the caller navigate. The originating
+  // tab's session is untouched because each tab has its own
+  // sessionStorage scope.
+  const loginWithRoleHandoff = useCallback(async (handoffToken: string) => {
+    sessionVersionRef.current += 1;
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await authAPI.roleHandoffExchange(handoffToken);
+      const { access_token, refresh_token: refreshToken, user: nextUser } = response.data;
+      setUser(nextUser);
+      setAccessToken(access_token);
+      if (refreshToken) sessionStorage.setItem(REFRESH_TOKEN_STORAGE_KEY, refreshToken);
+      persistAuthState(nextUser, null, access_token);
+
+      let nextTenant: Tenant | null = null;
+      if (nextUser.tenant_id) {
+        try {
+          const tenantResponse = nextUser.role === 'PLATFORM_ADMIN'
+            ? await tenantsAPI.get(nextUser.tenant_id)
+            : await tenantsAPI.mine();
+          nextTenant = tenantResponse.data;
+        } catch {
+          nextTenant = createTenantFallback(nextUser);
+          if (nextTenant && (nextUser.role === 'ADMIN' || nextUser.can_review)) {
+            nextTenant.ingestion_enabled = await inferIngestionEnabled(nextUser);
+          }
+        }
+      }
+
+      setTenant(nextTenant);
+      persistAuthState(nextUser, nextTenant, access_token);
+      // Role-handoff lands the new tab already in the chosen role; the
+      // picker should not appear here.
+      reconcileRolePick(nextUser, false);
+      return nextUser;
+    } catch (err: unknown) {
+      const message = extractErrorMessage(err);
+      setError(message);
+      throw new Error(message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [persistAuthState, reconcileRolePick]);
+
+  // Multi-role: flip the active role within the current session. Calls
+  // POST /auth/switch-role, swaps the new tokens into sessionStorage,
+  // and updates user/tenant state. Caller is expected to navigate to
+  // the appropriate landing page after this resolves.
+  const switchRole = useCallback(async (role: UserRole) => {
+    sessionVersionRef.current += 1;
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await authAPI.switchRole(role);
+      const { access_token, refresh_token: refreshToken, user: nextUser } = response.data;
+      setUser(nextUser);
+      setAccessToken(access_token);
+      if (refreshToken) sessionStorage.setItem(REFRESH_TOKEN_STORAGE_KEY, refreshToken);
+      persistAuthState(nextUser, null, access_token);
+
+      // Tenant doesn't change on a role switch (same user, same
+      // tenant_id), but we re-fetch in case ingestion_enabled or
+      // tenant settings have changed since login.
+      let nextTenant: Tenant | null = tenant;
+      if (nextUser.tenant_id) {
+        try {
+          const tenantResponse = nextUser.role === 'PLATFORM_ADMIN'
+            ? await tenantsAPI.get(nextUser.tenant_id)
+            : await tenantsAPI.mine();
+          nextTenant = tenantResponse.data;
+        } catch {
+          // Keep the current tenant if the refresh fails; we still have
+          // a valid session and the rest of the app stays usable.
+        }
+      }
+      setTenant(nextTenant);
+      persistAuthState(nextUser, nextTenant, access_token);
+
+      // Cached query data tied to the previous role (e.g., manager
+      // approval queues for an admin who never could see them) is
+      // stale. Drop it so the next render re-fetches from scratch.
+      queryClient.clear();
+
+      // The user has actively chosen a role; the picker should not
+      // come back during this session.
+      setNeedsRolePick(false);
+
+      return nextUser;
+    } catch (err: unknown) {
+      const message = extractErrorMessage(err);
+      setError(message);
+      throw new Error(message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [persistAuthState, tenant]);
 
   // Restore session from localStorage on mount. Use a ref to call the
   // latest refreshUser without adding it to the dependency array (which
@@ -268,11 +403,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       isLoading,
       error,
       login,
+      loginWithRoleHandoff,
+      switchRole,
+      needsRolePick,
+      dismissRolePick,
       logout,
       refreshUser,
       refreshTenant,
     }),
-    [accessToken, error, isLoading, login, logout, refreshTenant, refreshUser, tenant, user],
+    [accessToken, error, isLoading, login, loginWithRoleHandoff, switchRole, needsRolePick, dismissRolePick, logout, refreshTenant, refreshUser, tenant, user],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

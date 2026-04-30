@@ -87,6 +87,10 @@ class UserUpdate(BaseModel):
     department: Optional[str] = None
     timezone: Optional[str] = None
     role: Optional[UserRole] = None
+    # Set of roles this user is allowed to act as. When provided the
+    # CRUD layer normalizes (de-dupes, ensures the active role is in
+    # the list) before persisting.
+    roles: Optional[List[UserRole]] = None
     is_active: Optional[bool] = None
     can_review: Optional[bool] = None
     is_external: Optional[bool] = None
@@ -102,6 +106,12 @@ class UserResponse(UserBase):
     email_verified: bool = False
     can_review: bool = False
     is_external: bool = False
+    # The set of roles this user can act as. Single-role users have
+    # one element. Multi-role users (e.g., human who is both admin
+    # and manager) have multiple; the frontend portal-picker shows up
+    # when len(roles) > 1, and /auth/switch-role flips active role
+    # within this set.
+    roles: List[UserRole] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -665,6 +675,26 @@ class PasswordChangeResponse(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str
+
+
+class RoleSwitchRequest(BaseModel):
+    """Body for POST /auth/switch-role. The requested role must be in
+    current_user.roles; the endpoint flips the active role and mints
+    a fresh access + refresh pair."""
+    role: UserRole
+
+
+class RoleHandoffIssueResponse(BaseModel):
+    """Response for POST /auth/role-handoff. Carries the short-lived
+    JWT that the new tab passes to /auth/role-handoff/exchange to
+    obtain its own session for the same user with the requested role
+    active."""
+    handoff_token: str
+    target_role: UserRole
+
+
+class RoleHandoffExchangeRequest(BaseModel):
+    handoff_token: str
 
 
 # ============================================================================

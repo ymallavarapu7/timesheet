@@ -210,6 +210,60 @@ async def get_current_user(
                 detail="Inactive user",
             )
 
+        # Phase 3.C: when the token carries a tenant_slug, the per-tenant
+        # database is the source of truth for the user row. Reload from
+        # the tenant DB so columns written there (profile edits, roles
+        # array changes, etc.) are visible. Without this refresh,
+        # get_current_user would serve stale values from the legacy
+        # shared DB. Tokens minted before 3.B (no tenant_slug) keep the
+        # legacy single-DB path.
+        token_tenant_slug = payload.get("tenant_slug")
+        if token_tenant_slug:
+            from app.db_tenant import tenant_session
+            try:
+                async with tenant_session(token_tenant_slug) as tenant_db:
+                    refreshed = await get_user_by_id(tenant_db, user_id)
+                if refreshed is not None:
+                    user = refreshed
+            except (LookupError, ValueError) as exc:
+                logger.warning(
+                    "tenant DB refresh failed for slug=%s user=%s: %s",
+                    token_tenant_slug, user_id, exc,
+                )
+
+        # Multi-role support: when the token carries an active_role
+        # claim, that's the role this request is acting as (independent
+        # of users.role on disk). The claim must still be inside the
+        # user's allowed roles list — a token cannot grant a role the
+        # user isn't authorized for. Tokens minted before this feature
+        # have no claim and fall through to the DB column.
+        token_active_role = payload.get("active_role")
+        if token_active_role:
+            allowed_roles = list(user.roles or [])
+            if not allowed_roles:
+                allowed_roles = [
+                    user.role.value if hasattr(user.role, "value") else str(user.role)
+                ]
+            if token_active_role not in allowed_roles:
+                logger.warning(
+                    "Token active_role=%s not in user.roles=%s for user_id=%s",
+                    token_active_role, allowed_roles, user_id,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token role is no longer authorized.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            try:
+                user.role = UserRole(token_active_role)
+            except ValueError:
+                logger.warning("Token active_role=%r not a valid UserRole", token_active_role)
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token role is invalid.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
         # Verify the tenant_id encoded in the token matches what is in the DB.
         # This prevents a token issued before a user was moved between tenants
         # from being used with the wrong tenant context.

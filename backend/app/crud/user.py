@@ -175,6 +175,12 @@ async def create_user(db: AsyncSession, user_create: UserCreate) -> tuple["User"
         has_changed_password=False,
         email_verified=False,
         role=role,
+        # Single-role default. UserCreate doesn't (yet) accept a roles
+        # list; multi-role users are made by patching the user via
+        # PUT /users/{id} with roles=["ADMIN", "MANAGER"]. The
+        # invariant "active role is in roles" is maintained on every
+        # write path.
+        roles=[role.value],
         is_active=user_create.is_active,
         can_review=user_create.can_review,
         is_external=user_create.is_external,
@@ -234,6 +240,42 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
     next_title = update_data.get("title", user.title)
     next_department = update_data.get("department", user.department)
     _validate_role_profile(next_role, next_title, next_department)
+
+    # Roles list invariant: the active role must be in the allowed-roles
+    # list. We normalize whichever side is supplied and validate the
+    # combined state.
+    if "roles" in update_data:
+        supplied = update_data["roles"] or []
+        # Pydantic gives us a list of UserRole enums; persist as JSONB-
+        # compatible strings to keep DB shape stable.
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for entry in supplied:
+            value = entry.value if hasattr(entry, "value") else str(entry)
+            if value not in seen:
+                seen.add(value)
+                normalized.append(value)
+        if not normalized:
+            raise ValueError("roles must be a non-empty list")
+        active_role_value = next_role.value if hasattr(next_role, "value") else str(next_role)
+        if active_role_value not in normalized:
+            raise ValueError(
+                "active role must be present in the roles list. "
+                "Update role and roles together, or include the active "
+                "role in the new roles list."
+            )
+        update_data["roles"] = normalized
+    elif "role" in update_data:
+        # role changing without roles changing: the new active role must
+        # already be in the existing allowed-roles list.
+        existing_roles = list(user.roles or [])
+        active_role_value = next_role.value if hasattr(next_role, "value") else str(next_role)
+        if active_role_value not in existing_roles:
+            raise ValueError(
+                f"User is not authorized to act as {active_role_value}. "
+                "Add the role to the roles list before flipping the "
+                "active role."
+            )
 
     if "default_client_id" in update_data and update_data["default_client_id"] is not None:
         from app.models.client import Client

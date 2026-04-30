@@ -29,6 +29,10 @@ type UserMutationPayload = {
   title?: string | null;
   department?: string | null;
   role: UserRole;
+  // Multi-role: full set of allowed roles. The active role lives in
+  // `role`; this is the menu the user can flip between via the
+  // post-login portal picker and topbar Switch chip.
+  roles?: UserRole[];
   is_active: boolean;
   can_review: boolean;
   is_external: boolean;
@@ -139,7 +143,7 @@ const isSupervisorCompatibleForRoleAndDepartment = (
   return allowedSupervisorRoles.includes(supervisor.role);
 };
 
-const roleBadge = (role: UserRole) => {
+const roleBadge = (role: UserRole, allRoles?: UserRole[] | null) => {
   const styles: Record<UserRole, string> = {
     EMPLOYEE: 'bg-[var(--bg-surface-3)] text-[var(--text-secondary)]',
     MANAGER: 'bg-[var(--info-light)] text-[var(--info)]',
@@ -148,11 +152,25 @@ const roleBadge = (role: UserRole) => {
     ADMIN: 'bg-[var(--accent-light)] text-[var(--accent-blue)]',
     PLATFORM_ADMIN: 'bg-[var(--accent-light)] text-[var(--accent-blue)]',
   };
+  // The user may carry additional roles on top of the active one
+  // (multi-role accounts). When present, render a small "+N more"
+  // chip listing the others as a tooltip.
+  const extras = (allRoles ?? []).filter((r) => r !== role);
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium ${styles[role]}`}>
-      {(role === 'ADMIN' || role === 'PLATFORM_ADMIN') && <ShieldCheck className="w-3 h-3" />}
-      {role === 'MANAGER' && <UserCircle className="w-3 h-3" />}
-      {role}
+    <span className="inline-flex items-center gap-1.5 flex-wrap">
+      <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium ${styles[role]}`}>
+        {(role === 'ADMIN' || role === 'PLATFORM_ADMIN') && <ShieldCheck className="w-3 h-3" />}
+        {role === 'MANAGER' && <UserCircle className="w-3 h-3" />}
+        {role}
+      </span>
+      {extras.length > 0 && (
+        <span
+          className="inline-flex items-center rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary"
+          title={`Also: ${extras.join(', ')}`}
+        >
+          +{extras.length}
+        </span>
+      )}
     </span>
   );
 };
@@ -164,6 +182,10 @@ type FormState = {
   title: string;
   department: string;
   role: UserRole;
+  // Additional roles this user can act as on top of the primary `role`.
+  // The portal picker shows up at login when the combined set has more
+  // than one entry. Single-role users keep this empty.
+  additional_roles: UserRole[];
   is_active: boolean;
   can_review: boolean;
   is_external: boolean;
@@ -172,6 +194,12 @@ type FormState = {
   default_client_id: number | null;
 };
 
+// Roles that can be added on top of the primary role. EMPLOYEE and
+// PLATFORM_ADMIN are intentionally excluded: nobody asks for an
+// "employee" portal on top of a manager account, and platform-admin
+// is its own identity (no tenant_id).
+const ADDITIONAL_ROLE_OPTIONS: UserRole[] = ['MANAGER', 'SENIOR_MANAGER', 'CEO', 'ADMIN'];
+
 const emptyForm = (): FormState => ({
   full_name: '',
   email: '',
@@ -179,6 +207,7 @@ const emptyForm = (): FormState => ({
   title: '',
   department: '',
   role: 'EMPLOYEE',
+  additional_roles: [],
   is_active: true,
   can_review: false,
   is_external: false,
@@ -468,6 +497,13 @@ export const AdminPage: React.FC = () => {
       return u.manager_id;
     })();
 
+    // Hydrate additional_roles from the user's roles list, excluding
+    // the primary active role. Defensively dedupe and filter to the
+    // set that the UI knows how to render.
+    const allRoles = (u.roles ?? []).filter((r): r is UserRole => Boolean(r));
+    const additional = Array.from(new Set(allRoles.filter((r) => r !== u.role)))
+      .filter((r) => ADDITIONAL_ROLE_OPTIONS.includes(r));
+
     setForm({
       full_name: u.full_name,
       email: u.email,
@@ -475,6 +511,7 @@ export const AdminPage: React.FC = () => {
       title: u.title ?? '',
       department: u.department ?? '',
       role: u.role,
+      additional_roles: additional,
       is_active: u.is_active,
       can_review: u.can_review ?? false,
       is_external: u.is_external ?? false,
@@ -539,6 +576,12 @@ export const AdminPage: React.FC = () => {
       return;
     }
 
+    // Combined roles list: primary first, additional after, deduped.
+    // The portal picker uses this set to decide whether to show.
+    const combinedRoles: UserRole[] = Array.from(
+      new Set([form.role, ...form.additional_roles]),
+    );
+
     try {
       if (editingUser) {
         const payload: UserMutationPayload = {
@@ -547,6 +590,7 @@ export const AdminPage: React.FC = () => {
           title: normalizedTitle || null,
           department: normalizedDepartment || null,
           role: form.role,
+          roles: combinedRoles,
           is_active: form.is_active,
           can_review: form.can_review,
           is_external: form.is_external,
@@ -574,7 +618,17 @@ export const AdminPage: React.FC = () => {
           default_client_id: form.default_client_id,
         });
         // Confirm to the admin that the verification email is on its way.
-        void result; // temporary_password is intentionally not surfaced — the user sets their own via the verification link.
+        // temporary_password is intentionally not surfaced — the user sets
+        // their own via the verification link.
+        // If the admin checked any additional portals, patch the new user
+        // with the combined roles list. Backend UserCreate doesn't accept
+        // a roles list (defaults to [role]), so we follow up with PUT.
+        if (form.additional_roles.length > 0 && result?.user?.id) {
+          await updateUser.mutateAsync({
+            id: result.user.id,
+            data: { roles: combinedRoles },
+          });
+        }
         setCreatedUserEmail(normalizedEmail);
       }
       await refetchUsers();
@@ -1326,7 +1380,7 @@ export const AdminPage: React.FC = () => {
                     )}
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">{u.email}</td>
-                  <td className="px-4 py-3">{roleBadge(u.role)}</td>
+                  <td className="px-4 py-3">{roleBadge(u.role, u.roles)}</td>
                   <td className="px-4 py-3 text-muted-foreground">{u.title || '—'}</td>
                   <td className="px-4 py-3 text-muted-foreground">{u.department || '—'}</td>
                   <td className="px-4 py-3">
@@ -1445,9 +1499,14 @@ export const AdminPage: React.FC = () => {
                                 ? f.manager_id
                                 : null;
 
+                            // Drop the new primary from additional_roles
+                            // so the combined list never duplicates.
+                            const nextAdditional = f.additional_roles.filter((r) => r !== nextRole);
+
                             return {
                               ...f,
                               role: nextRole,
+                              additional_roles: nextAdditional,
                               manager_id: nextManagerId,
                               project_ids: nextRole === 'EMPLOYEE' ? f.project_ids : [],
                             };
@@ -1460,6 +1519,48 @@ export const AdminPage: React.FC = () => {
                         ))}
                       </select>
                     </div>
+                    {/* Additional roles. Lets the admin grant a single
+                        human access to multiple portals (e.g., admin
+                        who is also a manager). Hidden for primary
+                        roles where it's not meaningful: an EMPLOYEE
+                        rarely needs another portal, and PLATFORM_ADMIN
+                        is its own identity. */}
+                    {form.role !== 'EMPLOYEE' && form.role !== 'PLATFORM_ADMIN' && (
+                      <div>
+                        <label className="block text-sm font-medium mb-1">
+                          Additional portals
+                          <span className="ml-2 text-xs font-normal text-muted-foreground">
+                            access to other roles for the same login
+                          </span>
+                        </label>
+                        <div className="space-y-1.5 rounded border px-3 py-2">
+                          {ADDITIONAL_ROLE_OPTIONS.filter((r) => r !== form.role).map((r) => {
+                            const checked = form.additional_roles.includes(r);
+                            return (
+                              <label key={r} className="flex items-center gap-2 text-sm">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    setForm((f) => {
+                                      const next = e.target.checked
+                                        ? Array.from(new Set([...f.additional_roles, r]))
+                                        : f.additional_roles.filter((existing) => existing !== r);
+                                      return { ...f, additional_roles: next };
+                                    });
+                                  }}
+                                  className="h-4 w-4"
+                                />
+                                <span>{r}</span>
+                              </label>
+                            );
+                          })}
+                          <p className="text-[11px] text-muted-foreground pt-1">
+                            When more than one portal is checked, the user picks one at login and can switch via the topbar.
+                          </p>
+                        </div>
+                      </div>
+                    )}
                     {(form.role === 'MANAGER' || form.role === 'EMPLOYEE') && (
                       <div>
                         <label className="block text-sm font-medium mb-1">Title</label>
@@ -1807,7 +1908,7 @@ export const AdminPage: React.FC = () => {
                 </div>
                 <div>
                   <p className="text-muted-foreground">Role</p>
-                  <div className="mt-1">{roleBadge(selectedUserDetails.role)}</div>
+                  <div className="mt-1">{roleBadge(selectedUserDetails.role, selectedUserDetails.roles)}</div>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Status</p>

@@ -11,13 +11,6 @@ interface ManagerConversationProps {
   ingestionErrorsCount?: number;
 }
 
-const greetingPrefix = (): string => {
-  const h = new Date().getHours();
-  if (h < 12) return 'Good morning';
-  if (h < 18) return 'Good afternoon';
-  return 'Good evening';
-};
-
 const ageLabel = (hours: number | null | undefined): string => {
   if (hours == null) return '';
   if (hours < 24) return `${hours}h ago`;
@@ -69,8 +62,10 @@ export const ManagerConversation: React.FC<ManagerConversationProps> = ({
   //     (e.g. nobody's submitted yet because the deadline hasn't
   //     hit).
   //   - Always say *whose* approval / inbox the queue is waiting on.
+  // The greeting heading ("Good morning, Bharat.") now lives in the
+  // shared <DashboardGreeting> component slotted above this card by
+  // the page. We deliberately don't repeat it here.
   const fragments: React.ReactNode[] = [];
-  fragments.push(<span key="g">{greetingPrefix()}. </span>);
 
   // Determine whether we have any signal at all about the team. If
   // every report has zero submitted days AND nobody's flagged as
@@ -222,7 +217,7 @@ export const ManagerConversation: React.FC<ManagerConversationProps> = ({
   }
 
   return (
-    <div className="rounded-lg border bg-card p-6 mb-0 shadow-[0_1px_2px_rgba(0,0,0,0.05)] manager-convo">
+    <div className="rounded-lg border bg-card p-6 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)] manager-convo">
       <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
         {new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}
       </p>

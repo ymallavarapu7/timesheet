@@ -10,6 +10,11 @@ export interface User {
   department?: string | null;
   timezone?: string | null;
   role: UserRole;
+  // The set of roles this user is allowed to act as. Single-role users
+  // have one element; multi-role users (e.g., admin + manager) have
+  // more. The portal picker shows up at login when length > 1, and the
+  // topbar Switch chip flips between them via /auth/role-handoff.
+  roles?: UserRole[];
   is_active: boolean;
   has_changed_password: boolean;
   email_verified: boolean;

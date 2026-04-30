@@ -108,4 +108,9 @@ describe('ManagerConversation', () => {
     });
     expect(screen.queryByText(/email inbox/i)).not.toBeInTheDocument();
   });
+
+  it('does not render its own greeting prefix (the shared header carries it)', () => {
+    renderIt({ overview: overview({ team_size: 0 }) });
+    expect(screen.queryByText(/Good (morning|afternoon|evening)/i)).not.toBeInTheDocument();
+  });
 });

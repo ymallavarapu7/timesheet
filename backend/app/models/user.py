@@ -1,4 +1,5 @@
 from sqlalchemy import String, Boolean, Integer, Enum as SQLEnum, ForeignKey, Text, DateTime
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from enum import Enum
 from typing import Optional, List
@@ -40,6 +41,15 @@ class User(Base, TimestampMixin):
         Boolean, nullable=False, default=False)
     role: Mapped[UserRole] = mapped_column(
         SQLEnum(UserRole), nullable=False, default=UserRole.EMPLOYEE)
+    # The set of roles this user is allowed to act as. The active role
+    # (the one require_role checks against, the one that lands in the
+    # JWT) lives in the `role` column above; `roles` is the menu of
+    # allowed values that can be flipped to via /auth/switch-role.
+    # For single-role users it is always [role]. For a user who is both
+    # an admin and a manager it is ["ADMIN", "MANAGER"].
+    roles: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True)
     can_review: Mapped[bool] = mapped_column(
@@ -89,6 +99,14 @@ class User(Base, TimestampMixin):
     # timesheet resolved to this user without needing to match client signals.
     default_client_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("clients.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+    # Legacy column from the dual-account portal-handoff model. Kept
+    # in the schema (the DB drop is a follow-up migration) but no
+    # application code reads it; the multi-role refactor replaced
+    # account linkage with the users.roles array.
+    linked_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
     # Relationships

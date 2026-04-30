@@ -65,6 +65,7 @@ import {
   TokenResponse,
   User,
   UserProfile,
+  UserRole,
   SkippedEmailOverview,
   WeeklySubmissionStatus,
 } from '@/types';
@@ -91,6 +92,22 @@ export const authAPI = {
 
   resendVerification: (email: string) =>
     apiClient.post<MessageResponse>('/auth/resend-verification', { email }),
+
+  // Multi-role: flip the active role to one already in user.roles.
+  // Mints a fresh access + refresh pair; frontend swaps them in.
+  switchRole: (role: UserRole) =>
+    apiClient.post<TokenResponse>('/auth/switch-role', { role }),
+
+  // Multi-role new-tab handoff. Mints a short-lived token bound to
+  // the requested role; the new tab redeems it via roleHandoffExchange
+  // for an independent session. Two tabs of the same user can hold
+  // different active roles simultaneously because the active role
+  // travels in the JWT, not the DB row.
+  roleHandoffIssue: (role: UserRole) =>
+    apiClient.post<{ handoff_token: string; target_role: UserRole }>('/auth/role-handoff', { role }),
+
+  roleHandoffExchange: (handoff_token: string) =>
+    apiClient.post<TokenResponse>('/auth/role-handoff/exchange', { handoff_token }),
 };
 
 // Users endpoints

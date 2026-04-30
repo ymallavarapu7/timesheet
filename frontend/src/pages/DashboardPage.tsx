@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { addWeeks, differenceInCalendarWeeks, endOfWeek, format, isThisWeek, parseISO, startOfWeek } from 'date-fns';
 import { Calendar, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { Loading, Error, ChangePasswordModal, AdminActionQueue, SystemHealthCard, WeeklyRoster, ManagerConversation, ManagerGlanceTiles, ProjectHealthTable, QuickLogButton } from '@/components';
+import { Loading, Error, ChangePasswordModal, AdminActionQueue, DashboardGreeting, SystemHealthCard, WeeklyRoster, ManagerConversation, ManagerGlanceTiles, ProjectHealthTable, QuickLogButton } from '@/components';
 import type { SystemHealthStatus } from '@/components/SystemHealthCard';
 import {
   useAuth,
@@ -524,8 +524,15 @@ export const DashboardPage: React.FC = () => {
          isLoading={changePassword.isPending}
        />
        <div>
-        <div className="flex items-center justify-between gap-4 mb-6 flex-wrap">
-          <h1 className="text-3xl font-bold">Dashboard</h1>
+        {/* Personalized greeting: shared across every role. Replaces
+            the generic "Dashboard" heading so the page opens with the
+            user's name and the time of day, then role-specific content
+            (Action Queue / Manager Conversation / personal analytics)
+            renders below. */}
+        <div className="flex items-end justify-between gap-4 mb-6 flex-wrap">
+          <div className="min-w-0">
+            <DashboardGreeting userFullName={user?.full_name} />
+          </div>
 
           <div className="flex items-center gap-2 flex-wrap">
             {/* Universal quick-log: every user can log time from any

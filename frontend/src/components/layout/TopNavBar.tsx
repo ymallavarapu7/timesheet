@@ -5,11 +5,14 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ExternalLink,
   LogOut,
   Menu,
   User as UserIcon,
   X,
 } from 'lucide-react';
+
+import { authAPI } from '@/api/endpoints';
 
 import { AcufyLogo, NeuralPrismIcon } from '@/components/layout/AcufyLogo';
 import { ThemePicker } from '@/components/layout/ThemePicker';
@@ -17,6 +20,56 @@ import { buildNavigation } from '@/components/layout/navigation';
 import { cn } from '@/lib/utils';
 import { useAuth, useIngestionEnabled, useMarkAllNotificationsRead, useMarkNotificationRead, useNotifications } from '@/hooks';
 import type { NavSection } from '@/components/layout/navigation';
+import type { UserRole } from '@/types';
+
+/* ── New-tab role handoff (multi-role users). Issues a single-use
+   role-handoff token, opens /login?role-handoff=<token> in a new tab,
+   and the new tab exchanges the token for its own independent session.
+   Logging out of one tab does not affect the other because each tab
+   has its own access + refresh token pair. */
+const PORTAL_LABEL: Partial<Record<UserRole, string>> = {
+  ADMIN: 'Admin',
+  MANAGER: 'Manager',
+  SENIOR_MANAGER: 'Manager',
+  CEO: 'Manager',
+  EMPLOYEE: 'Employee',
+};
+
+const SwitchPortalChip: React.FC<{ targetRole: UserRole }> = ({ targetRole }) => {
+  const [pending, setPending] = useState(false);
+  const label = PORTAL_LABEL[targetRole] ?? targetRole;
+
+  const handleClick = async () => {
+    if (pending) return;
+    setPending(true);
+    try {
+      const res = await authAPI.roleHandoffIssue(targetRole);
+      const token = res.data.handoff_token;
+      // Open in a new tab so the current session keeps running. The
+      // login page reads ?role-handoff=... and exchanges it inside
+      // the new tab's sessionStorage. noopener prevents the new tab
+      // from referencing window.opener and tampering with our state.
+      window.open(`/login?role-handoff=${encodeURIComponent(token)}`, '_blank', 'noopener');
+    } catch (err) {
+      console.error('Role handoff failed', err);
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={pending}
+      className="hidden md:inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-[12px] font-medium text-primary transition hover:bg-primary/20 disabled:opacity-60"
+      title={`Open the ${label} portal in a new tab`}
+    >
+      <ExternalLink className="h-3.5 w-3.5" />
+      Switch to {label}
+    </button>
+  );
+};
 
 /* ── Small helper: renders a single nav link (no dropdown) ── */
 const SingleNavLink: React.FC<{ to: string; label: string; onClick?: () => void }> = ({ to, label, onClick }) => {
@@ -219,6 +272,19 @@ export const TopNavBar: React.FC = () => {
                 {tenant.name}
               </span>
             )}
+
+            {/* Multi-role switch: shown only to users with more than
+                one allowed role. The chip flips the active role
+                in-place via /auth/switch-role; no new tab. */}
+            {user?.roles && user.roles.length > 1 && (() => {
+              // Pick the first role that isn't the current active one
+              // as the switch target. For users with exactly two roles
+              // this gives the "other" role; for ones with more, it's
+              // the first non-current entry (rare today; CEO stays
+              // single-role for now).
+              const target = user.roles.find((r) => r !== user.role);
+              return target ? <SwitchPortalChip targetRole={target} /> : null;
+            })()}
 
             {/* Theme picker */}
             <ThemePicker />

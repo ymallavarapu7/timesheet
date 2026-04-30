@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
-from app.schemas import LoginRequest, TokenResponse, UserResponse, UserCreate, ChangePasswordRequest, PasswordChangeResponse, RefreshRequest, VerifyEmailRequest, VerifyEmailResponse, ResendVerificationRequest, MessageResponse
+from app.schemas import LoginRequest, TokenResponse, UserResponse, UserCreate, ChangePasswordRequest, PasswordChangeResponse, RefreshRequest, VerifyEmailRequest, VerifyEmailResponse, ResendVerificationRequest, MessageResponse, RoleSwitchRequest, RoleHandoffIssueResponse, RoleHandoffExchangeRequest
 from app.crud.user import get_user_by_email, create_user
 from sqlalchemy import select, update
 from app.core.security import verify_password, create_access_token, create_refresh_token, get_password_hash
@@ -54,20 +54,28 @@ def _build_token_payload(
     can_review: bool,
     realm: str,
     tenant_slug: str | None,
+    active_role: str | None = None,
 ) -> dict:
     """Assemble the JWT payload for both access and refresh tokens.
 
     Single source of truth so login + refresh always agree on the
     claim shape. ``realm`` is the boundary marker; ``tenant_slug`` is
-    what the per-request tenant resolver consumes.
+    what the per-request tenant resolver consumes. ``active_role`` is
+    the per-token role for multi-role users; it lets two tabs of the
+    same user act as different roles independently. Tokens minted
+    before this claim existed are treated as "active_role unset"
+    by get_current_user, which falls back to the DB row's role column.
     """
-    return {
+    payload = {
         "sub": str(user_id),
         "tenant_id": tenant_id,
         "tenant_slug": tenant_slug,
         "realm": realm,
         "can_review": can_review,
     }
+    if active_role is not None:
+        payload["active_role"] = active_role
+    return payload
 
 
 async def _lockout_policy(db: AsyncSession, tenant_id: int | None) -> tuple[int, int]:
@@ -238,7 +246,11 @@ async def login(
             },
         }
 
-    # Find user
+    # Find user. Login is JWT-less so we don't yet know the tenant
+    # slug; we look up by email in the shared DB, then if the tenant
+    # has been cut over to its own database (Phase 3.C, is_isolated=
+    # True), we re-fetch from the per-tenant DB which is the source of
+    # truth for password hash, lockout counters, and refresh tokens.
     user = await get_user_by_email(db, login_request.email)
 
     if not user:
@@ -246,6 +258,25 @@ async def login(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
+
+    # Resolve tenant slug now so subsequent reads/writes can route to
+    # the per-tenant DB when applicable. Returns None for PLATFORM_ADMIN
+    # and pre-3.B sessions.
+    tenant_slug = await _resolve_tenant_slug(db, user.tenant_id)
+    use_tenant_db = bool(tenant_slug)
+
+    if use_tenant_db:
+        from app.db_tenant import tenant_session
+        try:
+            async with tenant_session(tenant_slug) as tenant_db:
+                refreshed = await get_user_by_email(tenant_db, login_request.email)
+            if refreshed is not None:
+                user = refreshed
+            else:
+                # Tenant DB doesn't know this email; fall back to shared.
+                use_tenant_db = False
+        except (LookupError, ValueError):
+            use_tenant_db = False
 
     # Check if account is locked
     if user.locked_until and user.locked_until > datetime.now(timezone.utc):
@@ -258,12 +289,28 @@ async def login(
     # Verify password
     if not verify_password(login_request.password, user.hashed_password):
         max_attempts, lockout_minutes = await _lockout_policy(db, user.tenant_id)
-        user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
-        locked = user.failed_login_attempts >= max_attempts
-        if locked:
-            user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=lockout_minutes)
-        db.add(user)
-        await db.commit()
+        # Increment lockout counters in the right database. Per-tenant
+        # when isolated; shared otherwise.
+        if use_tenant_db:
+            from app.db_tenant import tenant_session
+            async with tenant_session(tenant_slug) as tenant_db:
+                target = (await tenant_db.execute(
+                    select(User).where(User.id == user.id)
+                )).scalar_one()
+                target.failed_login_attempts = (target.failed_login_attempts or 0) + 1
+                locked = target.failed_login_attempts >= max_attempts
+                if locked:
+                    target.locked_until = datetime.now(timezone.utc) + timedelta(minutes=lockout_minutes)
+                tenant_db.add(target)
+                await tenant_db.commit()
+                user = target
+        else:
+            user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+            locked = user.failed_login_attempts >= max_attempts
+            if locked:
+                user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=lockout_minutes)
+            db.add(user)
+            await db.commit()
 
         # Audit: failed login
         await record_activity_events(db, [build_activity_event(
@@ -296,18 +343,11 @@ async def login(
             detail="EMAIL_NOT_VERIFIED",
         )
 
-    # Successful login — reset lockout counters
-    user.failed_login_attempts = 0
-    user.locked_until = None
-    db.add(user)
-    await db.commit()
-
     # Create tokens — include tenant_id so the server can verify it on
     # each request. tenant_id is None for PLATFORM_ADMIN users; the
     # `realm` + `tenant_slug` claims drive per-tenant DB resolution
     # added in Phase 3.B.
     realm = "platform" if user.role == UserRole.PLATFORM_ADMIN else "tenant"
-    tenant_slug = await _resolve_tenant_slug(db, user.tenant_id)
     token_payload = _build_token_payload(
         user_id=user.id,
         tenant_id=user.tenant_id,
@@ -318,25 +358,63 @@ async def login(
     access_token = create_access_token(token_payload)
     refresh_token, jti, expires_at = create_refresh_token(token_payload)
 
-    # Persist refresh token for revocation support
-    db.add(RefreshToken(user_id=user.id, jti=jti, expires_at=expires_at))
-    await db.commit()
-
-    # Audit: successful login
-    await record_activity_events(db, [build_activity_event(
-        activity_type="LOGIN_SUCCESS",
-        visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
-        tenant_id=user.tenant_id,
-        actor_user=user,
-        entity_type="user",
-        entity_id=user.id,
-        summary=f"{user.full_name} logged in.",
-        route="/auth/login",
-    )])
+    # Reset lockout counters + persist the refresh token + audit event
+    # in the right database. Per-tenant when the user lives in an
+    # isolated tenant DB; shared otherwise.
+    if use_tenant_db:
+        from app.db_tenant import tenant_session
+        async with tenant_session(tenant_slug) as tenant_db:
+            target = (await tenant_db.execute(
+                select(User).where(User.id == user.id)
+            )).scalar_one()
+            target.failed_login_attempts = 0
+            target.locked_until = None
+            tenant_db.add(target)
+            tenant_db.add(RefreshToken(user_id=user.id, jti=jti, expires_at=expires_at))
+            await tenant_db.commit()
+            await record_activity_events(tenant_db, [build_activity_event(
+                activity_type="LOGIN_SUCCESS",
+                visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
+                tenant_id=user.tenant_id,
+                actor_user=target,
+                entity_type="user",
+                entity_id=user.id,
+                summary=f"{target.full_name} logged in.",
+                route="/auth/login",
+            )])
+    else:
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        db.add(user)
+        db.add(RefreshToken(user_id=user.id, jti=jti, expires_at=expires_at))
+        await db.commit()
+        await record_activity_events(db, [build_activity_event(
+            activity_type="LOGIN_SUCCESS",
+            visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
+            tenant_id=user.tenant_id,
+            actor_user=user,
+            entity_type="user",
+            entity_id=user.id,
+            summary=f"{user.full_name} logged in.",
+            route="/auth/login",
+        )])
 
     # Re-fetch user with eager-loaded relationships so response serialisation
-    # doesn't hit expired attributes after the commits above.
-    user = await get_user_by_email(db, user.email)
+    # doesn't hit expired attributes after the commits above. The per-
+    # tenant DB is the source of truth post-cutover.
+    if tenant_slug:
+        from app.db_tenant import tenant_session
+        try:
+            async with tenant_session(tenant_slug) as tenant_db:
+                refreshed = await get_user_by_email(tenant_db, user.email)
+            if refreshed is not None:
+                user = refreshed
+            else:
+                user = await get_user_by_email(db, user.email)
+        except (LookupError, ValueError):
+            user = await get_user_by_email(db, user.email)
+    else:
+        user = await get_user_by_email(db, user.email)
 
     return {
         "access_token": access_token,
@@ -421,12 +499,19 @@ async def get_current_user_info(
 
 @router.post("/change-password", response_model=PasswordChangeResponse)
 async def change_password(
+    request: Request,
     change_password_request: ChangePasswordRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
     """
     Change the current user's password.
+
+    Side effect: revokes every refresh token the user holds so any old
+    session (a tab the user forgot was logged in, a stolen device,
+    etc.) is invalidated. The current tab keeps working until its
+    access token's natural expiry; the next refresh attempt will fail
+    and the tab is forced back to login.
     """
     # Verify current password
     if not verify_password(change_password_request.current_password, current_user.hashed_password):
@@ -444,24 +529,74 @@ async def change_password(
             detail=error,
         )
 
-    # Update password
-    current_user.hashed_password = get_password_hash(
-        change_password_request.new_password)
-    current_user.has_changed_password = True
-    db.add(current_user)
-    await db.commit()
+    new_hash = get_password_hash(change_password_request.new_password)
 
-    # Audit: password changed
-    await record_activity_events(db, [build_activity_event(
-        activity_type="PASSWORD_CHANGED",
-        visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
-        tenant_id=current_user.tenant_id,
-        actor_user=current_user,
-        entity_type="user",
-        entity_id=current_user.id,
-        summary=f"{current_user.full_name} changed their password.",
-        route="/auth/change-password",
-    )])
+    # Phase 3.C: write the new password and revoke refresh tokens in
+    # the right database. Per-tenant DB when the caller's token carries
+    # a slug; legacy shared DB otherwise.
+    auth_hdr = request.headers.get("authorization", "")
+    token_tenant_slug: str | None = None
+    if auth_hdr.lower().startswith("bearer "):
+        from app.core.security import decode_token
+        payload = decode_token(auth_hdr[7:])
+        if payload:
+            token_tenant_slug = payload.get("tenant_slug")
+
+    if token_tenant_slug:
+        from app.db_tenant import tenant_session
+        async with tenant_session(token_tenant_slug) as tenant_db:
+            target = (await tenant_db.execute(
+                select(User).where(User.id == current_user.id)
+            )).scalar_one()
+            target.hashed_password = new_hash
+            target.has_changed_password = True
+            tenant_db.add(target)
+            # M1: revoke every active refresh token so old sessions
+            # can't survive a password change. The current tab's
+            # access token continues working until its short TTL
+            # elapses; the next refresh fails and bounces to login.
+            await tenant_db.execute(
+                update(RefreshToken)
+                .where(
+                    RefreshToken.user_id == current_user.id,
+                    RefreshToken.revoked == False,  # noqa: E712
+                )
+                .values(revoked=True)
+            )
+            await tenant_db.commit()
+            await record_activity_events(tenant_db, [build_activity_event(
+                activity_type="PASSWORD_CHANGED",
+                visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
+                tenant_id=current_user.tenant_id,
+                actor_user=target,
+                entity_type="user",
+                entity_id=target.id,
+                summary=f"{target.full_name} changed their password.",
+                route="/auth/change-password",
+            )])
+    else:
+        current_user.hashed_password = new_hash
+        current_user.has_changed_password = True
+        db.add(current_user)
+        await db.execute(
+            update(RefreshToken)
+            .where(
+                RefreshToken.user_id == current_user.id,
+                RefreshToken.revoked == False,  # noqa: E712
+            )
+            .values(revoked=True)
+        )
+        await db.commit()
+        await record_activity_events(db, [build_activity_event(
+            activity_type="PASSWORD_CHANGED",
+            visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
+            tenant_id=current_user.tenant_id,
+            actor_user=current_user,
+            entity_type="user",
+            entity_id=current_user.id,
+            summary=f"{current_user.full_name} changed their password.",
+            route="/auth/change-password",
+        )])
 
     return {
         "success": True,
@@ -618,3 +753,313 @@ async def admin_revoke_user_tokens(
     )])
 
     return {"message": f"All sessions revoked for user {target_user.full_name}"}
+
+
+# ─────────── In-tab role switch (multi-role users) ───────────
+# Replaces the cross-portal handoff for users with multiple roles in
+# a single account. The switch flips users.role to the chosen value
+# (which must already be in users.roles), mints a fresh access +
+# refresh pair, and returns it. Frontend swaps the new tokens into
+# sessionStorage and re-renders.
+@router.post("/switch-role", response_model=TokenResponse)
+@limiter.limit("30/minute")
+async def switch_role(
+    request: Request,
+    body: RoleSwitchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Flip the current user's active role and return fresh tokens.
+
+    The requested role must be present in current_user.roles. Tenant
+    users land their write through the per-tenant DB so post-cutover
+    isolated tenants stay consistent; legacy shared-DB tenants fall
+    through to the legacy path.
+    """
+    from app.db_tenant import tenant_session
+
+    requested_role_value = body.role.value if hasattr(body.role, "value") else str(body.role)
+    allowed = list(current_user.roles or [])
+
+    if not allowed:
+        # Defensive: if a user predates the multi-role rollout and we
+        # haven't backfilled their row yet, fall back to the active
+        # role as the only allowed value.
+        allowed = [
+            current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
+        ]
+
+    if requested_role_value not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"User is not authorized to act as {requested_role_value}.",
+        )
+
+    if requested_role_value == (
+        current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User is already acting as that role.",
+        )
+
+    # Update users.role inside the right database. Per-tenant DB if the
+    # caller's token carries a slug; shared DB otherwise.
+    auth_hdr = request.headers.get("authorization", "")
+    token_tenant_slug: str | None = None
+    if auth_hdr.lower().startswith("bearer "):
+        from app.core.security import decode_token
+        payload = decode_token(auth_hdr[7:])
+        if payload:
+            token_tenant_slug = payload.get("tenant_slug")
+
+    if token_tenant_slug:
+        async with tenant_session(token_tenant_slug) as tenant_db:
+            target = (await tenant_db.execute(
+                select(User).where(User.id == current_user.id)
+            )).scalar_one()
+            target.role = body.role
+            tenant_db.add(target)
+            await tenant_db.commit()
+            await record_activity_events(tenant_db, [build_activity_event(
+                activity_type="ROLE_SWITCHED",
+                visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
+                tenant_id=current_user.tenant_id,
+                actor_user=target,
+                entity_type="user",
+                entity_id=target.id,
+                summary=f"{target.full_name} switched active role to {requested_role_value}.",
+                route="/auth/switch-role",
+            )])
+            target = await get_user_by_email(tenant_db, target.email)
+    else:
+        target = (await db.execute(
+            select(User).where(User.id == current_user.id)
+        )).scalar_one()
+        target.role = body.role
+        db.add(target)
+        await db.commit()
+        await record_activity_events(db, [build_activity_event(
+            activity_type="ROLE_SWITCHED",
+            visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
+            tenant_id=current_user.tenant_id,
+            actor_user=target,
+            entity_type="user",
+            entity_id=target.id,
+            summary=f"{target.full_name} switched active role to {requested_role_value}.",
+            route="/auth/switch-role",
+        )])
+        target = await get_user_by_email(db, target.email)
+
+    realm = "platform" if target.role == UserRole.PLATFORM_ADMIN else "tenant"
+    payload = _build_token_payload(
+        user_id=target.id,
+        tenant_id=target.tenant_id,
+        can_review=target.can_review,
+        realm=realm,
+        tenant_slug=token_tenant_slug,
+    )
+    access = create_access_token(payload)
+    refresh, jti, expires_at = create_refresh_token(payload)
+
+    if token_tenant_slug:
+        async with tenant_session(token_tenant_slug) as tenant_db:
+            tenant_db.add(RefreshToken(user_id=target.id, jti=jti, expires_at=expires_at))
+            await tenant_db.commit()
+    else:
+        db.add(RefreshToken(user_id=target.id, jti=jti, expires_at=expires_at))
+        await db.commit()
+
+    return {
+        "access_token": access,
+        "refresh_token": refresh,
+        "token_type": "bearer",
+        "user": target,
+    }
+
+
+# ─────────── Role handoff (open the other portal in a new tab) ───────────
+# Multi-role users get a chip in the topbar that opens the other portal
+# in a new tab. The new tab needs its own independent session (its own
+# access token, its own refresh token JTI) so logging out of one tab
+# doesn't log out the other. We mint a short-lived nonce-bound JWT,
+# pass it to the new tab via the URL query string, and have the new
+# tab exchange it for a real session.
+@router.post("/role-handoff", response_model=RoleHandoffIssueResponse)
+@limiter.limit("30/minute")
+async def issue_role_handoff(
+    request: Request,
+    body: RoleSwitchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Mint a short-lived role-handoff token for the current user. The
+    token lets the new tab open its own session for the same user with
+    the requested role active."""
+    from app.services.handoff import issue_role_handoff_token
+
+    requested_role_value = body.role.value if hasattr(body.role, "value") else str(body.role)
+    allowed = list(current_user.roles or [])
+    if not allowed:
+        allowed = [
+            current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
+        ]
+    if requested_role_value not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"User is not authorized to act as {requested_role_value}.",
+        )
+
+    auth_hdr = request.headers.get("authorization", "")
+    token_tenant_slug: str | None = None
+    if auth_hdr.lower().startswith("bearer "):
+        from app.core.security import decode_token
+        payload = decode_token(auth_hdr[7:])
+        if payload:
+            token_tenant_slug = payload.get("tenant_slug")
+
+    handoff_token = await issue_role_handoff_token(
+        user_id=current_user.id,
+        target_role=requested_role_value,
+        target_tenant_slug=token_tenant_slug,
+    )
+
+    await record_activity_events(db, [build_activity_event(
+        activity_type="ROLE_HANDOFF_ISSUED",
+        visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
+        tenant_id=current_user.tenant_id,
+        actor_user=current_user,
+        entity_type="user",
+        entity_id=current_user.id,
+        summary=f"{current_user.full_name} initiated portal switch to {requested_role_value}.",
+        route="/auth/role-handoff",
+    )])
+
+    return {
+        "handoff_token": handoff_token,
+        "target_role": body.role,
+    }
+
+
+@router.post("/role-handoff/exchange", response_model=TokenResponse)
+@limiter.limit("30/minute")
+async def exchange_role_handoff(
+    request: Request,
+    body: RoleHandoffExchangeRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Redeem a role-handoff token. Flips the user's active role to
+    the bound target and returns a fresh access + refresh pair. The
+    nonce is single-use; the resulting refresh token JTI is unique to
+    this new session so logging out won't affect the originating tab."""
+    from app.services.handoff import redeem_role_handoff_token
+    from app.db_tenant import tenant_session
+
+    try:
+        user_id, target_role_value, target_tenant_slug = await redeem_role_handoff_token(
+            body.handoff_token
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        )
+
+    # Pull the user from the per-tenant DB if known; the linkage
+    # invariant (target_role in user.roles) lives there post-cutover.
+    if target_tenant_slug:
+        async with tenant_session(target_tenant_slug) as tenant_db:
+            target = (await tenant_db.execute(
+                select(User).where(User.id == user_id)
+            )).scalar_one_or_none()
+    else:
+        target = (await db.execute(
+            select(User).where(User.id == user_id)
+        )).scalar_one_or_none()
+
+    if target is None or not target.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account is not available.",
+        )
+
+    allowed = list(target.roles or [])
+    if not allowed:
+        allowed = [
+            target.role.value if hasattr(target.role, "value") else str(target.role)
+        ]
+    if target_role_value not in allowed:
+        # Linkage changed between issue and exchange.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User is no longer authorized for that role.",
+        )
+
+    # Coerce to the enum so the SQLAlchemy column accepts it.
+    try:
+        new_role_enum = UserRole(target_role_value)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Unknown role {target_role_value!r}.",
+        )
+
+    realm = "platform" if new_role_enum == UserRole.PLATFORM_ADMIN else "tenant"
+    # The JWT's active_role claim is what makes this new tab's session
+    # independent: each tab carries its own active role on its access
+    # token, so flipping a role in one tab doesn't change the other.
+    # We deliberately do NOT update users.role on disk here; that
+    # column is the *most recent explicit choice* and is set by login
+    # or /auth/switch-role, not by a side-channel handoff.
+    payload = _build_token_payload(
+        user_id=target.id,
+        tenant_id=target.tenant_id,
+        can_review=target.can_review,
+        realm=realm,
+        tenant_slug=target_tenant_slug,
+        active_role=target_role_value,
+    )
+    access = create_access_token(payload)
+    refresh, jti, expires_at = create_refresh_token(payload)
+
+    if target_tenant_slug:
+        async with tenant_session(target_tenant_slug) as tenant_db:
+            tenant_db.add(RefreshToken(user_id=target.id, jti=jti, expires_at=expires_at))
+            await tenant_db.commit()
+            await record_activity_events(tenant_db, [build_activity_event(
+                activity_type="ROLE_HANDOFF_REDEEMED",
+                visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
+                tenant_id=target.tenant_id,
+                actor_user=target,
+                entity_type="user",
+                entity_id=target.id,
+                summary=f"{target.full_name} opened the {target_role_value} portal in a new tab.",
+                route="/auth/role-handoff/exchange",
+            )])
+            target = await get_user_by_email(tenant_db, target.email)
+    else:
+        db.add(RefreshToken(user_id=target.id, jti=jti, expires_at=expires_at))
+        await db.commit()
+        await record_activity_events(db, [build_activity_event(
+            activity_type="ROLE_HANDOFF_REDEEMED",
+            visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
+            tenant_id=target.tenant_id,
+            actor_user=target,
+            entity_type="user",
+            entity_id=target.id,
+            summary=f"{target.full_name} opened the {target_role_value} portal in a new tab.",
+            route="/auth/role-handoff/exchange",
+        )])
+        target = await get_user_by_email(db, target.email)
+
+    # Surface the active role on the response user payload so the
+    # frontend can render the correct portal immediately (it would
+    # otherwise read the DB column via the relationship loader).
+    target.role = new_role_enum
+
+    return {
+        "access_token": access,
+        "refresh_token": refresh,
+        "token_type": "bearer",
+        "user": target,
+    }

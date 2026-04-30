@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Lock, Mail } from 'lucide-react';
 
 import { Card, CardContent } from '@/components';
@@ -31,9 +31,11 @@ export const LoginPage: React.FC = () => {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [DevQuickLogin, setDevQuickLogin] = useState<React.FC<{ isLoading: boolean; onQuickLogin: (email: string, password: string) => void }> | null>(null);
-  const { login } = useAuth();
+  const { login, loginWithRoleHandoff } = useAuth();
   const { variant: themeVariant } = useTheme();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const roleHandoffAttemptedRef = useRef(false);
 
   useEffect(() => {
     if (hasDevLogin) {
@@ -45,6 +47,28 @@ export const LoginPage: React.FC = () => {
     }
   }, []);
 
+  // Multi-role new-tab handoff: when the originating tab opens this
+  // page with ?role-handoff=<token>, exchange the token for our own
+  // independent session and land in the right portal. Strip the token
+  // from the URL on success so a refresh doesn't re-attempt the
+  // (now-expired, single-use) exchange.
+  useEffect(() => {
+    const roleHandoffToken = searchParams.get('role-handoff');
+    if (!roleHandoffToken || roleHandoffAttemptedRef.current) return;
+    roleHandoffAttemptedRef.current = true;
+    setIsLoading(true);
+    loginWithRoleHandoff(roleHandoffToken)
+      .then((nextUser) => {
+        setSearchParams({}, { replace: true });
+        navigate(getPostLoginRoute(nextUser.role), { replace: true });
+      })
+      .catch((err: unknown) => {
+        setError(getErrorMessage(err) || 'Could not open the requested portal.');
+        setSearchParams({}, { replace: true });
+      })
+      .finally(() => setIsLoading(false));
+  }, [loginWithRoleHandoff, navigate, searchParams, setSearchParams]);
+
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError('');
@@ -52,6 +76,10 @@ export const LoginPage: React.FC = () => {
 
     try {
       const user = await login(email, password);
+      // The portal-picker modal lives in AppLayout (it has to outlive
+      // the LoginPage redirect that happens immediately after login).
+      // We always navigate to the dashboard; the modal handles the
+      // multi-role case there.
       navigate(getPostLoginRoute(user.role));
     } catch (err) {
       const msg = getErrorMessage(err);
