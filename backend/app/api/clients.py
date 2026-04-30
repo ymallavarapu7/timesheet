@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query
 from pydantic import BaseModel as PydanticBaseModel, Field
 from sqlalchemy import select, update
@@ -22,15 +24,31 @@ from app.services.activity import (
     record_activity_events,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/clients", tags=["clients"])
 
 
 async def _try_outbound_webhook(**kwargs) -> None:
-    """Fire-and-forget wrapper — swallows all exceptions so a webhook failure never breaks the response."""
+    """Best-effort outbound webhook delivery.
+
+    Silent ``pass`` was a real audit finding: when the webhook target
+    was down the failure was invisible, so operators had no way to
+    learn that ingestion-platform sync was diverging. We now log a
+    warning (with event_type and local_id when available) so the
+    delivery loss surfaces in the same logs as everything else. The
+    handler still does not raise — webhook delivery is not on the
+    request's critical path.
+    """
     try:
         await _send_outbound_webhook(**kwargs)
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "outbound webhook delivery failed: event_type=%s local_id=%s error=%s",
+            kwargs.get("event_type"),
+            kwargs.get("local_id"),
+            exc,
+        )
 
 
 @router.get("", response_model=list[ClientResponse])

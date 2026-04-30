@@ -160,8 +160,8 @@ class Settings(BaseModel):
 
     # Application
     debug: bool = Field(
-        default=True,
-        description="Enable debug mode; accepts booleans and legacy env values like debug/release"
+        default=False,
+        description="Enable debug mode; accepts booleans and legacy env values like debug/release. Defaults to False so production environments are safe-by-default; local dev opts in via DEBUG=true in .env."
     )
     backend_host: str = Field(
         default="127.0.0.1",
@@ -340,6 +340,32 @@ class Settings(BaseModel):
         default=30,
         description="On first fetch (no cursor), only fetch emails from this many days back."
     )
+
+    @property
+    def effective_cors_origins(self) -> list[str]:
+        """CORS origins after applying environment-aware filters.
+
+        In dev (``debug=True``) the full list ships through unchanged
+        so any of the local Vite ports works. Outside dev we drop the
+        ``localhost`` / ``127.0.0.1`` defaults: leaving them in
+        production allows a malicious site running on a victim's
+        machine to make credentialed requests to our API. Operators
+        can re-allow them by listing them explicitly in ``CORS_ORIGINS``
+        — anything explicitly set is honored.
+        """
+        if self.debug:
+            return list(self.cors_origins)
+
+        def _is_loopback(origin: str) -> bool:
+            lowered = origin.strip().lower()
+            return (
+                lowered.startswith("http://localhost")
+                or lowered.startswith("https://localhost")
+                or lowered.startswith("http://127.0.0.1")
+                or lowered.startswith("https://127.0.0.1")
+            )
+
+        return [o for o in self.cors_origins if not _is_loopback(o)]
 
     @classmethod
     def load(cls) -> "Settings":

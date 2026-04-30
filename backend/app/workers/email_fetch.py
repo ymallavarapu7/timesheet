@@ -793,23 +793,16 @@ async def scheduled_fetch_emails(ctx: dict) -> None:
         )
         control_tenants = list(result.scalars().all())
 
-    # Use configured timezone for fetch window checks.
-    # Reads TZ env var (e.g. "America/Chicago") or falls back to UTC.
-    # TODO: Migrate to per-tenant timezone (``tenant.timezone`` added in
-    # migration 029 / ``app.core.timezone_utils.now_for_tenant``). Left
-    # intentionally on the env-var path in this PR so behavior is
-    # identical when ``tenant.timezone`` is NULL — follow-up PR flips
-    # this to ``now_for_tenant(tenant.timezone)`` inside the per-tenant
-    # loop below.
-    import os, zoneinfo
-    try:
-        tz = zoneinfo.ZoneInfo(os.environ.get("TZ", "UTC"))
-    except Exception:
-        tz = timezone.utc
-    now = datetime.now(tz)
+    # Each tenant gets its fetch window evaluated in its own timezone
+    # (control_tenant.timezone, IANA string from migration 029). When
+    # the column is NULL we fall back to UTC. The previous version read
+    # one global TZ env var, which broke for tenants in other regions.
+    from app.core.timezone_utils import now_for_tenant
 
     for control_tenant in control_tenants:
         try:
+            now = now_for_tenant(control_tenant.timezone)
+
             async with tenant_session(control_tenant.slug) as session:
                 tenant_settings = await _load_tenant_settings(
                     control_tenant.id, session
