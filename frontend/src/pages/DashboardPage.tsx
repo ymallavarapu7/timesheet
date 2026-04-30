@@ -27,7 +27,22 @@ import {
 } from '@/hooks';
 import type { DashboardActivity, DashboardBarEntryDetail, DashboardDayBreakdown, DashboardProjectBreakdown, DashboardRecentActivityItem, NotificationItem, Project, TeamDailyOverview, Tenant, User } from '@/types';
 
-const PROJECT_COLORS = ['#7b5748', '#4f772d', '#355070', '#bc6c25', '#2a9d8f', '#6d597a', '#e76f51', '#457b9d'];
+// Chart palette is defined in index.css as --chart-1..--chart-8 plus
+// --chart-other and --chart-track. Each value is theme-aware (different
+// hue per active theme variant) and dark-mode aware. We reference the
+// CSS variable through CSS color() syntax instead of resolving the hex
+// at JS-eval time so a theme switch repaints the charts without a
+// re-render.
+const PROJECT_COLORS = [
+  'var(--chart-1)',
+  'var(--chart-2)',
+  'var(--chart-3)',
+  'var(--chart-4)',
+  'var(--chart-5)',
+  'var(--chart-6)',
+  'var(--chart-7)',
+  'var(--chart-8)',
+];
 
 const toNumber = (value: string | number) => (typeof value === 'string' ? parseFloat(value) : value);
 
@@ -127,7 +142,7 @@ const DashboardBarChart: React.FC<{
                   style={{ height }}
                 >
                   {item.segments.length === 0 ? (
-                    <div className="w-full h-[2px] bg-[#7b5748]" />
+                    <div className="w-full h-[2px]" style={{ background: 'var(--chart-1)' }} />
                   ) : (
                     item.segments.map((segment) => {
                       const segmentHours = toNumber(segment.hours);
@@ -181,7 +196,7 @@ const DashboardDonutChart: React.FC<{ data: DashboardProjectBreakdown[]; totalHo
     return (
       <div className="relative h-56 w-56 shrink-0">
         <svg viewBox="0 0 200 200" className="h-full w-full -rotate-90">
-          <circle cx="100" cy="100" r={radius} fill="none" stroke="#e5e7eb" strokeWidth="36" />
+          <circle cx="100" cy="100" r={radius} fill="none" stroke="var(--chart-track)" strokeWidth="36" />
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
           <span className="text-2xl font-bold">00:00</span>

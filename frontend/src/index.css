@@ -70,6 +70,24 @@
   /* Frosted glass */
   --glass-bg: rgba(255, 255, 255, 0.85);
   --glass-border: rgba(14, 165, 233, 0.08);
+
+  /* Chart palette (D2). The dashboard's bar / donut / sparkline
+     components reference these instead of hardcoded hex values so the
+     same chart renders correctly on both light and dark themes.
+     Light values are tuned for legibility against the white card; the
+     dark block below redefines them for the same chart against a
+     near-black surface. --chart-other is the catch-all bucket (small
+     slices folded together); --chart-track is the donut's empty ring. */
+  --chart-1: #7b5748;
+  --chart-2: #4f772d;
+  --chart-3: #355070;
+  --chart-4: #bc6c25;
+  --chart-5: #2a9d8f;
+  --chart-6: #6d597a;
+  --chart-7: #e76f51;
+  --chart-8: #457b9d;
+  --chart-other: #94a3b8;
+  --chart-track: #e5e7eb;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -126,6 +144,22 @@
 
   --glass-bg: rgba(11, 17, 32, 0.85);
   --glass-border: rgba(14, 165, 233, 0.1);
+
+  /* Dark-mode chart palette. Slightly brighter variants of the same
+     hues so they read against the dark card surface; --chart-other
+     becomes a lighter slate so a "small bucket" slice doesn't vanish
+     into the background; --chart-track is the donut's empty ring,
+     bumped to a mid-slate so the empty state stays visible. */
+  --chart-1: #b18068;
+  --chart-2: #84b855;
+  --chart-3: #6c8eb6;
+  --chart-4: #f59e4f;
+  --chart-5: #4cc7b6;
+  --chart-6: #a684b6;
+  --chart-7: #f49b7e;
+  --chart-8: #6db1d6;
+  --chart-other: #475569;
+  --chart-track: #1f2937;
 }
 
 /* ═══════════════════════════════════════════════════════
