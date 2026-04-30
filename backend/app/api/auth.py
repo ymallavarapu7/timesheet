@@ -431,8 +431,19 @@ async def refresh_token(
     body: RefreshRequest | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Refresh access token using a refresh token from request body."""
+    """Refresh access token using a refresh token from request body.
+
+    Single-use rotation under contention: we lock the stored row with
+    SELECT ... FOR UPDATE and revoke + insert in the same transaction
+    so two concurrent refreshes can't both succeed against the same
+    JTI. The runner-up either sees revoked=True (and gets 401) or
+    blocks until the first transaction commits and then sees the
+    revoked row.
+    """
     from app.core.security import decode_token
+    from app.crud.user import get_user_by_id
+    from app.db_tenant import tenant_session
+
     token = body.refresh_token if body else None
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No refresh token provided")
@@ -443,41 +454,70 @@ async def refresh_token(
 
     user_id = payload.get("sub")
     jti = payload.get("jti")
+    token_tenant_slug = payload.get("tenant_slug")
+    token_active_role = payload.get("active_role")
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
 
-    # Validate refresh token against DB (revocation check)
-    if jti:
-        result = await db.execute(
-            select(RefreshToken).where(RefreshToken.jti == jti)
+    # Phase 3.C: refresh tokens for an isolated tenant live in the
+    # per-tenant DB. Pick the right session up front so all of the
+    # check, the revocation, and the new-token insert happen in one
+    # database — and one transaction.
+    use_tenant_db = bool(token_tenant_slug)
+
+    async def _do_refresh(session: AsyncSession) -> tuple[User, str, str, datetime]:
+        """Run the lock + revoke + insert sequence atomically on the
+        given session. Returns (user, access_token, new_refresh_token,
+        new_expires_at) on success, raises HTTPException on rejection."""
+        if jti:
+            stored = (await session.execute(
+                select(RefreshToken)
+                .where(RefreshToken.jti == jti)
+                .with_for_update()
+            )).scalars().first()
+            if not stored or stored.revoked:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Refresh token has been revoked",
+                )
+            stored.revoked = True
+            session.add(stored)
+
+        user = await get_user_by_id(session, int(user_id))
+        if not user or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found or inactive",
+            )
+
+        realm = "platform" if user.role == UserRole.PLATFORM_ADMIN else "tenant"
+        # Carry forward active_role when present so multi-role users
+        # don't get downgraded to their primary role on every refresh.
+        # The claim is re-validated against user.roles by
+        # get_current_user on the next request.
+        token_payload = _build_token_payload(
+            user_id=user.id,
+            tenant_id=user.tenant_id,
+            can_review=user.can_review,
+            realm=realm,
+            tenant_slug=token_tenant_slug,
+            active_role=token_active_role,
         )
-        stored_token = result.scalars().first()
-        if not stored_token or stored_token.revoked:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token has been revoked")
-        # Revoke the old refresh token (single-use rotation)
-        stored_token.revoked = True
-        db.add(stored_token)
+        new_access = create_access_token(token_payload)
+        new_refresh, new_jti, new_expires = create_refresh_token(token_payload)
 
-    from app.crud.user import get_user_by_id
-    user = await get_user_by_id(db, int(user_id))
-    if not user or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+        session.add(RefreshToken(user_id=user.id, jti=new_jti, expires_at=new_expires))
+        await session.commit()
+        return user, new_access, new_refresh, new_expires
 
-    realm = "platform" if user.role == UserRole.PLATFORM_ADMIN else "tenant"
-    tenant_slug = await _resolve_tenant_slug(db, user.tenant_id)
-    token_payload = _build_token_payload(
-        user_id=user.id,
-        tenant_id=user.tenant_id,
-        can_review=user.can_review,
-        realm=realm,
-        tenant_slug=tenant_slug,
-    )
-    access_token = create_access_token(token_payload)
-    new_refresh_token, new_jti, new_expires_at = create_refresh_token(token_payload)
-
-    # Persist the new refresh token
-    db.add(RefreshToken(user_id=user.id, jti=new_jti, expires_at=new_expires_at))
-    await db.commit()
+    if use_tenant_db:
+        try:
+            async with tenant_session(token_tenant_slug) as tenant_db:
+                user, access_token, new_refresh_token, _ = await _do_refresh(tenant_db)
+        except (LookupError, ValueError):
+            user, access_token, new_refresh_token, _ = await _do_refresh(db)
+    else:
+        user, access_token, new_refresh_token, _ = await _do_refresh(db)
 
     return {
         "access_token": access_token,
