@@ -31,7 +31,7 @@ from app.schemas import (
 )
 from app.models.assignments import EmployeeManagerAssignment
 from app.models.time_entry import TimeEntry, TimeEntryStatus
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.services.quickbooks import get_quickbooks_service
 
 router = APIRouter(prefix="/approvals", tags=["approvals"])
@@ -79,7 +79,7 @@ async def _validate_weekly_batch(
             detail="Cannot approve entries from a different tenant",
         )
 
-    if current_user.role.value != "CEO":
+    if current_user.role != UserRole.CEO:
         direct_report_ids = set(await _get_direct_report_ids(db, current_user.id))
         if not user_ids.issubset(direct_report_ids):
             raise HTTPException(
@@ -136,7 +136,7 @@ async def get_pending_approvals(
     Get pending time entries for approval (Manager/Senior Manager/CEO only).
     """
     employee_ids = None
-    if current_user.role.value != "CEO":
+    if current_user.role != UserRole.CEO:
         assigned_employee_ids = await _get_direct_report_ids(db, current_user.id)
         employee_ids = assigned_employee_ids or []
 
@@ -166,7 +166,7 @@ async def get_approval_history(
         "MANAGER", "SENIOR_MANAGER", "CEO")),
 ) -> list[TimeEntry]:
     employee_ids = None
-    if current_user.role.value != "CEO":
+    if current_user.role != UserRole.CEO:
         assigned_employee_ids = await _get_direct_report_ids(db, current_user.id)
         employee_ids = assigned_employee_ids or []
 
@@ -236,7 +236,7 @@ async def get_approval_history_grouped(
     Each group has summary stats and the individual entries for expansion.
     """
     employee_ids = None
-    if current_user.role.value != "CEO":
+    if current_user.role != UserRole.CEO:
         assigned_employee_ids = await _get_direct_report_ids(db, current_user.id)
         employee_ids = assigned_employee_ids or []
 
@@ -419,7 +419,7 @@ async def approve_entry(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Time entry not found")
 
-    if current_user.role.value != "CEO" and entry.user_id not in await _get_direct_report_ids(db, current_user.id):
+    if current_user.role != UserRole.CEO and entry.user_id not in await _get_direct_report_ids(db, current_user.id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only approve entries for your direct reports",
@@ -485,7 +485,7 @@ async def reject_entry(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Time entry not found")
 
-    if current_user.role.value != "CEO" and entry.user_id not in await _get_direct_report_ids(db, current_user.id):
+    if current_user.role != UserRole.CEO and entry.user_id not in await _get_direct_report_ids(db, current_user.id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only reject entries for your direct reports",

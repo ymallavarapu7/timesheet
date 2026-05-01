@@ -115,7 +115,7 @@ async def register(
     Register a new user (Admin only).
     """
     # Check if admin or platform admin
-    if current_user.role.value not in ("ADMIN", "PLATFORM_ADMIN"):
+    if current_user.role not in (UserRole.ADMIN, UserRole.PLATFORM_ADMIN):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can register new users",
@@ -761,7 +761,7 @@ async def admin_revoke_user_tokens(
     from app.core.deps import require_same_tenant
     from app.crud.user import get_user_by_id
 
-    if current_user.role.value not in ("ADMIN", "PLATFORM_ADMIN"):
+    if current_user.role not in (UserRole.ADMIN, UserRole.PLATFORM_ADMIN):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can revoke other users' tokens",

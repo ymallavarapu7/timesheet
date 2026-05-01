@@ -20,7 +20,7 @@ from app.crud.time_off_request import (
 )
 from app.models.assignments import EmployeeManagerAssignment
 from app.models.time_off_request import TimeOffRequest, TimeOffStatus
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas import (
     TimeOffApproveRequest,
     TimeOffRejectRequest,
@@ -53,7 +53,7 @@ async def get_pending_time_off(
         "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
 ):
     employee_ids = None
-    if current_user.role.value != "CEO":
+    if current_user.role != UserRole.CEO:
         assigned_employee_ids = await _get_direct_report_ids(db, current_user.id)
         employee_ids = assigned_employee_ids or []
 
@@ -83,7 +83,7 @@ async def get_time_off_approval_history(
         "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
 ) -> list[TimeOffRequest]:
     employee_ids = None
-    if current_user.role.value != "CEO":
+    if current_user.role != UserRole.CEO:
         assigned_employee_ids = await _get_direct_report_ids(db, current_user.id)
         employee_ids = assigned_employee_ids or []
 
@@ -149,7 +149,7 @@ async def approve_time_off_item(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Time off request not found")
 
-    if current_user.role.value not in ("CEO", "ADMIN") and item.user_id not in await _get_direct_report_ids(db, current_user.id):
+    if current_user.role not in (UserRole.CEO, UserRole.ADMIN) and item.user_id not in await _get_direct_report_ids(db, current_user.id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only approve requests for your direct reports",
@@ -202,7 +202,7 @@ async def reject_time_off_item(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Time off request not found")
 
-    if current_user.role.value not in ("CEO", "ADMIN") and item.user_id not in await _get_direct_report_ids(db, current_user.id):
+    if current_user.role not in (UserRole.CEO, UserRole.ADMIN) and item.user_id not in await _get_direct_report_ids(db, current_user.id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only reject requests for your direct reports",

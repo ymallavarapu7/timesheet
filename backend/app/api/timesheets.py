@@ -251,7 +251,7 @@ async def get_timesheet_entry(
             status_code=status.HTTP_404_NOT_FOUND, detail="Time entry not found")
 
     # Check access
-    if entry.user_id != current_user.id and current_user.role.value == "EMPLOYEE":
+    if entry.user_id != current_user.id and current_user.role == UserRole.EMPLOYEE:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
@@ -269,7 +269,9 @@ async def create_timesheet_entry(
     Employees can only create entries for themselves.
     """
     # Employees, managers, and system admins can create their own time entries
-    old_decision = current_user.role.value in ["EMPLOYEE", "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN"]
+    old_decision = current_user.role in (
+        UserRole.EMPLOYEE, UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO, UserRole.ADMIN,
+    )
     await shadow_check(
         db,
         current_user,

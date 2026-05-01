@@ -13,7 +13,7 @@ from app.crud.task import (
     update_task,
 )
 from app.crud.project import get_project_by_id
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas import TaskCreate, TaskResponse, TaskUpdate, TaskWithProject
 from app.services.activity import (
     TENANT_ADMIN_ACTIVITY_SCOPE,
@@ -62,7 +62,7 @@ async def get_task(
         skip=0,
         limit=1,
     )
-    if not tasks and current_user.role.value not in ("ADMIN", "PLATFORM_ADMIN"):
+    if not tasks and current_user.role not in (UserRole.ADMIN, UserRole.PLATFORM_ADMIN):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 

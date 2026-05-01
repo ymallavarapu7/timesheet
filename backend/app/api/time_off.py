@@ -16,7 +16,7 @@ from app.crud.time_off_request import (
 )
 from app.models.time_entry import TimeEntry
 from app.models.time_off_request import TimeOffStatus, TimeOffType
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas import (
     TimeOffRequestCreate,
     TimeOffRequestResponse,
@@ -69,7 +69,7 @@ async def get_time_off_item(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Time off request not found")
 
-    if item.user_id != current_user.id and current_user.role.value == "EMPLOYEE":
+    if item.user_id != current_user.id and current_user.role == UserRole.EMPLOYEE:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
