@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { addWeeks, differenceInCalendarWeeks, endOfWeek, format, isThisWeek, parseISO, startOfWeek } from 'date-fns';
-import { Calendar, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Calendar, Check, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Loading, Error, ChangePasswordModal, AdminActionQueue, DashboardGreeting, SystemHealthCard, WeeklyRoster, ManagerConversation, ManagerGlanceTiles, ProjectHealthTable, QuickLogButton } from '@/components';
 import type { SystemHealthStatus } from '@/components/SystemHealthCard';
@@ -318,6 +318,18 @@ export const DashboardPage: React.FC = () => {
   const [isNotificationsModalOpen, setIsNotificationsModalOpen] = useState(false);
   const [isPasswordChangeModalOpen, setIsPasswordChangeModalOpen] = useState(false);
   const [showWeekPicker, setShowWeekPicker] = useState(false);
+  // D7: popover modes are 'presets' (four offsets), 'custom' (range
+  // calendar). Custom flips the source of truth from weekOffset to
+  // customRange so we can express single-day or arbitrary spans.
+  const [weekPickerMode, setWeekPickerMode] = useState<'presets' | 'custom'>('presets');
+  // When non-null, this overrides the weekOffset-derived range. Set
+  // by the custom calendar's two-click selection. Cleared whenever
+  // the user picks a preset.
+  const [customRange, setCustomRange] = useState<{ start: Date; end: Date } | null>(null);
+  // Two-click selection state inside the custom calendar: first click
+  // sets pendingStart and shows a hover preview; second click commits
+  // the range. Reset on popover close.
+  const [pendingRangeStart, setPendingRangeStart] = useState<Date | null>(null);
   // Recent Activity is the admin's "what happened while I was away"
   // feed; we want it visible by default rather than hidden behind a
   // chevron. Stays as an explicit collapse for the rare cases where
@@ -356,6 +368,22 @@ export const DashboardPage: React.FC = () => {
   const showManagerTeamSection = isManagerView && managerDashboardView === 'team';
 
   const weekRange = useMemo(() => {
+    // Custom range wins over the preset offset. Used when the admin
+    // / employee picks an arbitrary span (single day, mid-week to
+    // mid-week, etc.) from the custom calendar.
+    if (customRange) {
+      const start = customRange.start;
+      const end = customRange.end;
+      const sameDay = format(start, 'yyyy-MM-dd') === format(end, 'yyyy-MM-dd');
+      return {
+        startDate: format(start, 'yyyy-MM-dd'),
+        endDate: format(end, 'yyyy-MM-dd'),
+        label: sameDay
+          ? format(start, 'MMM d')
+          : `${format(start, 'MMM d')} - ${format(end, 'MMM d')}`,
+      };
+    }
+
     const managerReference = isManagerView ? getLatestWorkingDate(new Date()) : new Date();
     const referenceDate = addWeeks(managerReference, weekOffset);
     const start = startOfWeek(referenceDate, { weekStartsOn });
@@ -368,7 +396,7 @@ export const DashboardPage: React.FC = () => {
         ? 'This week'
         : `${format(start, 'MMM d')} - ${format(end, 'MMM d')}`,
     };
-  }, [isManagerView, weekOffset]);
+  }, [isManagerView, weekOffset, customRange, weekStartsOn]);
 
   const { data: projects = [], isLoading: projectsLoading } = useProjects({ active_only: true });
   const { data: teamEmployees = [], isLoading: teamLoading } = useTeamEmployees();
@@ -628,59 +656,145 @@ export const DashboardPage: React.FC = () => {
             <div className="relative">
               {showWeekPicker && (
                 <>
-                  <div className="fixed inset-0 z-40" onClick={() => setShowWeekPicker(false)} />
-                  <div className="absolute top-full left-1/2 -translate-x-1/2 z-50 mt-1 bg-white border border-border rounded-xl shadow-lg p-3 select-none" style={{ minWidth: 280 }} onClick={(e) => e.stopPropagation()}>
-                    {/* Month navigation */}
-                    <div className="flex items-center justify-between mb-2">
-                      <button type="button" className="p-1 rounded hover:bg-muted" onClick={() => setPickerMonth((m) => { const d = new Date(m); d.setMonth(d.getMonth() - 1); return d; })}>
-                        <ChevronLeft className="h-4 w-4" />
-                      </button>
-                      <span className="text-sm font-semibold">{format(pickerMonth, 'MMMM yyyy')}</span>
-                      <button type="button" className="p-1 rounded hover:bg-muted" onClick={() => setPickerMonth((m) => { const d = new Date(m); d.setMonth(d.getMonth() + 1); return d; })}>
-                        <ChevronRight className="h-4 w-4" />
-                      </button>
-                    </div>
-                    {/* Day headers */}
-                    <div className="grid grid-cols-7 mb-1">
-                      {['Su','Mo','Tu','We','Th','Fr','Sa'].map((d) => (
-                        <div key={d} className="text-center text-[11px] font-medium text-slate-400 py-1">{d}</div>
-                      ))}
-                    </div>
-                    {/* Day grid */}
-                    {(() => {
-                      const monthStart = new Date(pickerMonth.getFullYear(), pickerMonth.getMonth(), 1);
-                      const gridStart = startOfWeek(monthStart, { weekStartsOn });
-                      const currentWeekStart = parseISO(weekRange.startDate);
-                      const managerReference = isManagerView ? getLatestWorkingDate(new Date()) : new Date();
-                      const anchorWeekStart = startOfWeek(managerReference, { weekStartsOn });
-                      const days: React.ReactNode[] = [];
-                      for (let i = 0; i < 42; i++) {
-                        const day = new Date(gridStart);
-                        day.setDate(gridStart.getDate() + i);
-                        const weekStart = startOfWeek(day, { weekStartsOn });
-                        const weekEnd = endOfWeek(day, { weekStartsOn });
-                        const isCurrentMonth = day.getMonth() === pickerMonth.getMonth();
-                        const isInSelectedWeek = day >= currentWeekStart && day <= new Date(weekRange.endDate + 'T00:00:00');
-                        days.push(
+                  <div className="fixed inset-0 z-40" onClick={() => { setShowWeekPicker(false); setWeekPickerMode('presets'); }} />
+                  <div className="absolute top-full right-0 z-50 mt-1 bg-card border border-border rounded-xl shadow-lg p-2 select-none" style={{ minWidth: 220 }} onClick={(e) => e.stopPropagation()}>
+                    {/* D7 compact week picker. Shows the four most-used
+                        offsets up front (this week / last week / 2 weeks
+                        ago / 3 weeks ago) plus an Older link that swaps
+                        the popover into the legacy month-grid view. The
+                        old grid was the only path before; it forced a
+                        click-pick-click flow even for the 95% case of
+                        "the last few weeks." */}
+                    {weekPickerMode === 'presets' ? (
+                      <ul className="space-y-1">
+                        {[0, -1, -2, -3].map((offset) => {
+                          const label = offset === 0
+                            ? 'This week'
+                            : offset === -1
+                              ? 'Last week'
+                              : `${Math.abs(offset)} weeks ago`;
+                          const active = !customRange && weekOffset === offset;
+                          return (
+                            <li key={offset}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCustomRange(null);
+                                  setWeekOffset(offset);
+                                  setShowWeekPicker(false);
+                                }}
+                                className={`flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-sm transition ${active ? 'bg-primary/10 text-primary font-semibold' : 'hover:bg-muted'}`}
+                              >
+                                <span>{label}</span>
+                                {active && <Check className="h-3.5 w-3.5" />}
+                              </button>
+                            </li>
+                          );
+                        })}
+                        <li className="border-t border-border pt-1 mt-1">
                           <button
-                            key={i}
                             type="button"
                             onClick={() => {
-                              const diff = differenceInCalendarWeeks(weekStart, anchorWeekStart, { weekStartsOn });
-                              setWeekOffset(diff);
-                              setShowWeekPicker(false);
+                              setWeekPickerMode('custom');
+                              setPendingRangeStart(null);
                             }}
-                            className={`text-center text-xs py-1.5 rounded transition
-                              ${isInSelectedWeek ? 'bg-primary text-primary-foreground font-semibold' : `hover:bg-muted ${!isCurrentMonth ? 'text-slate-300' : 'text-slate-700'}`}
-                            `}
-                            title={`Week of ${format(weekStart, 'MMM d')} – ${format(weekEnd, 'MMM d')}`}
+                            className={`flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-sm transition ${customRange ? 'bg-primary/10 text-primary font-semibold' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
                           >
-                            {day.getDate()}
+                            <span>Custom range…</span>
+                            <ChevronRight className="h-3.5 w-3.5" />
                           </button>
-                        );
-                      }
-                      return <div className="grid grid-cols-7 gap-y-0.5">{days}</div>;
-                    })()}
+                        </li>
+                      </ul>
+                    ) : (
+                      // Custom range calendar. Two-click selection:
+                      // first click sets pendingRangeStart, second
+                      // commits a (start, end) tuple. Picking a single
+                      // day twice (or clicking the same date) yields a
+                      // same-day range — what the admin asked for.
+                      <div style={{ minWidth: 280 }}>
+                        <div className="flex items-center justify-between mb-2">
+                          <button type="button" className="p-1 rounded hover:bg-muted" onClick={() => { setWeekPickerMode('presets'); setPendingRangeStart(null); }} aria-label="Back to presets">
+                            <ChevronLeft className="h-4 w-4" />
+                          </button>
+                          <span className="text-sm font-semibold">{format(pickerMonth, 'MMMM yyyy')}</span>
+                          <div className="flex items-center">
+                            <button type="button" className="p-1 rounded hover:bg-muted" onClick={() => setPickerMonth((m) => { const d = new Date(m); d.setMonth(d.getMonth() - 1); return d; })} aria-label="Previous month">
+                              <ChevronLeft className="h-4 w-4" />
+                            </button>
+                            <button type="button" className="p-1 rounded hover:bg-muted" onClick={() => setPickerMonth((m) => { const d = new Date(m); d.setMonth(d.getMonth() + 1); return d; })} aria-label="Next month">
+                              <ChevronRight className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </div>
+                        <p className="px-1 pb-2 text-[11px] text-muted-foreground">
+                          {pendingRangeStart
+                            ? `Start: ${format(pendingRangeStart, 'MMM d')}. Pick the end date.`
+                            : 'Pick a start date.'}
+                        </p>
+                        <div className="grid grid-cols-7 mb-1">
+                          {['Su','Mo','Tu','We','Th','Fr','Sa'].map((d) => (
+                            <div key={d} className="text-center text-[11px] font-medium text-muted-foreground py-1">{d}</div>
+                          ))}
+                        </div>
+                        {(() => {
+                          const monthStart = new Date(pickerMonth.getFullYear(), pickerMonth.getMonth(), 1);
+                          const gridStart = startOfWeek(monthStart, { weekStartsOn });
+                          const selectedStart = customRange?.start ?? null;
+                          const selectedEnd = customRange?.end ?? null;
+                          const days: React.ReactNode[] = [];
+                          for (let i = 0; i < 42; i++) {
+                            const day = new Date(gridStart);
+                            day.setDate(gridStart.getDate() + i);
+                            const isCurrentMonth = day.getMonth() === pickerMonth.getMonth();
+                            const dayKey = format(day, 'yyyy-MM-dd');
+                            const inCommittedRange = selectedStart && selectedEnd
+                              && day >= selectedStart && day <= selectedEnd;
+                            const isPendingStart = pendingRangeStart
+                              && format(pendingRangeStart, 'yyyy-MM-dd') === dayKey;
+                            const isCommittedStart = selectedStart
+                              && format(selectedStart, 'yyyy-MM-dd') === dayKey;
+                            const isCommittedEnd = selectedEnd
+                              && format(selectedEnd, 'yyyy-MM-dd') === dayKey;
+                            const highlighted = isPendingStart || inCommittedRange;
+                            const cls = highlighted
+                              ? `bg-primary/15 text-primary ${isCommittedStart || isCommittedEnd || isPendingStart ? 'font-semibold ring-1 ring-primary' : ''}`
+                              : `hover:bg-muted ${!isCurrentMonth ? 'text-muted-foreground/50' : ''}`;
+                            days.push(
+                              <button
+                                key={i}
+                                type="button"
+                                onClick={() => {
+                                  const clicked = new Date(day.getFullYear(), day.getMonth(), day.getDate());
+                                  if (!pendingRangeStart) {
+                                    // First click: stage the start.
+                                    setPendingRangeStart(clicked);
+                                    return;
+                                  }
+                                  // Second click: commit. Swap if the
+                                  // user picked an end before the
+                                  // start so the range is always
+                                  // ordered.
+                                  let start = pendingRangeStart;
+                                  let end = clicked;
+                                  if (end < start) {
+                                    [start, end] = [end, start];
+                                  }
+                                  setCustomRange({ start, end });
+                                  setPendingRangeStart(null);
+                                  setShowWeekPicker(false);
+                                  setWeekPickerMode('presets');
+                                }}
+                                className={`text-center text-xs py-1.5 rounded transition ${cls}`}
+                                title={format(day, 'MMM d, yyyy')}
+                              >
+                                {day.getDate()}
+                              </button>
+                            );
+                          }
+                          return <div className="grid grid-cols-7 gap-y-0.5">{days}</div>;
+                        })()}
+                      </div>
+                    )}
                   </div>
                 </>
               )}
