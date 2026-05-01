@@ -492,6 +492,22 @@ async def resend_verification_email_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot send verification: user account is inactive",
         )
+    # External users never log in; the verification flow doesn't apply
+    # to them. Refuse explicitly so an admin doesn't send a confusing
+    # invitation email to someone who only exists for ingestion mapping.
+    if user.is_external:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot send verification: external users do not log in.",
+        )
+    # Internal users may have been created without an email (the form
+    # makes it optional). The CRUD synthesizes a placeholder using the
+    # ``.invalid`` reserved TLD; refuse to send to that placeholder.
+    if (user.email or "").lower().endswith("@local.invalid"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot send verification: user has no real email address. Add one first.",
+        )
 
     from app.crud.user import _generate_default_password
     from app.services.email_verification import set_verification_token, send_verification_email
@@ -580,19 +596,23 @@ async def create_new_user(
         # ADMIN: always assign to their own tenant, ignore any tenant_id in body
         user_create.tenant_id = current_user.tenant_id
 
-    existing = await get_user_by_email(db, user_create.email)
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A user with this email already exists",
-        )
+    # Email + username are optional in UserCreate now. Only check
+    # uniqueness when the admin actually provided a value.
+    if user_create.email:
+        existing = await get_user_by_email(db, user_create.email)
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A user with this email already exists",
+            )
 
-    existing_username = await get_user_by_username(db, user_create.username)
-    if existing_username:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username is already taken",
-        )
+    if user_create.username:
+        existing_username = await get_user_by_username(db, user_create.username)
+        if existing_username:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Username is already taken",
+            )
 
     # Password is always auto-generated — ignore any client-supplied value.
     user_create.password = None
@@ -602,9 +622,22 @@ async def create_new_user(
         from app.api.platform_settings import get_effective_smtp_config
         new_user, temp_password = await create_user(db, user_create)
 
-        # Attach verification token
-        token = set_verification_token(new_user)
-        db.add(new_user)
+        # Decide whether to send a verification email. We send only
+        # when the user is internal AND active AND the admin actually
+        # provided a real email address (no synthetic placeholder).
+        # Externals never log in; internals without an email get a
+        # follow-up prompt when the admin patches an email later.
+        provided_real_email = bool(user_create.email)
+        send_verification = (
+            new_user.is_active
+            and not new_user.is_external
+            and provided_real_email
+        )
+
+        token: str | None = None
+        if send_verification:
+            token = set_verification_token(new_user)
+            db.add(new_user)
         await db.commit()
 
         # Re-fetch with eager-loaded relationships so serialisation works
@@ -621,11 +654,21 @@ async def create_new_user(
         if new_user.tenant_id is not None:
             from app.services.tenant_email_service import _get_active_oauth_mailbox
             via_tenant_oauth = await _get_active_oauth_mailbox(db, new_user.tenant_id) is not None
-        if new_user.is_active:
-            background_tasks.add_task(send_verification_email, new_user, token, temp_password, smtp_config, tenant_name, new_user.tenant_id, via_tenant_oauth)
+
+        if send_verification and token is not None:
+            background_tasks.add_task(
+                send_verification_email,
+                new_user, token, temp_password, smtp_config, tenant_name,
+                new_user.tenant_id, via_tenant_oauth,
+            )
         else:
+            reason = (
+                "external user" if new_user.is_external
+                else ("inactive user" if not new_user.is_active else "no email on file")
+            )
             logger.info(
-                "verification_email_skipped: user %s is inactive", new_user.email
+                "verification_email_skipped: user=%s reason=%s",
+                new_user.email, reason,
             )
 
         activity_events: list[dict] = []
@@ -663,7 +706,11 @@ async def create_new_user(
                 )
 
         await record_activity_events(db, activity_events)
-        return {"user": new_user, "temporary_password": temp_password}
+        return {
+            "user": new_user,
+            "temporary_password": temp_password,
+            "verification_email_sent": send_verification,
+        }
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

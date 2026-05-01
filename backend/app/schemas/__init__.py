@@ -43,7 +43,14 @@ class TimeOffStatus(str, Enum):
 # ============================================================================
 
 class UserBase(BaseModel):
-    email: EmailStr
+    # Plain str (not EmailStr) on the response shape so synthetic
+    # placeholders (``no-email+...@local.invalid`` for users created
+    # without an email) round-trip cleanly. Pydantic's email validator
+    # rejects reserved TLDs like ``.invalid``, ``.local``, ``.test``,
+    # which is correct for inbound deliverable addresses but wrong as
+    # a hard guard on outbound rows. Inbound creation paths still use
+    # ``EmailStr`` (UserCreate) so admin-typed addresses are validated.
+    email: str
     username: str = Field(..., min_length=3, max_length=255)
     full_name: str
     title: Optional[str] = None
@@ -56,10 +63,36 @@ class UserBase(BaseModel):
     default_client_id: Optional[int] = None
 
 
-class UserCreate(UserBase):
+class UserCreate(BaseModel):
+    """Admin / platform-admin user creation.
+
+    Only ``full_name`` and ``is_external`` are required. Everything
+    else (email, username, role, title, department, manager,
+    project_ids) is optional. This shape supports the common case
+    where an admin is keeping a record on file for someone who never
+    logs in — typically an external worker whose timesheets are
+    captured via email ingestion. The backend synthesizes a unique
+    placeholder for email/username when blank.
+    """
+    full_name: str = Field(..., min_length=1)
+    # Pair-of-flags model: the admin must pick exactly one of
+    # internal/external. The frontend renders these as paired chips at
+    # the top of the new-user dialog. The backend persists only
+    # is_external (the "internal" branch is the inverse) so we don't
+    # add a new column.
+    is_external: bool
+    email: Optional[EmailStr] = None
+    username: Optional[str] = Field(None, min_length=3, max_length=255)
+    title: Optional[str] = None
+    department: Optional[str] = None
+    timezone: Optional[str] = "UTC"
+    role: UserRole = UserRole.EMPLOYEE
+    is_active: bool = True
+    manager_id: Optional[int] = None
+    project_ids: List[int] = Field(default_factory=list)
+    default_client_id: Optional[int] = None
     password: Optional[str] = Field(None, min_length=8)
     can_review: bool = False
-    is_external: bool = False
     # Only used when PLATFORM_ADMIN creates a user in a specific tenant.
     # Regular ADMIN users have tenant_id injected server-side from their JWT.
     tenant_id: Optional[int] = None
@@ -119,9 +152,19 @@ class UserResponse(UserBase):
 
 
 class UserCreateResponse(BaseModel):
-    """Returned only when an admin creates a new user. Includes the one-time temporary password."""
+    """Returned when an admin creates a new user."""
     user: UserResponse
+    # The one-time random password the backend generated. Surfaced to
+    # the admin so they can hand it to the new user out-of-band when
+    # the verification email isn't being sent (external users, or
+    # internals with no email on file). For internals who did get a
+    # verification email, this is informational — they set their own
+    # password via the verification link.
     temporary_password: str
+    # True when a verification email was queued to be sent on this
+    # creation request. False for external users (they never log in)
+    # and for internal users created without an email address.
+    verification_email_sent: bool = False
 
 
 class UserSummaryResponse(BaseModel):

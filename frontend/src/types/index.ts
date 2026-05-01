@@ -33,6 +33,10 @@ export interface User {
 export interface UserCreateResponse {
   user: User;
   temporary_password: string;
+  // True only when the backend queued a verification email on this
+  // create call. False for external users (no login) and for internals
+  // saved without an email address.
+  verification_email_sent?: boolean;
 }
 
 export interface UserProfile {

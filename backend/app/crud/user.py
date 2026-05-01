@@ -108,7 +108,21 @@ def _normalize_profile_text(value: Optional[str]) -> Optional[str]:
     return normalized or None
 
 
-def _validate_role_profile(role: UserRole, title: Optional[str], department: Optional[str]) -> None:
+def _validate_role_profile(
+    role: UserRole,
+    title: Optional[str],
+    department: Optional[str],
+    is_external: bool = False,
+) -> None:
+    """Validate the title/department fields against the role.
+
+    External users are exempt: they exist purely as anchors for ingested
+    timesheets / emails, never log in, and have no place on the
+    org-chart, so requiring a title or department for them would force
+    the admin to fabricate values just to clear the form.
+    """
+    if is_external:
+        return
     if role == UserRole.MANAGER:
         if not title:
             raise ValueError("Manager title is required")
@@ -155,19 +169,47 @@ def _generate_default_password() -> str:
 
 
 async def create_user(db: AsyncSession, user_create: UserCreate) -> tuple["User", str]:
-    """Create a new user. Returns (user, plaintext_password) so callers can relay the temp password."""
+    """Create a new user. Returns (user, plaintext_password) so callers can relay the temp password.
+
+    Only ``full_name`` and ``is_external`` are required from the caller.
+    Email and username are optional. When blank we synthesize unique
+    placeholders so the NOT NULL + UNIQUE columns stay satisfied:
+
+      - email    → ``no-email+<random>@local.invalid``
+      - username → ``user-<random>``
+
+    The placeholder uses the ``.invalid`` reserved TLD (RFC 2606) so
+    nothing accidentally tries to deliver to it. The admin can patch a
+    real email onto the user later via PUT /users/{id}, at which point
+    the frontend offers a "send verification email now?" prompt.
+    """
     role = user_create.role or UserRole.EMPLOYEE
     normalized_title = _normalize_profile_text(user_create.title)
     normalized_department = _normalize_profile_text(user_create.department)
-    _validate_role_profile(role, normalized_title, normalized_department)
+    _validate_role_profile(
+        role, normalized_title, normalized_department,
+        is_external=bool(user_create.is_external),
+    )
 
     # Always generate a secure random temporary password; ignore any client-supplied value.
     password = _generate_default_password()
 
+    raw_email = (user_create.email or "").strip().lower()
+    raw_username = (user_create.username or "").strip().lower()
+
+    if not raw_email:
+        # Random suffix keeps the unique constraint happy without
+        # leaking sequential ids. invalid.local is reserved by RFC.
+        raw_email = f"no-email+{secrets.token_hex(8)}@local.invalid"
+    if not raw_username:
+        # 12 hex chars is plenty of entropy for tenant-scoped
+        # uniqueness; collisions would still hit IntegrityError below.
+        raw_username = f"user-{secrets.token_hex(6)}"
+
     db_user = User(
         tenant_id=user_create.tenant_id,
-        email=user_create.email.strip().lower(),
-        username=user_create.username.strip().lower(),
+        email=raw_email,
+        username=raw_username,
         full_name=user_create.full_name.strip(),
         title=normalized_title,
         department=normalized_department,
@@ -239,7 +281,11 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
     next_role = update_data.get("role", user.role)
     next_title = update_data.get("title", user.title)
     next_department = update_data.get("department", user.department)
-    _validate_role_profile(next_role, next_title, next_department)
+    next_is_external = bool(update_data.get("is_external", user.is_external))
+    _validate_role_profile(
+        next_role, next_title, next_department,
+        is_external=next_is_external,
+    )
 
     # Roles list invariant: the active role must be in the allowed-roles
     # list. We normalize whichever side is supplied and validate the

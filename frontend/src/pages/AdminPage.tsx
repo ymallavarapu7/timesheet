@@ -6,6 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 
 import { Loading, Error, OrganizationalChart, SearchInput } from '@/components';
 import { BulkSelectBar } from '@/components/ui/BulkSelectBar';
+import { cn } from '@/lib/utils';
 import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useResetUserPassword, useResendVerification, useBulkDeleteUsers, useAuth, useIsPlatformAdmin, useProjects, useNotifications, useUnlockUserTimesheet, useDepartments, useCreateDepartment, useDeleteDepartment, useLeaveTypes, useCreateLeaveType, useUpdateLeaveType, useDeleteLeaveType, useClients } from '@/hooks';
 import { KeyRound } from 'lucide-react';
 import { timeentriesAPI, ingestionAPI } from '@/api';
@@ -25,7 +26,10 @@ const extractErrorMessage = (err: unknown): string => {
 
 type UserMutationPayload = {
   full_name: string;
-  email: string;
+  // Email is optional in the patch — omit the key entirely to leave
+  // the existing value untouched. We never send null because the
+  // server-side User shape doesn't model it.
+  email?: string;
   title?: string | null;
   department?: string | null;
   role: UserRole;
@@ -175,6 +179,8 @@ const roleBadge = (role: UserRole, allRoles?: UserRole[] | null) => {
   );
 };
 
+type Audience = 'internal' | 'external' | null;
+
 type FormState = {
   full_name: string;
   email: string;
@@ -188,7 +194,10 @@ type FormState = {
   additional_roles: UserRole[];
   is_active: boolean;
   can_review: boolean;
-  is_external: boolean;
+  // Internal vs External selection. Null forces the admin to pick;
+  // the rest of the form is disabled until they do. Persisted as
+  // is_external on submit (internal -> false, external -> true).
+  audience: Audience;
   manager_id: number | null;
   project_ids: number[];
   default_client_id: number | null;
@@ -210,14 +219,16 @@ const emptyForm = (): FormState => ({
   additional_roles: [],
   is_active: true,
   can_review: false,
-  is_external: false,
+  // Forces the admin to pick Internal or External before the rest of
+  // the form is meaningful. Saved as is_external on submit.
+  audience: null,
   manager_id: null,
   project_ids: [],
   default_client_id: null,
 });
 
 export const AdminPage: React.FC = () => {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user: currentUser, refreshUser } = useAuth();
   const { data: users, isLoading, error, refetch: refetchUsers } = useUsers();
   const { data: projects, isLoading: projectsLoading, error: projectsError } = useProjects({ limit: 500 });
@@ -296,9 +307,28 @@ export const AdminPage: React.FC = () => {
     }
     return 'ALL';
   });
+  // Attention filter — driven by the dashboard Action Queue links so a
+  // click-through into user management lands the admin on the exact
+  // subset the queue called out (no_manager rows, stale unverified
+  // invites). 'NONE' is the default.
+  const [attentionFilter, setAttentionFilter] = useState<'NONE' | 'NO_MANAGER' | 'UNVERIFIED'>(() => {
+    const status = searchParams.get('status');
+    if (status === 'NO_MANAGER') return 'NO_MANAGER';
+    if ((searchParams.get('verified') ?? '').toUpperCase() === 'NO') return 'UNVERIFIED';
+    return 'NONE';
+  });
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [showNoProjectModal, setShowNoProjectModal] = useState(false);
-  const [createdUserEmail, setCreatedUserEmail] = useState<string | null>(null);
+  // Post-create confirmation state. We carry enough context to pick
+  // the right copy: synthetic placeholder addresses must never be
+  // shown to the admin, and the line about "verification email sent"
+  // only fires when the backend actually sent one.
+  const [createdUserSummary, setCreatedUserSummary] = useState<{
+    fullName: string;
+    email: string;
+    isExternal: boolean;
+    verificationEmailSent: boolean;
+  } | null>(null);
   const userListSectionRef = React.useRef<HTMLDivElement | null>(null);
 
   // Team Timesheets tab state
@@ -357,10 +387,24 @@ export const AdminPage: React.FC = () => {
     const nextSearch = searchParams.get('search') ?? '';
     const nextRole = searchParams.get('role');
     const nextStatus = searchParams.get('status');
+    const nextVerified = (searchParams.get('verified') ?? '').toUpperCase();
 
     setSearch(nextSearch);
     setRoleFilter(nextRole === 'EMPLOYEE' || nextRole === 'MANAGER' || nextRole === 'SENIOR_MANAGER' || nextRole === 'CEO' || nextRole === 'ADMIN' || nextRole === 'PLATFORM_ADMIN' ? (nextRole as UserRole) : 'ALL');
     setStatusFilter(nextStatus === 'ACTIVE' || nextStatus === 'INACTIVE' ? nextStatus : 'ALL');
+
+    // Attention sub-filters take precedence over plain status. A
+    // dashboard chip pointing at "12 users without a manager" lands
+    // here with ?status=NO_MANAGER; an unverified-invitations chip
+    // arrives with ?verified=NO. Anything else clears the attention
+    // filter.
+    if (nextStatus === 'NO_MANAGER') {
+      setAttentionFilter('NO_MANAGER');
+    } else if (nextVerified === 'NO') {
+      setAttentionFilter('UNVERIFIED');
+    } else {
+      setAttentionFilter('NONE');
+    }
   }, [searchParams]);
 
   React.useEffect(() => {
@@ -434,6 +478,24 @@ export const AdminPage: React.FC = () => {
     )
   ).sort();
 
+  // Attention sub-filter predicate. Shapes match the AdminActionQueue
+  // rules so the click-through subset is exactly what the queue badge
+  // is counting.
+  const STALE_INVITE_DAYS = 7;
+  const STALE_INVITE_CUTOFF_MS = Date.now() - STALE_INVITE_DAYS * 24 * 60 * 60 * 1000;
+  const ORPHAN_ROLES = new Set<UserRole>(['EMPLOYEE', 'MANAGER', 'SENIOR_MANAGER']);
+  const matchesAttention = (u: User): boolean => {
+    if (attentionFilter === 'NO_MANAGER') {
+      return Boolean(u.is_active) && ORPHAN_ROLES.has(u.role) && u.manager_id == null;
+    }
+    if (attentionFilter === 'UNVERIFIED') {
+      if (!u.is_active || u.email_verified) return false;
+      const created = u.created_at ? Date.parse(u.created_at) : NaN;
+      return Number.isFinite(created) && created < STALE_INVITE_CUTOFF_MS;
+    }
+    return true;
+  };
+
   const filtered = (users ?? []).filter((u) => {
     const matchesSearch =
       normalizedSearch.length === 0 ||
@@ -448,7 +510,7 @@ export const AdminPage: React.FC = () => {
       (statusFilter === 'ACTIVE' && u.is_active) ||
       (statusFilter === 'INACTIVE' && !u.is_active);
 
-    return matchesSearch && matchesRole && matchesStatus;
+    return matchesSearch && matchesRole && matchesStatus && matchesAttention(u);
   });
 
   const userManagementAlerts = (notificationsSummary?.items ?? []).filter(
@@ -514,7 +576,7 @@ export const AdminPage: React.FC = () => {
       additional_roles: additional,
       is_active: u.is_active,
       can_review: u.can_review ?? false,
-      is_external: u.is_external ?? false,
+      audience: (u.is_external ?? false) ? 'external' : 'internal',
       manager_id: normalizedManagerId,
       project_ids: u.project_ids ?? [],
       default_client_id: u.default_client_id ?? null,
@@ -552,27 +614,26 @@ export const AdminPage: React.FC = () => {
     const normalizedFullName = form.full_name.trim();
     const normalizedEmail = form.email.trim().toLowerCase();
     const normalizedUsername = form.username.trim().toLowerCase();
-
-    if (!normalizedFullName || !normalizedEmail || !normalizedUsername) {
-      setFormError('Name, email, and username are required');
-      return;
-    }
-
-    if (normalizedUsername.length < 3) {
-      setFormError('Username must be at least 3 characters');
-      return;
-    }
-
     const normalizedTitle = form.title.trim();
     const normalizedDepartment = form.department.trim();
 
-    if ((form.role === 'EMPLOYEE' || form.role === 'MANAGER') && !normalizedTitle) {
-      setFormError(`${form.role === 'MANAGER' ? 'Manager' : 'Employee'} title is required`);
+    // Only two fields are mandatory: full name and the audience (the
+    // Internal vs External chip). Everything else is optional and the
+    // backend synthesizes safe placeholders for blank email/username.
+    if (!normalizedFullName) {
+      setFormError('Full name is required');
+      return;
+    }
+    if (form.audience === null) {
+      setFormError('Pick Internal or External before saving');
       return;
     }
 
-    if (form.role === 'MANAGER' && !normalizedDepartment) {
-      setFormError('Manager department is required');
+    // Username, when supplied, still needs the platform's 3-char
+    // minimum so the admin doesn't accidentally save something that
+    // would later 422 on update.
+    if (normalizedUsername && normalizedUsername.length < 3) {
+      setFormError('Username must be at least 3 characters');
       return;
     }
 
@@ -582,23 +643,66 @@ export const AdminPage: React.FC = () => {
       new Set([form.role, ...form.additional_roles]),
     );
 
+    const isExternal = form.audience === 'external';
+
+    // Detect "admin just added a real email to a user that had none."
+    // Backend synthesizes ``no-email+...@local.invalid`` for users
+    // created without an email. If that's what they had before and the
+    // admin typed a real address now, offer to send the verification
+    // email immediately. Saying no leaves the email on file; the admin
+    // can resend later from the user-management table.
+    const previousEmail = (editingUser?.email ?? '').toLowerCase();
+    const previousWasPlaceholder = previousEmail === '' || previousEmail.endsWith('@local.invalid');
+    const emailJustAdded = (
+      Boolean(editingUser)
+      && !isExternal
+      && previousWasPlaceholder
+      && Boolean(normalizedEmail)
+      && !normalizedEmail.endsWith('@local.invalid')
+    );
+
     try {
       if (editingUser) {
         const payload: UserMutationPayload = {
           full_name: normalizedFullName,
-          email: normalizedEmail,
+          // Only include email in the patch when the admin actually
+          // typed one. Omitting leaves the existing value untouched.
+          ...(normalizedEmail ? { email: normalizedEmail } : {}),
           title: normalizedTitle || null,
           department: normalizedDepartment || null,
           role: form.role,
           roles: combinedRoles,
           is_active: form.is_active,
-          can_review: form.can_review,
-          is_external: form.is_external,
-          manager_id: form.manager_id,
-          project_ids: form.role === 'EMPLOYEE' ? form.project_ids : [],
+          can_review: isExternal ? false : form.can_review,
+          is_external: isExternal,
+          manager_id: isExternal ? null : form.manager_id,
+          project_ids: isExternal || form.role !== 'EMPLOYEE' ? [] : form.project_ids,
           default_client_id: form.default_client_id,
         };
         await updateUser.mutateAsync({ id: editingUser.id, data: payload });
+
+        // After a successful save, ask the admin if they want to fire
+        // the verification email now. They can always trigger it later
+        // from the user-management table's resend action.
+        if (emailJustAdded) {
+          // window.confirm is intentional: the admin's flow is "save
+          // then react to a single decision," and a heavier modal here
+          // would interrupt the table refresh. Confirm dismisses
+          // cleanly on Esc / Cancel and the row is already saved.
+          const sendNow = window.confirm(
+            `Send a verification email to ${normalizedEmail} now?\n\n`
+            + 'OK = send now. Cancel = save the email but skip verification (you can resend from the table later).',
+          );
+          if (sendNow) {
+            try {
+              await resendVerification.mutateAsync(editingUser.id);
+            } catch (err) {
+              // Don't fail the whole save if the email send fails;
+              // surface as an inline note instead.
+              setFormError(`Saved, but verification email failed: ${extractErrorMessage(err)}`);
+            }
+          }
+        }
       } else {
         if (!isAdminUser) {
           setFormError('Only admins can create users');
@@ -607,29 +711,36 @@ export const AdminPage: React.FC = () => {
         const result = await createUser.mutateAsync({
           ...form,
           full_name: normalizedFullName,
-          email: normalizedEmail,
-          username: normalizedUsername,
+          // Send blank as undefined so the backend synthesizes a
+          // placeholder rather than failing EmailStr validation on "".
+          email: normalizedEmail || undefined,
+          username: normalizedUsername || undefined,
           title: normalizedTitle || null,
           department: normalizedDepartment || null,
-          can_review: form.can_review,
-          is_external: form.is_external,
-          manager_id: form.manager_id,
-          project_ids: form.role === 'EMPLOYEE' ? form.project_ids : [],
+          can_review: isExternal ? false : form.can_review,
+          is_external: isExternal,
+          manager_id: isExternal ? null : form.manager_id,
+          project_ids: isExternal || form.role !== 'EMPLOYEE' ? [] : form.project_ids,
           default_client_id: form.default_client_id,
         });
-        // Confirm to the admin that the verification email is on its way.
-        // temporary_password is intentionally not surfaced — the user sets
-        // their own via the verification link.
-        // If the admin checked any additional portals, patch the new user
-        // with the combined roles list. Backend UserCreate doesn't accept
-        // a roles list (defaults to [role]), so we follow up with PUT.
+        // If the admin checked any additional portals, patch the new
+        // user with the combined roles list. Backend UserCreate doesn't
+        // accept a roles list (defaults to [role]), so we follow up with PUT.
         if (form.additional_roles.length > 0 && result?.user?.id) {
           await updateUser.mutateAsync({
             id: result.user.id,
             data: { roles: combinedRoles },
           });
         }
-        setCreatedUserEmail(normalizedEmail);
+        setCreatedUserSummary({
+          fullName: result?.user?.full_name || normalizedFullName,
+          email: result?.user?.email || normalizedEmail || '',
+          isExternal: Boolean(result?.user?.is_external),
+          // Backend sets verification_email_sent=true only when it
+          // actually queued an email (internal + active + real
+          // address). Use it directly so the modal copy matches.
+          verificationEmailSent: Boolean(result?.verification_email_sent),
+        });
       }
       await refetchUsers();
       closeModal();
@@ -1218,6 +1329,36 @@ export const AdminPage: React.FC = () => {
             <option value="INACTIVE">Inactive</option>
           </select>
         </div>
+        {/* Attention filter chip — surfaced when the admin clicked
+            through from the dashboard Action Queue. The X button
+            clears the filter (also rewrites the URL so a refresh
+            doesn't bring it back). */}
+        {attentionFilter !== 'NONE' && (
+          <div className="mb-5 flex items-center gap-2">
+            <span className="inline-flex items-center gap-2 rounded-full border border-primary/40 bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
+              {attentionFilter === 'NO_MANAGER'
+                ? `Showing ${filtered.length} user${filtered.length === 1 ? '' : 's'} without a manager`
+                : `Showing ${filtered.length} unverified invitation${filtered.length === 1 ? '' : 's'} > 7 days old`}
+              <button
+                type="button"
+                onClick={() => {
+                  setAttentionFilter('NONE');
+                  // Strip the URL param so refresh doesn't re-apply.
+                  setSearchParams((prev) => {
+                    const next = new URLSearchParams(prev);
+                    if (next.get('status') === 'NO_MANAGER') next.delete('status');
+                    next.delete('verified');
+                    return next;
+                  }, { replace: true });
+                }}
+                className="text-primary/70 hover:text-primary"
+                aria-label="Clear attention filter"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </span>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           {roles.map((role) => {
@@ -1447,7 +1588,39 @@ export const AdminPage: React.FC = () => {
                 ) : (
                   <>
                     <div>
-                      <label className="block text-sm font-medium mb-1">Full Name</label>
+                      <label className="block text-sm font-medium mb-1">
+                        User type
+                        <span className="ml-1 text-destructive" aria-hidden>*</span>
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {(['internal', 'external'] as const).map((opt) => {
+                          const checked = form.audience === opt;
+                          const label = opt === 'internal' ? 'Internal' : 'External';
+                          return (
+                            <button
+                              key={opt}
+                              type="button"
+                              onClick={() => setForm((f) => ({ ...f, audience: opt }))}
+                              className={cn(
+                                'rounded-lg border px-3 py-2 text-sm font-semibold transition',
+                                checked
+                                  ? 'border-primary bg-primary/10 ring-1 ring-primary/40'
+                                  : 'border-border hover:bg-muted/40',
+                              )}
+                              aria-pressed={checked}
+                            >
+                              {label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium mb-1">
+                        Full Name
+                        <span className="ml-1 text-destructive" aria-hidden>*</span>
+                      </label>
                       <input
                         required
                         value={form.full_name}
@@ -1459,7 +1632,6 @@ export const AdminPage: React.FC = () => {
                     <div>
                       <label className="block text-sm font-medium mb-1">Email</label>
                       <input
-                        required
                         type="email"
                         value={form.email}
                         onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
@@ -1470,7 +1642,6 @@ export const AdminPage: React.FC = () => {
                     <div>
                       <label className="block text-sm font-medium mb-1">Username</label>
                       <input
-                        required
                         type="text"
                         value={form.username}
                         onChange={(e) => setForm((f) => ({ ...f, username: e.target.value.toLowerCase() }))}
@@ -1478,8 +1649,8 @@ export const AdminPage: React.FC = () => {
                         placeholder="jane.smith"
                         minLength={3}
                       />
-                      <p className="text-xs text-muted-foreground mt-1">Minimum 3 characters, lowercase letters and numbers</p>
                     </div>
+                    {form.audience === 'internal' && (<>
                     <div>
                       <label className="block text-sm font-medium mb-1">Role</label>
                       <select
@@ -1636,9 +1807,10 @@ export const AdminPage: React.FC = () => {
                       </select>
                       <p className="mt-1 text-xs text-muted-foreground">Optional. When set, incoming timesheets resolved to this user auto-route to this client.</p>
                     </div>
+                    </>)}
                   </>
                 )}
-                {(form.role === 'EMPLOYEE' || isProjectOnlyEdit) && (
+                {!isProjectOnlyEdit && form.audience === 'internal' && (form.role === 'EMPLOYEE' || isProjectOnlyEdit) && (
                   <div>
                     <label className="block text-sm font-medium mb-2">Project Access</label>
                     <div className="max-h-44 overflow-y-auto rounded border p-3 space-y-2 bg-muted/10">
@@ -1668,13 +1840,11 @@ export const AdminPage: React.FC = () => {
                     </p>
                   </div>
                 )}
-                {!editingUser && isAdminUser && (
-                  <p className="text-xs text-muted-foreground rounded bg-muted/20 px-3 py-2">
-                    A secure temporary password will be generated automatically. A verification email will be sent to the user, and you will be shown the credentials to share manually.
-                  </p>
-                )}
                 {!isProjectOnlyEdit && (
-                  <div className="grid gap-3 md:grid-cols-3">
+                  <div className={cn(
+                    'grid gap-3',
+                    form.audience === 'internal' ? 'md:grid-cols-2' : 'md:grid-cols-1',
+                  )}>
                     <label className="flex items-center gap-2">
                       <input
                         id="is_active"
@@ -1685,6 +1855,7 @@ export const AdminPage: React.FC = () => {
                       />
                       <span className="text-sm font-medium">Active account</span>
                     </label>
+                    {form.audience === 'internal' && (
                     <label className="flex items-center gap-2">
                       <input
                         id="can_review"
@@ -1695,13 +1866,16 @@ export const AdminPage: React.FC = () => {
                       />
                       <span className="text-sm font-medium">Reviewer access</span>
                     </label>
-                    <label className="flex items-center gap-2">
+                    )}
+                    {/* Legacy "External user" checkbox is intentionally
+                        removed — the Internal/External chip at the top
+                        of the form is the single source of truth. */}
+                    <label className="hidden">
                       <input
-                        id="is_external"
+                        id="is_external_legacy"
                         type="checkbox"
-                        checked={form.is_external}
-                        onChange={(e) => setForm((f) => ({ ...f, is_external: e.target.checked }))}
-                        className="rounded"
+                        checked={false}
+                        readOnly
                       />
                       <span className="text-sm font-medium">External user</span>
                     </label>
@@ -1813,25 +1987,37 @@ export const AdminPage: React.FC = () => {
         );
       })()}
 
-      {/* New user credentials dialog */}
-      {createdUserEmail && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
-          <div className="bg-card rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4">
-            <h2 className="text-lg font-semibold text-foreground">User created</h2>
-            <p className="text-sm text-muted-foreground">
-              Verification email sent to <span className="font-medium text-foreground">{createdUserEmail}</span>.
-            </p>
-            <div className="flex justify-end">
-              <button
-                className="action-button"
-                onClick={() => setCreatedUserEmail(null)}
-              >
-                Done
-              </button>
+      {/* Post-create confirmation. Copy depends on whether the user
+          is external, whether they have a real email on file, and
+          whether the backend queued a verification message. */}
+      {createdUserSummary && (() => {
+        const { fullName, email, isExternal, verificationEmailSent } = createdUserSummary;
+        const isPlaceholderEmail = !email || email.toLowerCase().endsWith('@local.invalid');
+        let body: string;
+        if (isExternal) {
+          body = `${fullName} created as external. Record-only, no login.`;
+        } else if (verificationEmailSent && !isPlaceholderEmail) {
+          body = `Verification email sent to ${email}.`;
+        } else {
+          body = `${fullName} created. Add an email later to send a verification link.`;
+        }
+        return (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
+            <div className="bg-card rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4">
+              <h2 className="text-lg font-semibold text-foreground">User created</h2>
+              <p className="text-sm text-muted-foreground">{body}</p>
+              <div className="flex justify-end">
+                <button
+                  className="action-button"
+                  onClick={() => setCreatedUserSummary(null)}
+                >
+                  Done
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {showNoProjectModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
