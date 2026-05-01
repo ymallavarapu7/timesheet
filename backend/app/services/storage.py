@@ -14,10 +14,52 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
+# Extensions we are willing to write to disk verbatim. Everything else
+# is normalized to ``.bin`` so a malicious sender can't park
+# ``.php``/``.html``/``.svg`` etc. on the server's filesystem and
+# attempt a content-type confusion or active-content attack later.
+_ALLOWED_ATTACHMENT_EXTENSIONS = {
+    ".pdf",
+    ".docx",
+    ".doc",
+    ".xlsx",
+    ".xls",
+    ".csv",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".heic",
+    ".webp",
+    ".txt",
+    ".eml",
+    ".msg",
+    ".zip",
+}
+
+
+def _safe_extension(filename: str) -> str:
+    """Return the file's extension only if it's in the allowlist;
+    otherwise return ``.bin``. Lowercased. Empty extension also falls
+    back to ``.bin`` so every key has a stable shape."""
+    ext = Path(filename).suffix.lower()
+    if not ext:
+        return ".bin"
+    return ext if ext in _ALLOWED_ATTACHMENT_EXTENSIONS else ".bin"
+
+
 def _generate_key(filename: str) -> str:
-    """Generate a unique storage key for an uploaded attachment."""
-    extension = Path(filename).suffix.lower()
-    return f"attachments/{uuid.uuid4().hex}{extension}"
+    """Generate a unique storage key for an uploaded attachment.
+
+    The on-disk filename is a fresh UUID; the original filename is
+    never trusted into the filesystem path. The extension is preserved
+    only when it's in the active-content-safe allowlist (see
+    ``_ALLOWED_ATTACHMENT_EXTENSIONS``); anything else becomes ``.bin``.
+    """
+    return f"attachments/{uuid.uuid4().hex}{_safe_extension(filename)}"
 
 
 async def save_file(content: bytes, filename: str) -> str:
