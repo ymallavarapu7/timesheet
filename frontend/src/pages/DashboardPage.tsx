@@ -27,12 +27,7 @@ import {
 } from '@/hooks';
 import type { DashboardActivity, DashboardBarEntryDetail, DashboardDayBreakdown, DashboardProjectBreakdown, DashboardRecentActivityItem, NotificationItem, Project, TeamDailyOverview, Tenant, User } from '@/types';
 
-// Chart palette is defined in index.css as --chart-1..--chart-8 plus
-// --chart-other and --chart-track. Each value is theme-aware (different
-// hue per active theme variant) and dark-mode aware. We reference the
-// CSS variable through CSS color() syntax instead of resolving the hex
-// at JS-eval time so a theme switch repaints the charts without a
-// re-render.
+// CSS vars (not resolved hex) so theme switches repaint without re-render.
 const PROJECT_COLORS = [
   'var(--chart-1)',
   'var(--chart-2)',
@@ -354,12 +349,7 @@ export const DashboardPage: React.FC = () => {
   const isAdminView = user?.role === 'ADMIN';
   const showProjectClientWidgets = !isAdminView && !isPlatformAdmin;
   const showAdminStatsView = isPlatformAdmin || (isAdminView && adminDashboardView === 'stats');
-  // Personal-time view (bar chart, donut, top activities) is the
-  // default for non-manager / non-admin roles. For managers it's only
-  // visible when they explicitly switch to My Time. For admins, only
-  // when admin My Time is selected. The manager Team tab now has its
-  // own redesigned layout and should not also show personal-time
-  // widgets below it.
+  // Personal-time view: default for plain users; managers/admins must opt in.
   const showPersonalTimeView = (
     (!isAdminView && !isPlatformAdmin && !isManagerView)
     || (isAdminView && adminDashboardView === 'my-time')
@@ -567,11 +557,7 @@ export const DashboardPage: React.FC = () => {
          isLoading={changePassword.isPending}
        />
        <div>
-        {/* Personalized greeting: shared across every role. Replaces
-            the generic "Dashboard" heading so the page opens with the
-            user's name and the time of day, then role-specific content
-            (Action Queue / Manager Conversation / personal analytics)
-            renders below. */}
+        {/* Shared greeting; role-specific content renders below. */}
         <div className="flex items-end justify-between gap-4 mb-6 flex-wrap">
           <div className="min-w-0">
             <DashboardGreeting userFullName={user?.full_name} />
@@ -658,13 +644,7 @@ export const DashboardPage: React.FC = () => {
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => { setShowWeekPicker(false); setWeekPickerMode('presets'); }} />
                   <div className="absolute top-full right-0 z-50 mt-1 bg-card border border-border rounded-xl shadow-lg p-2 select-none" style={{ minWidth: 220 }} onClick={(e) => e.stopPropagation()}>
-                    {/* D7 compact week picker. Shows the four most-used
-                        offsets up front (this week / last week / 2 weeks
-                        ago / 3 weeks ago) plus an Older link that swaps
-                        the popover into the legacy month-grid view. The
-                        old grid was the only path before; it forced a
-                        click-pick-click flow even for the 95% case of
-                        "the last few weeks." */}
+                    {/* Compact week picker: presets + custom calendar. */}
                     {weekPickerMode === 'presets' ? (
                       <ul className="space-y-1">
                         {[0, -1, -2, -3].map((offset) => {
@@ -706,11 +686,7 @@ export const DashboardPage: React.FC = () => {
                         </li>
                       </ul>
                     ) : (
-                      // Custom range calendar. Two-click selection:
-                      // first click sets pendingRangeStart, second
-                      // commits a (start, end) tuple. Picking a single
-                      // day twice (or clicking the same date) yields a
-                      // same-day range — what the admin asked for.
+                      // Two-click range select; same day twice = single-day range.
                       <div style={{ minWidth: 280 }}>
                         <div className="flex items-center justify-between mb-2">
                           <button type="button" className="p-1 rounded hover:bg-muted" onClick={() => { setWeekPickerMode('presets'); setPendingRangeStart(null); }} aria-label="Back to presets">

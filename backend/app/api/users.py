@@ -35,17 +35,8 @@ async def _get_descendant_user_ids(
 ) -> set[int]:
     """Walk the manager-chain to all transitive direct reports.
 
-    Tenant-scoped: every BFS layer joins on User.tenant_id so descendant
-    sets cannot include users from another tenant, even if (somehow)
-    a cross-tenant EmployeeManagerAssignment row existed. Without this
-    scope the helper would return arbitrary user IDs and rely on every
-    caller to re-filter by tenant; that's a footgun for future code paths
-    that consume the IDs directly.
-
-    EmployeeManagerAssignment has no tenant_id column today, so we filter
-    via the employee's User.tenant_id. Manager_id may itself be cross-
-    tenant (we don't gate frontier members), but the BFS only emits
-    employees whose User row is in the requested tenant.
+    BFS is tenant-scoped via User.tenant_id since EmployeeManagerAssignment
+    has no tenant_id column.
     """
     descendant_ids: set[int] = set()
     frontier: set[int] = {manager_id}
@@ -119,12 +110,7 @@ async def list_all_users(
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> list[User]:
-    """
-    List users.
-    - PLATFORM_ADMIN: all users across all tenants
-    - Admin: all users within their tenant
-    - Manager chain roles: employees in their reporting tree (within their tenant)
-    """
+    """List users; scope depends on role (platform/tenant/manager-chain)."""
     old_decision = current_user.role in {
         UserRole.PLATFORM_ADMIN,
         UserRole.ADMIN,
@@ -332,9 +318,7 @@ async def get_tenant_settings(
     current_user: User = Depends(require_role("ADMIN")),
     db: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
-    """Get all settings for the current user's tenant. Returns every key
-    from the ``setting_definitions`` catalog, typed, with the catalog
-    default filled in for any key the tenant hasn't overridden."""
+    """Get every setting for the tenant; falls back to catalog defaults."""
     from app.core.tenant_settings import get_all_settings
 
     if current_user.tenant_id is None:
@@ -347,9 +331,7 @@ async def get_tenant_settings_catalog(
     current_user: User = Depends(require_role("ADMIN")),
     db: AsyncSession = Depends(get_tenant_db),
 ) -> list:
-    """Return the full setting-definition catalog — type, label, description,
-    validation rules, category, sort order. Drives the catalog-based admin
-    settings form on the frontend."""
+    """Return the full setting-definition catalog used by the admin settings form."""
     from app.core.tenant_settings import get_catalog
 
     return await get_catalog(db)
@@ -374,9 +356,7 @@ async def update_tenant_settings(
     current_user: User = Depends(require_role("ADMIN")),
     db: AsyncSession = Depends(get_tenant_db),
 ) -> dict:
-    """Upsert one or more settings for the current user's tenant. Each
-    key is validated against the ``setting_definitions`` catalog before
-    write; unknown keys or values that fail validation return 422."""
+    """Upsert tenant settings; validated against the catalog (422 on failure)."""
     from app.core.tenant_settings import set_setting
 
     await shadow_check(
@@ -474,9 +454,7 @@ async def resend_verification_email_endpoint(
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> MessageResponse:
-    """Admin resends the verification email for an unverified user. Generates a
-    fresh temp password and a fresh verification token — the previous email is
-    invalidated. Blocked for already-verified users."""
+    """Admin resends a verification email; rotates temp password + token."""
     user = await get_user_by_id(db, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -492,17 +470,12 @@ async def resend_verification_email_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot send verification: user account is inactive",
         )
-    # External users never log in; the verification flow doesn't apply
-    # to them. Refuse explicitly so an admin doesn't send a confusing
-    # invitation email to someone who only exists for ingestion mapping.
     if user.is_external:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot send verification: external users do not log in.",
         )
-    # Internal users may have been created without an email (the form
-    # makes it optional). The CRUD synthesizes a placeholder using the
-    # ``.invalid`` reserved TLD; refuse to send to that placeholder.
+    # Refuse the synthesized @local.invalid placeholder used when no email was set.
     if (user.email or "").lower().endswith("@local.invalid"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -543,16 +516,12 @@ async def get_user(
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> User:
-    """
-    Get a specific user by ID.
-    Users can only view themselves unless they are admin.
-    """
+    """Get a user by ID. Users can only view themselves unless they are admin."""
     user = await get_user_by_id(db, user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    # Check access: user can view themselves; admin/platform_admin can view any user in their tenant
     if user_id != current_user.id:
         if current_user.role not in (UserRole.ADMIN, UserRole.PLATFORM_ADMIN):
             raise HTTPException(
@@ -569,14 +538,9 @@ async def create_new_user(
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> dict:
-    """
-    Create a new user.
-    - PLATFORM_ADMIN: can create users in any tenant (tenant_id must be provided in request body).
-    - ADMIN: creates users in their own tenant (tenant_id from JWT, not request body).
-    """
+    """Create a user. PLATFORM_ADMIN passes tenant_id; ADMIN uses their own."""
     from app.crud.user import get_user_by_email, get_user_by_username
 
-    # Prevent ADMIN from escalating to PLATFORM_ADMIN role
     if current_user.role != UserRole.PLATFORM_ADMIN and user_create.role == UserRole.PLATFORM_ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -585,7 +549,6 @@ async def create_new_user(
 
     if current_user.role == UserRole.PLATFORM_ADMIN:
         if user_create.role == UserRole.PLATFORM_ADMIN:
-            # New PLATFORM_ADMIN users have no tenant
             user_create.tenant_id = None
         elif user_create.tenant_id is None:
             raise HTTPException(
@@ -593,11 +556,8 @@ async def create_new_user(
                 detail="tenant_id is required when creating a user as PLATFORM_ADMIN",
             )
     else:
-        # ADMIN: always assign to their own tenant, ignore any tenant_id in body
         user_create.tenant_id = current_user.tenant_id
 
-    # Email + username are optional in UserCreate now. Only check
-    # uniqueness when the admin actually provided a value.
     if user_create.email:
         existing = await get_user_by_email(db, user_create.email)
         if existing:
@@ -614,19 +574,14 @@ async def create_new_user(
                 detail="Username is already taken",
             )
 
-    # Password is always auto-generated — ignore any client-supplied value.
-    user_create.password = None
+    user_create.password = None  # always auto-generated
 
     try:
         from app.services.email_verification import set_verification_token, send_verification_email
         from app.api.platform_settings import get_effective_smtp_config
         new_user, temp_password = await create_user(db, user_create)
 
-        # Decide whether to send a verification email. We send only
-        # when the user is internal AND active AND the admin actually
-        # provided a real email address (no synthetic placeholder).
-        # Externals never log in; internals without an email get a
-        # follow-up prompt when the admin patches an email later.
+        # Verification email only goes to internal+active users with a real email.
         provided_real_email = bool(user_create.email)
         send_verification = (
             new_user.is_active
@@ -640,16 +595,14 @@ async def create_new_user(
             db.add(new_user)
         await db.commit()
 
-        # Re-fetch with eager-loaded relationships so serialisation works
+        # Re-fetch with eager-loaded relationships so serialisation works.
         new_user = await get_user_by_id(db, new_user.id)
 
-        # Resolve SMTP config and tenant name while DB session is open
         smtp_config = await get_effective_smtp_config(db)
         tenant_name: str | None = None
         if new_user.tenant_id is not None:
             tenant = await get_tenant(db, new_user.tenant_id)
             tenant_name = tenant.name if tenant else None
-        # Check if tenant has an active OAuth mailbox so the subject can be set correctly
         via_tenant_oauth = False
         if new_user.tenant_id is not None:
             from app.services.tenant_email_service import _get_active_oauth_mailbox
@@ -731,11 +684,7 @@ async def update_user_endpoint(
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ) -> User:
-    """
-    Update a user.
-    - Admins can update any user.
-    - Manager chain roles can update project access for employees in their reporting tree.
-    """
+    """Update a user. Admins update any user; managers may set project access for reports."""
     user = await get_user_by_id(db, user_id)
     if not user:
         raise HTTPException(
@@ -749,7 +698,6 @@ async def update_user_endpoint(
                 detail="Tenant admins cannot assign the PLATFORM_ADMIN role",
             )
 
-        # Capture deactivation before updating (for outbound webhook)
         was_active = user.is_active
         previous_role = user.role
         previous_manager_id = user.manager_id
@@ -971,16 +919,13 @@ async def delete_user_endpoint(
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
 ) -> None:
-    """
-    Delete a user (Admin or PLATFORM_ADMIN only).
-    """
+    """Delete a user (Admin or PLATFORM_ADMIN only)."""
     user = await get_user_by_id(db, user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     require_same_tenant(user.tenant_id, current_user)
 
-    # Capture details before deletion
     deleted_user_name = user.full_name
     deleted_user_email = user.email
     deleted_user_role = user.role.value
@@ -991,7 +936,6 @@ async def delete_user_endpoint(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    # Audit: user deleted
     await record_activity_events(db, [build_activity_event(
         activity_type="USER_DELETED",
         visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,

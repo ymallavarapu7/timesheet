@@ -21,22 +21,8 @@ DEFAULT_MAX_FAILED_ATTEMPTS = 5
 DEFAULT_LOCKOUT_DURATION_MINUTES = 15
 
 
-# ─────────── JWT payload helpers (Phase 3.B) ───────────
-# Tokens carry a `realm` claim (`tenant` for tenant users,
-# `platform` for platform admins) and a `tenant_slug` claim that the
-# request pipeline uses to resolve the right per-tenant DB engine.
-# Tokens minted before 3.B have neither claim; the auth pipeline treats
-# missing values as `realm=tenant` and resolves the tenant DB through
-# the legacy single-DB path. This keeps existing sessions valid across
-# the upgrade.
 async def _resolve_tenant_slug(db: AsyncSession, tenant_id: int | None) -> str | None:
-    """Look up the slug for a tenant_id.
-
-    Reads from the legacy ``tenants`` table that still lives in the
-    tenant DB during the 3.B → 3.C transition. Once 3.C is complete
-    and the legacy table is dropped, the lookup moves to the control
-    plane. Returns None when there's no tenant (platform admins).
-    """
+    """Look up the slug for a tenant_id; None for platform admins."""
     if tenant_id is None:
         return None
     from sqlalchemy import text
@@ -56,15 +42,11 @@ def _build_token_payload(
     tenant_slug: str | None,
     active_role: str | None = None,
 ) -> dict:
-    """Assemble the JWT payload for both access and refresh tokens.
+    """Assemble the JWT payload for access and refresh tokens.
 
-    Single source of truth so login + refresh always agree on the
-    claim shape. ``realm`` is the boundary marker; ``tenant_slug`` is
-    what the per-request tenant resolver consumes. ``active_role`` is
-    the per-token role for multi-role users; it lets two tabs of the
-    same user act as different roles independently. Tokens minted
-    before this claim existed are treated as "active_role unset"
-    by get_current_user, which falls back to the DB row's role column.
+    Single source of truth so login + refresh agree on claim shape.
+    ``active_role`` is the per-token role for multi-role users; lets
+    two tabs of the same user act as different roles independently.
     """
     payload = {
         "sub": str(user_id),
@@ -172,18 +154,11 @@ async def login(
     login_request: LoginRequest,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    Login with email and password, return JWT tokens.
-    Account is locked for 15 minutes after 5 consecutive failed attempts.
+    """Login with email + password; return JWT tokens.
 
-    Phase 3.B: platform-admin accounts authenticate against the
-    control-plane database. We try that path first; on miss, fall
-    through to the per-tenant ``users`` table. This means the same
-    email cannot be both a platform admin and a tenant user (which
-    matches the model anyway — platform admins are intentionally
-    separate identities).
+    Account locks for 15 min after 5 consecutive failed attempts.
+    Platform admins authenticate against the control plane first.
     """
-    # Try platform-admin auth first (control plane).
     from app.db_control import AsyncControlSessionLocal
     from app.models.control import PlatformAdmin
     async with AsyncControlSessionLocal() as control_db:
@@ -202,9 +177,6 @@ async def login(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User account is inactive",
             )
-        # Mint platform-realm token. ``sub`` is the platform admin's
-        # control-plane id, NOT any legacy users.id. tenant_id and
-        # tenant_slug are null for the platform realm.
         pa_payload = _build_token_payload(
             user_id=pa_row.id,
             tenant_id=None,
@@ -214,11 +186,8 @@ async def login(
         )
         pa_access = create_access_token(pa_payload)
         pa_refresh, pa_jti, pa_expires = create_refresh_token(pa_payload)
-        # Refresh tokens for platform admins live in the control plane
-        # too — but the existing RefreshToken model is bound to the
-        # tenant DB. For 3.B we simply don't persist platform-admin
-        # refresh tokens; refresh keeps working from the JWT signature
-        # alone and a future tightening will add control-plane storage.
+        # Platform-admin refresh tokens are not persisted yet; refresh
+        # works from the JWT signature alone.
         return {
             "access_token": pa_access,
             "refresh_token": pa_refresh,
@@ -246,11 +215,8 @@ async def login(
             },
         }
 
-    # Find user. Login is JWT-less so we don't yet know the tenant
-    # slug; we look up by email in the shared DB, then if the tenant
-    # has been cut over to its own database (Phase 3.C, is_isolated=
-    # True), we re-fetch from the per-tenant DB which is the source of
-    # truth for password hash, lockout counters, and refresh tokens.
+    # Look up by email in shared DB, then re-fetch from the tenant DB
+    # if the tenant is isolated (source of truth for password + lockout).
     user = await get_user_by_email(db, login_request.email)
 
     if not user:
@@ -259,9 +225,6 @@ async def login(
             detail="Invalid email or password",
         )
 
-    # Resolve tenant slug now so subsequent reads/writes can route to
-    # the per-tenant DB when applicable. Returns None for PLATFORM_ADMIN
-    # and pre-3.B sessions.
     tenant_slug = await _resolve_tenant_slug(db, user.tenant_id)
     use_tenant_db = bool(tenant_slug)
 
@@ -289,8 +252,6 @@ async def login(
     # Verify password
     if not verify_password(login_request.password, user.hashed_password):
         max_attempts, lockout_minutes = await _lockout_policy(db, user.tenant_id)
-        # Increment lockout counters in the right database. Per-tenant
-        # when isolated; shared otherwise.
         if use_tenant_db:
             from app.db_tenant import tenant_session
             async with tenant_session(tenant_slug) as tenant_db:
@@ -343,10 +304,6 @@ async def login(
             detail="EMAIL_NOT_VERIFIED",
         )
 
-    # Create tokens — include tenant_id so the server can verify it on
-    # each request. tenant_id is None for PLATFORM_ADMIN users; the
-    # `realm` + `tenant_slug` claims drive per-tenant DB resolution
-    # added in Phase 3.B.
     realm = "platform" if user.role == UserRole.PLATFORM_ADMIN else "tenant"
     token_payload = _build_token_payload(
         user_id=user.id,
@@ -358,9 +315,6 @@ async def login(
     access_token = create_access_token(token_payload)
     refresh_token, jti, expires_at = create_refresh_token(token_payload)
 
-    # Reset lockout counters + persist the refresh token + audit event
-    # in the right database. Per-tenant when the user lives in an
-    # isolated tenant DB; shared otherwise.
     if use_tenant_db:
         from app.db_tenant import tenant_session
         async with tenant_session(tenant_slug) as tenant_db:
@@ -399,9 +353,8 @@ async def login(
             route="/auth/login",
         )])
 
-    # Re-fetch user with eager-loaded relationships so response serialisation
-    # doesn't hit expired attributes after the commits above. The per-
-    # tenant DB is the source of truth post-cutover.
+    # Re-fetch with eager loads so response serialization doesn't hit
+    # expired attributes after the commits above.
     if tenant_slug:
         from app.db_tenant import tenant_session
         try:
@@ -431,15 +384,7 @@ async def refresh_token(
     body: RefreshRequest | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Refresh access token using a refresh token from request body.
-
-    Single-use rotation under contention: we lock the stored row with
-    SELECT ... FOR UPDATE and revoke + insert in the same transaction
-    so two concurrent refreshes can't both succeed against the same
-    JTI. The runner-up either sees revoked=True (and gets 401) or
-    blocks until the first transaction commits and then sees the
-    revoked row.
-    """
+    """Refresh access token; single-use rotation with FOR UPDATE row lock."""
     from app.core.security import decode_token
     from app.crud.user import get_user_by_id
     from app.db_tenant import tenant_session
@@ -459,16 +404,12 @@ async def refresh_token(
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
 
-    # Phase 3.C: refresh tokens for an isolated tenant live in the
-    # per-tenant DB. Pick the right session up front so all of the
-    # check, the revocation, and the new-token insert happen in one
-    # database — and one transaction.
+    # Refresh tokens for an isolated tenant live in the per-tenant DB,
+    # so check/revoke/insert all happen in one transaction.
     use_tenant_db = bool(token_tenant_slug)
 
     async def _do_refresh(session: AsyncSession) -> tuple[User, str, str, datetime]:
-        """Run the lock + revoke + insert sequence atomically on the
-        given session. Returns (user, access_token, new_refresh_token,
-        new_expires_at) on success, raises HTTPException on rejection."""
+        """Lock + revoke + insert on the given session, atomically."""
         if jti:
             stored = (await session.execute(
                 select(RefreshToken)
@@ -491,10 +432,8 @@ async def refresh_token(
             )
 
         realm = "platform" if user.role == UserRole.PLATFORM_ADMIN else "tenant"
-        # Carry forward active_role when present so multi-role users
-        # don't get downgraded to their primary role on every refresh.
-        # The claim is re-validated against user.roles by
-        # get_current_user on the next request.
+        # Carry forward active_role so multi-role users don't get
+        # downgraded; re-validated against user.roles on next request.
         token_payload = _build_token_payload(
             user_id=user.id,
             tenant_id=user.tenant_id,
@@ -531,9 +470,7 @@ async def refresh_token(
 async def get_current_user_info(
     current_user: User = Depends(get_current_user),
 ) -> User:
-    """
-    Get current authenticated user info.
-    """
+    """Return the current authenticated user."""
     return current_user
 
 
@@ -544,23 +481,13 @@ async def change_password(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """
-    Change the current user's password.
-
-    Side effect: revokes every refresh token the user holds so any old
-    session (a tab the user forgot was logged in, a stolen device,
-    etc.) is invalidated. The current tab keeps working until its
-    access token's natural expiry; the next refresh attempt will fail
-    and the tab is forced back to login.
-    """
-    # Verify current password
+    """Change password and revoke all of the user's refresh tokens."""
     if not verify_password(change_password_request.current_password, current_user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Current password is incorrect",
         )
 
-    # Enforce password policy
     from app.core.password_policy import validate_password
     error = validate_password(change_password_request.new_password)
     if error:
@@ -571,9 +498,6 @@ async def change_password(
 
     new_hash = get_password_hash(change_password_request.new_password)
 
-    # Phase 3.C: write the new password and revoke refresh tokens in
-    # the right database. Per-tenant DB when the caller's token carries
-    # a slug; legacy shared DB otherwise.
     auth_hdr = request.headers.get("authorization", "")
     token_tenant_slug: str | None = None
     if auth_hdr.lower().startswith("bearer "):
@@ -591,10 +515,6 @@ async def change_password(
             target.hashed_password = new_hash
             target.has_changed_password = True
             tenant_db.add(target)
-            # M1: revoke every active refresh token so old sessions
-            # can't survive a password change. The current tab's
-            # access token continues working until its short TTL
-            # elapses; the next refresh fails and bounces to login.
             await tenant_db.execute(
                 update(RefreshToken)
                 .where(
@@ -693,10 +613,7 @@ async def verify_email(
     body: VerifyEmailRequest,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    Verify a user's email address using the token from the verification email.
-    Also marks has_changed_password=True (password was set during verification).
-    """
+    """Verify the user's email via the token from the verification email."""
     from sqlalchemy import select
     from app.services.email_verification import mark_email_verified
     from datetime import timezone
@@ -710,8 +627,7 @@ async def verify_email(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired verification token")
 
     if user.email_verified:
-        # Idempotent return — a user who hits refresh during the set-password
-        # step shouldn't be kicked out with an "invalid token" error.
+        # Idempotent: a user hitting refresh during set-password shouldn't 401.
         return {"message": "Email already verified", "email": user.email}
 
     if user.email_verification_token_expires_at and user.email_verification_token_expires_at < datetime.now(timezone.utc):
@@ -728,10 +644,7 @@ async def resend_verification(
     body: ResendVerificationRequest,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    Resend the account verification email. Admin-initiated action or self-service.
-    Rate-limited to prevent abuse.
-    """
+    """Resend the account verification email. Rate-limited."""
     from app.services.email_verification import set_verification_token, send_verification_email
     from app.crud.user import get_user_by_email
 
@@ -740,8 +653,6 @@ async def resend_verification(
     if not user or user.email_verified:
         return {"message": "If that email exists and is unverified, a new link has been sent."}
 
-    # Generate a new token and a placeholder temp-password note
-    # (the original temp password is unknown after creation; user must use forgot-password if they lost it)
     token = set_verification_token(user)
     db.add(user)
     await db.commit()
@@ -795,12 +706,6 @@ async def admin_revoke_user_tokens(
     return {"message": f"All sessions revoked for user {target_user.full_name}"}
 
 
-# ─────────── In-tab role switch (multi-role users) ───────────
-# Replaces the cross-portal handoff for users with multiple roles in
-# a single account. The switch flips users.role to the chosen value
-# (which must already be in users.roles), mints a fresh access +
-# refresh pair, and returns it. Frontend swaps the new tokens into
-# sessionStorage and re-renders.
 @router.post("/switch-role", response_model=TokenResponse)
 @limiter.limit("30/minute")
 async def switch_role(
@@ -809,22 +714,14 @@ async def switch_role(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """Flip the current user's active role and return fresh tokens.
-
-    The requested role must be present in current_user.roles. Tenant
-    users land their write through the per-tenant DB so post-cutover
-    isolated tenants stay consistent; legacy shared-DB tenants fall
-    through to the legacy path.
-    """
+    """Flip the current user's active role and return fresh tokens."""
     from app.db_tenant import tenant_session
 
     requested_role_value = body.role.value if hasattr(body.role, "value") else str(body.role)
     allowed = list(current_user.roles or [])
 
     if not allowed:
-        # Defensive: if a user predates the multi-role rollout and we
-        # haven't backfilled their row yet, fall back to the active
-        # role as the only allowed value.
+        # Pre-multi-role rows fall back to the active role.
         allowed = [
             current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
         ]
@@ -843,8 +740,6 @@ async def switch_role(
             detail="User is already acting as that role.",
         )
 
-    # Update users.role inside the right database. Per-tenant DB if the
-    # caller's token carries a slug; shared DB otherwise.
     auth_hdr = request.headers.get("authorization", "")
     token_tenant_slug: str | None = None
     if auth_hdr.lower().startswith("bearer "):
@@ -918,13 +813,6 @@ async def switch_role(
     }
 
 
-# ─────────── Role handoff (open the other portal in a new tab) ───────────
-# Multi-role users get a chip in the topbar that opens the other portal
-# in a new tab. The new tab needs its own independent session (its own
-# access token, its own refresh token JTI) so logging out of one tab
-# doesn't log out the other. We mint a short-lived nonce-bound JWT,
-# pass it to the new tab via the URL query string, and have the new
-# tab exchange it for a real session.
 @router.post("/role-handoff", response_model=RoleHandoffIssueResponse)
 @limiter.limit("30/minute")
 async def issue_role_handoff(
@@ -933,9 +821,7 @@ async def issue_role_handoff(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """Mint a short-lived role-handoff token for the current user. The
-    token lets the new tab open its own session for the same user with
-    the requested role active."""
+    """Mint a short-lived role-handoff token for opening another portal in a new tab."""
     from app.services.handoff import issue_role_handoff_token
 
     requested_role_value = body.role.value if hasattr(body.role, "value") else str(body.role)
@@ -988,10 +874,7 @@ async def exchange_role_handoff(
     body: RoleHandoffExchangeRequest,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Redeem a role-handoff token. Flips the user's active role to
-    the bound target and returns a fresh access + refresh pair. The
-    nonce is single-use; the resulting refresh token JTI is unique to
-    this new session so logging out won't affect the originating tab."""
+    """Redeem a role-handoff token; returns a fresh access + refresh pair."""
     from app.services.handoff import redeem_role_handoff_token
     from app.db_tenant import tenant_session
 
@@ -1005,8 +888,6 @@ async def exchange_role_handoff(
             detail=str(exc),
         )
 
-    # Pull the user from the per-tenant DB if known; the linkage
-    # invariant (target_role in user.roles) lives there post-cutover.
     if target_tenant_slug:
         async with tenant_session(target_tenant_slug) as tenant_db:
             target = (await tenant_db.execute(
@@ -1029,13 +910,11 @@ async def exchange_role_handoff(
             target.role.value if hasattr(target.role, "value") else str(target.role)
         ]
     if target_role_value not in allowed:
-        # Linkage changed between issue and exchange.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User is no longer authorized for that role.",
         )
 
-    # Coerce to the enum so the SQLAlchemy column accepts it.
     try:
         new_role_enum = UserRole(target_role_value)
     except ValueError:
@@ -1045,12 +924,9 @@ async def exchange_role_handoff(
         )
 
     realm = "platform" if new_role_enum == UserRole.PLATFORM_ADMIN else "tenant"
-    # The JWT's active_role claim is what makes this new tab's session
-    # independent: each tab carries its own active role on its access
-    # token, so flipping a role in one tab doesn't change the other.
-    # We deliberately do NOT update users.role on disk here; that
-    # column is the *most recent explicit choice* and is set by login
-    # or /auth/switch-role, not by a side-channel handoff.
+    # active_role on the token gives this tab its own session, independent
+    # from the originating tab. Don't write users.role here — that column
+    # is the user's last *explicit* choice (login or /auth/switch-role).
     payload = _build_token_payload(
         user_id=target.id,
         tenant_id=target.tenant_id,
@@ -1092,9 +968,7 @@ async def exchange_role_handoff(
         )])
         target = await get_user_by_email(db, target.email)
 
-    # Surface the active role on the response user payload so the
-    # frontend can render the correct portal immediately (it would
-    # otherwise read the DB column via the relationship loader).
+    # Surface active role on response so the frontend renders the right portal.
     target.role = new_role_enum
 
     return {

@@ -98,11 +98,7 @@ export const authAPI = {
   switchRole: (role: UserRole) =>
     apiClient.post<TokenResponse>('/auth/switch-role', { role }),
 
-  // Multi-role new-tab handoff. Mints a short-lived token bound to
-  // the requested role; the new tab redeems it via roleHandoffExchange
-  // for an independent session. Two tabs of the same user can hold
-  // different active roles simultaneously because the active role
-  // travels in the JWT, not the DB row.
+  // Mint a short-lived token; new tab redeems it for an independent session.
   roleHandoffIssue: (role: UserRole) =>
     apiClient.post<{ handoff_token: string; target_role: UserRole }>('/auth/role-handoff', { role }),
 

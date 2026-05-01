@@ -31,29 +31,11 @@ async def get_tenant_db(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
-    """FastAPI dependency: yield a session bound to the caller's
-    tenant database.
+    """Yield a session bound to the caller's tenant database.
 
-    Resolution order:
-      1. ``X-Tenant-Slug`` header. Only honored for ``realm=platform``
-         tokens (platform admins acting as a tenant). Tenant-realm
-         tokens ignore the header to prevent tenant escape.
-      2. ``tenant_slug`` claim on the JWT.
-      3. Legacy fallback when no slug is resolvable (tokens minted
-         before 3.B): use the shared ``app.db.get_db`` session. Phase
-         3.C+ removes this path once every issued token has a slug.
-
-    Resolver behavior (Phase 3.C): ``app.db_tenant`` reads the
-    control-plane ``tenants`` row. When ``is_isolated=True`` and a
-    ``db_name`` is set, the session binds to the per-tenant database;
-    otherwise it binds to the shared ``timesheet_db``. While
-    ``is_isolated`` stays False on every tenant, swapping
-    ``Depends(get_db)`` to ``Depends(get_tenant_db)`` is a behavioral
-    no-op.
-
-    Routes that operate on cross-tenant data (tenants directory,
-    platform settings, system health) should depend on
-    ``app.db_control.get_control_db`` instead.
+    Platform-realm tokens must pass ``X-Tenant-Slug``; tenant-realm
+    tokens use the ``tenant_slug`` JWT claim. Falls back to the shared
+    DB when no slug is resolvable.
     """
     payload = _decode_or_raise(credentials)
     realm = payload.get("realm", "tenant")
@@ -142,17 +124,12 @@ async def get_current_user(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # Extract tenant_id from token — may be None for PLATFORM_ADMIN
         token_tenant_id = payload.get("tenant_id")
         token_realm = payload.get("realm", "tenant")
 
-        # Phase 3.B: realm-aware lookup. Platform-admin tokens load
-        # against the control plane and return a synthetic ``User``-
-        # shaped record so existing routes that read scalar columns
-        # off ``current_user`` continue to work unchanged. The adapter
-        # is intentionally not bound to either session — every code
-        # path we audited reads columns only, never relationships, so
-        # a detached object is sufficient.
+        # Platform tokens load from the control plane and return a
+        # detached User-shaped adapter. Routes only read scalar columns
+        # off current_user, so the lack of session binding is fine.
         if token_realm == "platform":
             from app.db_control import AsyncControlSessionLocal
             from app.models.control import PlatformAdmin
@@ -210,13 +187,8 @@ async def get_current_user(
                 detail="Inactive user",
             )
 
-        # Phase 3.C: when the token carries a tenant_slug, the per-tenant
-        # database is the source of truth for the user row. Reload from
-        # the tenant DB so columns written there (profile edits, roles
-        # array changes, etc.) are visible. Without this refresh,
-        # get_current_user would serve stale values from the legacy
-        # shared DB. Tokens minted before 3.B (no tenant_slug) keep the
-        # legacy single-DB path.
+        # When the token has a tenant_slug, the per-tenant DB is the
+        # source of truth — refresh from there so writes are visible.
         token_tenant_slug = payload.get("tenant_slug")
         if token_tenant_slug:
             from app.db_tenant import tenant_session
@@ -231,12 +203,9 @@ async def get_current_user(
                     token_tenant_slug, user_id, exc,
                 )
 
-        # Multi-role support: when the token carries an active_role
-        # claim, that's the role this request is acting as (independent
-        # of users.role on disk). The claim must still be inside the
-        # user's allowed roles list — a token cannot grant a role the
-        # user isn't authorized for. Tokens minted before this feature
-        # have no claim and fall through to the DB column.
+        # active_role on the token is the role this request acts as.
+        # Must still be in the user's allowed roles — a token cannot
+        # grant a role the user isn't authorized for.
         token_active_role = payload.get("active_role")
         if token_active_role:
             allowed_roles = list(user.roles or [])
@@ -264,9 +233,7 @@ async def get_current_user(
                     headers={"WWW-Authenticate": "Bearer"},
                 )
 
-        # Verify the tenant_id encoded in the token matches what is in the DB.
-        # This prevents a token issued before a user was moved between tenants
-        # from being used with the wrong tenant context.
+        # Reject tokens minted before a tenant move.
         if user.tenant_id != token_tenant_id:
             logger.warning(
                 f"User {user_id} tenant mismatch: token={token_tenant_id}, db={user.tenant_id}"
@@ -291,10 +258,7 @@ async def get_current_user(
 
 
 def require_role(*allowed_roles: str):
-    """
-    Dependency to check if user has one of the allowed roles.
-    Usage: Depends(require_role("ADMIN"))
-    """
+    """Dependency: 403 unless user has one of the allowed roles."""
     async def role_checker(current_user: User = Depends(get_current_user)) -> User:
         if current_user.role.value not in allowed_roles:
             raise HTTPException(
@@ -307,10 +271,9 @@ def require_role(*allowed_roles: str):
 
 
 def require_same_tenant(resource_tenant_id: int, current_user: User) -> None:
-    """
-    Raise 403 if the resource does not belong to the current user's tenant.
-    PLATFORM_ADMIN bypasses this check and can access any tenant's resources.
-    Call this inside route handlers after fetching a resource by ID.
+    """Raise 403 unless the resource belongs to the user's tenant.
+
+    PLATFORM_ADMIN bypasses.
     """
     if current_user.role == UserRole.PLATFORM_ADMIN:
         return
@@ -329,14 +292,7 @@ async def get_service_token_tenant(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> tuple[int, ServiceToken]:
-    """
-    Dependency for sync endpoints.
-    Reads X-Service-Token and X-Tenant-ID headers.
-    Validates the token against stored hashes for the given tenant.
-    Returns (tenant_id, service_token_record).
-
-    Raises 401 if token is missing, invalid, or inactive.
-    """
+    """Validate X-Service-Token + X-Tenant-ID; return (tenant_id, token)."""
     raw_token = request.headers.get(SERVICE_TOKEN_HEADER)
     tenant_id_header = request.headers.get(SERVICE_TENANT_HEADER)
 
@@ -354,11 +310,8 @@ async def get_service_token_tenant(
             detail="X-Tenant-ID must be an integer",
         )
 
-    # Token format: ``<token_id>.<secret>`` for new-format tokens. We
-    # look up by the indexed token_id (one row), then bcrypt-verify
-    # only the secret. Legacy tokens (no dot) fall through to the
-    # historical loop-and-compare path so existing deployments keep
-    # working until they rotate.
+    # New format: <token_id>.<secret>, indexed lookup.
+    # Legacy tokens (no dot) fall through to the bcrypt sweep below.
     token_id, secret = split_service_token(raw_token)
     matched_token: ServiceToken | None = None
 
@@ -373,9 +326,6 @@ async def get_service_token_tenant(
         if stored is not None and verify_service_token(secret, stored.token_hash):
             matched_token = stored
     else:
-        # Legacy fallback: pre-041 tokens have no token_id. Sweep the
-        # active tokens for this tenant. Slow with many tokens, but
-        # only fires for un-rotated legacy tokens.
         result = await db.execute(
             select(ServiceToken).where(
                 (ServiceToken.tenant_id == tenant_id) &
@@ -406,12 +356,7 @@ async def get_service_token_tenant(
 
 
 def get_tenant_id(current_user: User = Depends(get_current_user)) -> int:
-    """
-    Return the current user's tenant_id.
-    Use as a dependency in route handlers that need the tenant scope without
-    repeating the check inline.
-    Raises 403 if a non-PLATFORM_ADMIN user somehow has no tenant assignment.
-    """
+    """Return the current user's tenant_id (403 if unset for non-platform)."""
     if current_user.tenant_id is None and current_user.role != UserRole.PLATFORM_ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -424,19 +369,7 @@ def get_tenant_slug(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> str:
-    """Return the caller's tenant slug.
-
-    Mirrors ``get_tenant_db``'s slug-resolution rules so workers
-    enqueued from a route can pass the slug into the job payload
-    without paying a control-plane lookup later. Tenant-realm tokens
-    use the ``tenant_slug`` JWT claim; platform-realm tokens require
-    the ``X-Tenant-Slug`` header (so a platform admin acting on a
-    tenant must declare which one).
-
-    Raises 400 for platform-realm without header, 401 for invalid
-    token, 403 for tenant-realm tokens missing the slug claim
-    (which would only happen on tokens minted before 3.B).
-    """
+    """Return the caller's tenant slug (mirrors ``get_tenant_db``'s rules)."""
     payload = _decode_or_raise(credentials)
     realm = payload.get("realm", "tenant")
     if realm == "platform":
@@ -463,9 +396,7 @@ async def require_ingestion_enabled(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_tenant_db),
 ) -> User:
-    """
-    Verify the current user's tenant has ingestion enabled.
-    """
+    """Verify the current user's tenant has ingestion enabled."""
     from app.models.tenant import Tenant
 
     if current_user.tenant_id is None:
@@ -489,12 +420,9 @@ async def require_ingestion_enabled(
 async def require_can_review(
     current_user: User = Depends(get_current_user),
 ) -> User:
-    """
-    Verify the current user can access the reviewer inbox.
+    """Verify the user can access the reviewer inbox.
 
-    Admin is intentionally excluded: a user who is both an admin and a
-    reviewer logs in with their manager account for review work. The
-    admin portal carries admin duties only.
+    Admin is excluded: admins switch to their manager role for review work.
     """
     if current_user.role == UserRole.ADMIN:
         raise HTTPException(

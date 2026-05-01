@@ -83,11 +83,7 @@ class TimeEntry(Base, TimestampMixin):
     ingestion_source_tenant: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
     )
-    # Supervisor name carried forward from IngestionTimesheet at approval
-    # time. Free-form string (the supervisor on a timesheet is typically
-    # someone at the client, not a tenant user, so no FK). Nullable for
-    # manual time entries and for ingestion entries where no supervisor
-    # was extractable from the source document.
+    # Free-form supervisor name (typically a client contact, no FK).
     supervisor_name: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
     )

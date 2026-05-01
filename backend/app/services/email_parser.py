@@ -153,17 +153,9 @@ class ParsedEmail(NamedTuple):
     # Otherwise both are None and callers should use sender_email/name.
     forwarded_from_email: str | None = None
     forwarded_from_name: str | None = None
-    # Every distinct (name, email) pair we could pull from the forward chain:
-    # nested message/rfc822 parts and body-quoted 'From:' lines. Used by the
-    # ingestion pipeline to offer reviewers a list of likely employee names
-    # when no existing user matches the outer sender — see
-    # ingestion_pipeline._resolve_chain_candidates. Empty tuple for emails
-    # that aren't recognizable forwards or pure reply chains.
-    #
-    # Declared as an empty tuple (not []) because NamedTuple evaluates
-    # defaults once at class definition; a mutable list would be shared
-    # across every instance without a default_factory (which NamedTuple
-    # doesn't support). Callers coerce to list when they need mutability.
+    # (name, email) pairs from the forward chain; reviewers pick from these
+    # when no user matches the outer sender. Tuple default because NamedTuple
+    # shares a mutable default across instances.
     chain_senders: tuple[dict, ...] = ()
 
 

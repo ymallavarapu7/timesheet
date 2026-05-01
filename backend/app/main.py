@@ -95,12 +95,7 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     if not settings.debug:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    # Default Content-Security-Policy: lock down what the API can serve.
-    # The API is a JSON service for the most part; the only HTML it renders
-    # is the OAuth popup at /auth/oauth/callback/{provider}, which sets a
-    # relaxed policy for itself (inline script needed to postMessage back
-    # to the opener). Any other endpoint that ever returns HTML inherits
-    # this strict default unless it explicitly overrides.
+    # Strict default CSP; OAuth popup overrides for postMessage inline script.
     if "content-security-policy" not in {h.lower() for h in response.headers}:
         response.headers["Content-Security-Policy"] = (
             "default-src 'none'; "

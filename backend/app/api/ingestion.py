@@ -1204,11 +1204,7 @@ async def assign_chain_candidate(
     if existing_user is not None:
         employee_id = existing_user.id
     else:
-        # No existing user matched. To create a new user we need a real
-        # email — the users.email column is NOT NULL and the whole point
-        # of this feature is to avoid planting dummy/placeholder rows.
-        # If the reviewer picked a name-only candidate without an email,
-        # ask them for one rather than inventing one.
+        # users.email is NOT NULL; refuse to invent a placeholder.
         if not raw_email:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1623,11 +1619,8 @@ async def reject_timesheet(
     )
     await session.commit()
 
-    # Send rejection notification email to the contractor. If the sender
-    # matches a User in this tenant who has been deactivated, skip the email
-    # — telling an offboarded user to "correct and resubmit" is noise. Unknown
-    # senders (no matching User row) still get the reply, which is the normal
-    # case for external contractors who don't have an account.
+    # Skip the rejection email when the sender is a deactivated User —
+    # "correct and resubmit" is noise for an offboarded user.
     try:
         from app.services.email_service import send_email
         email_result = await session.execute(

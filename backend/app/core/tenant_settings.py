@@ -104,11 +104,8 @@ def _coerce_stored_value(raw: Optional[str], defn: SettingDefinition) -> Any:
         return _coerce_python_value(_default_as_python(defn), defn)
 
     dtype = defn.data_type
-    # First try JSON. Values written by the new accessor are json.dumps'd so
-    # booleans, ints, floats and strings all round-trip safely. Values
-    # written by the legacy code path are ``str(value)`` which for most
-    # scalar types is also valid JSON (``"5"``, ``"true"`` is NOT valid JSON
-    # but ``True`` → ``"True"``, which we handle below).
+    # New writes are json.dumps'd; legacy writes use str() which mostly
+    # round-trips through JSON (bare-word legacy fallback is below).
     try:
         parsed = json.loads(raw)
         return _coerce_python_value(parsed, defn)

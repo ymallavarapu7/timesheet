@@ -1,13 +1,8 @@
 """Control-plane database engine and session factory.
 
-The control plane holds cross-tenant data: the tenants directory,
-platform-admin accounts, platform settings, and the provisioning audit
-log. It lives in its own Postgres database so a bug in tenant routing
-cannot leak tenant data into the cross-tenant tables (or vice versa).
-
-Phase 3.A introduces this module alongside the existing `app/db.py`,
-which still backs every tenant resource. Phase 3.B+ will add a
-per-tenant registry on top of `app/db.py`'s engine pattern.
+Holds cross-tenant data (tenants, platform admins, platform settings,
+provisioning audit). Separate from per-tenant DBs to prevent routing
+bugs from leaking data across the boundary.
 """
 from __future__ import annotations
 

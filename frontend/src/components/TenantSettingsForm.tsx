@@ -1,17 +1,5 @@
-/**
- * Catalog-driven tenant-settings form.
- *
- * Reads the ``setting_definitions`` catalog from the backend and renders
- * each setting with a widget appropriate to its ``data_type``, grouped by
- * category and ordered by ``sort_order``. All submissions go through the
- * same ``PATCH /users/tenant-settings`` endpoint as the legacy form in
- * ``AdminSettingsPage``, which now validates against the same catalog
- * server-side.
- *
- * Rendered side-by-side with the legacy form during rollout. When this
- * form is verified in production, the legacy form (and the
- * ``toStringish`` shim in ``AdminSettingsPage``) should be removed.
- */
+// Catalog-driven tenant-settings form. Renders setting_definitions
+// from the backend and writes via PATCH /users/tenant-settings.
 import React, { useEffect, useMemo, useState } from 'react';
 
 import {

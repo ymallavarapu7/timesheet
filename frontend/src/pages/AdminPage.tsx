@@ -393,11 +393,7 @@ export const AdminPage: React.FC = () => {
     setRoleFilter(nextRole === 'EMPLOYEE' || nextRole === 'MANAGER' || nextRole === 'SENIOR_MANAGER' || nextRole === 'CEO' || nextRole === 'ADMIN' || nextRole === 'PLATFORM_ADMIN' ? (nextRole as UserRole) : 'ALL');
     setStatusFilter(nextStatus === 'ACTIVE' || nextStatus === 'INACTIVE' ? nextStatus : 'ALL');
 
-    // Attention sub-filters take precedence over plain status. A
-    // dashboard chip pointing at "12 users without a manager" lands
-    // here with ?status=NO_MANAGER; an unverified-invitations chip
-    // arrives with ?verified=NO. Anything else clears the attention
-    // filter.
+    // Dashboard attention chips: ?status=NO_MANAGER and ?verified=NO.
     if (nextStatus === 'NO_MANAGER') {
       setAttentionFilter('NO_MANAGER');
     } else if (nextVerified === 'NO') {
@@ -645,12 +641,8 @@ export const AdminPage: React.FC = () => {
 
     const isExternal = form.audience === 'external';
 
-    // Detect "admin just added a real email to a user that had none."
-    // Backend synthesizes ``no-email+...@local.invalid`` for users
-    // created without an email. If that's what they had before and the
-    // admin typed a real address now, offer to send the verification
-    // email immediately. Saying no leaves the email on file; the admin
-    // can resend later from the user-management table.
+    // Offer verification email when the admin first adds a real email
+    // (replacing the synthesized @local.invalid placeholder).
     const previousEmail = (editingUser?.email ?? '').toLowerCase();
     const previousWasPlaceholder = previousEmail === '' || previousEmail.endsWith('@local.invalid');
     const emailJustAdded = (
@@ -1690,12 +1682,7 @@ export const AdminPage: React.FC = () => {
                         ))}
                       </select>
                     </div>
-                    {/* Additional roles. Lets the admin grant a single
-                        human access to multiple portals (e.g., admin
-                        who is also a manager). Hidden for primary
-                        roles where it's not meaningful: an EMPLOYEE
-                        rarely needs another portal, and PLATFORM_ADMIN
-                        is its own identity. */}
+                    {/* Additional roles for multi-portal users. */}
                     {form.role !== 'EMPLOYEE' && form.role !== 'PLATFORM_ADMIN' && (
                       <div>
                         <label className="block text-sm font-medium mb-1">

@@ -2,13 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { useTenantSettings, useUpdateTenantSettings } from '@/hooks';
 import { TenantSettingsForm } from '@/components/TenantSettingsForm';
 
-// ─── back-compat coercion ──────────────────────────────────────────────────
-// After the typed settings catalog landed (migration 028), the settings API
-// returns native types — numbers for ``int/float`` settings, booleans for
-// ``bool`` settings, etc. This form was written when everything came back as
-// ``string | null``. Coerce to a string here so the existing state variables
-// keep working without a full rewrite.
-// TODO: remove the old form once TenantSettingsForm is verified in prod.
+// Back-compat: settings API now returns typed values; coerce so the legacy
+// string-based form keeps working. TODO: drop with the legacy form.
 const toStringish = (v: unknown): string | null => {
   if (v == null) return null;
   if (typeof v === 'boolean') return v ? 'true' : 'false';
@@ -433,13 +428,7 @@ export const AdminSettingsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* ─── Catalog-driven settings form (new, side-by-side during rollout) ───
-          Renders every setting from the ``setting_definitions`` catalog with
-          typed widgets + per-field validation, driven by the backend catalog.
-          The legacy hand-coded form above stays fully functional — both
-          write via the same PATCH endpoint.
-          TODO: once this form is verified in prod, remove the legacy form
-          above (and the ``toStringish`` shim at the top of this file). */}
+      {/* New catalog-driven form (side-by-side rollout). TODO: drop the legacy form. */}
       <div className="mt-8">
         <TenantSettingsForm />
       </div>

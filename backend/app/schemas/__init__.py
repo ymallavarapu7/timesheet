@@ -43,13 +43,8 @@ class TimeOffStatus(str, Enum):
 # ============================================================================
 
 class UserBase(BaseModel):
-    # Plain str (not EmailStr) on the response shape so synthetic
-    # placeholders (``no-email+...@local.invalid`` for users created
-    # without an email) round-trip cleanly. Pydantic's email validator
-    # rejects reserved TLDs like ``.invalid``, ``.local``, ``.test``,
-    # which is correct for inbound deliverable addresses but wrong as
-    # a hard guard on outbound rows. Inbound creation paths still use
-    # ``EmailStr`` (UserCreate) so admin-typed addresses are validated.
+    # Plain str on the response so synthetic @local.invalid placeholders
+    # round-trip; inbound paths still use EmailStr.
     email: str
     username: str = Field(..., min_length=3, max_length=255)
     full_name: str
@@ -64,22 +59,8 @@ class UserBase(BaseModel):
 
 
 class UserCreate(BaseModel):
-    """Admin / platform-admin user creation.
-
-    Only ``full_name`` and ``is_external`` are required. Everything
-    else (email, username, role, title, department, manager,
-    project_ids) is optional. This shape supports the common case
-    where an admin is keeping a record on file for someone who never
-    logs in — typically an external worker whose timesheets are
-    captured via email ingestion. The backend synthesizes a unique
-    placeholder for email/username when blank.
-    """
+    """Admin user creation. Only full_name + is_external are required."""
     full_name: str = Field(..., min_length=1)
-    # Pair-of-flags model: the admin must pick exactly one of
-    # internal/external. The frontend renders these as paired chips at
-    # the top of the new-user dialog. The backend persists only
-    # is_external (the "internal" branch is the inverse) so we don't
-    # add a new column.
     is_external: bool
     email: Optional[EmailStr] = None
     username: Optional[str] = Field(None, min_length=3, max_length=255)
@@ -93,8 +74,7 @@ class UserCreate(BaseModel):
     default_client_id: Optional[int] = None
     password: Optional[str] = Field(None, min_length=8)
     can_review: bool = False
-    # Only used when PLATFORM_ADMIN creates a user in a specific tenant.
-    # Regular ADMIN users have tenant_id injected server-side from their JWT.
+    # Only honored when PLATFORM_ADMIN creates a user in a specific tenant.
     tenant_id: Optional[int] = None
 
 
@@ -102,14 +82,9 @@ class UserSelfUpdate(BaseModel):
     full_name: Optional[str] = None
     title: Optional[str] = None
     timezone: Optional[str] = None
-    # Username is self-editable for any role, subject to uniqueness.
     username: Optional[str] = Field(None, min_length=3, max_length=255)
-    # Email is self-editable only for platform admins. The endpoint enforces
-    # that restriction at runtime — schema-accepting it avoids 422s when the
-    # client sends the field, but regular users get a 403 from the handler.
+    # Email is self-editable only for platform admins (enforced in the route).
     email: Optional[EmailStr] = None
-    # Note: department is intentionally not self-editable; only admins can
-    # change it via the user management screen.
 
 
 class UserUpdate(BaseModel):
@@ -120,9 +95,7 @@ class UserUpdate(BaseModel):
     department: Optional[str] = None
     timezone: Optional[str] = None
     role: Optional[UserRole] = None
-    # Set of roles this user is allowed to act as. When provided the
-    # CRUD layer normalizes (de-dupes, ensures the active role is in
-    # the list) before persisting.
+    # CRUD layer dedupes and ensures the active role is included.
     roles: Optional[List[UserRole]] = None
     is_active: Optional[bool] = None
     can_review: Optional[bool] = None
@@ -139,11 +112,7 @@ class UserResponse(UserBase):
     email_verified: bool = False
     can_review: bool = False
     is_external: bool = False
-    # The set of roles this user can act as. Single-role users have
-    # one element. Multi-role users (e.g., human who is both admin
-    # and manager) have multiple; the frontend portal-picker shows up
-    # when len(roles) > 1, and /auth/switch-role flips active role
-    # within this set.
+    # Roles the user can act as; portal-picker shows when len(roles) > 1.
     roles: List[UserRole] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
@@ -154,16 +123,8 @@ class UserResponse(UserBase):
 class UserCreateResponse(BaseModel):
     """Returned when an admin creates a new user."""
     user: UserResponse
-    # The one-time random password the backend generated. Surfaced to
-    # the admin so they can hand it to the new user out-of-band when
-    # the verification email isn't being sent (external users, or
-    # internals with no email on file). For internals who did get a
-    # verification email, this is informational — they set their own
-    # password via the verification link.
+    # Auto-generated password; admin hands this off when no verification email is sent.
     temporary_password: str
-    # True when a verification email was queued to be sent on this
-    # creation request. False for external users (they never log in)
-    # and for internal users created without an email address.
     verification_email_sent: bool = False
 
 

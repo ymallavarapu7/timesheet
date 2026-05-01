@@ -4,12 +4,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { THEME_VARIANTS } from '@/contexts/themeVariants';
 import { cn } from '@/lib/utils';
 
-/**
- * Theme picker dropdown — opens on click and shows the variants in a
- * 4-per-row grid. Each option is the variant's logo thumbnail (logo
- * over the variant's app background) with the variant name below.
- * The active variant gets a check overlay on its thumbnail.
- */
+// Theme picker dropdown showing logo thumbnails in a 4-per-row grid.
 export const ThemePicker: React.FC = () => {
   const { variantKey, setVariant, variants } = useTheme();
   const [open, setOpen] = useState(false);

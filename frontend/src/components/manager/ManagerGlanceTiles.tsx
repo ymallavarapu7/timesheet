@@ -88,11 +88,6 @@ export const ManagerGlanceTiles: React.FC<ManagerGlanceTilesProps> = ({
       ? {
           label: 'Inbox',
           value: String(pendingIngestionCount),
-          // ingestionOldestHours is currently optional on the manager
-          // dashboard wiring. Show the age line only when we actually
-          // have it; otherwise fall back to the friendlier "X awaiting
-          // review" copy. Avoids the "oldest no pending" word salad
-          // when the count is non-zero but age is undefined.
           sub: pendingIngestionCount === 0
             ? 'all clear'
             : ingestionOldestHours != null

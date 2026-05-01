@@ -250,11 +250,7 @@ export const useCreateClient = () => {
   });
 };
 
-// Cascade-creates a Client from a domain and auto-resolves every pending
-// IngestionTimesheet in the tenant whose linked email's sender / forwarded /
-// body / chain-sender domain matches. Backed by POST /clients/from-domain.
-// On success, invalidates ingestion-timesheet queries so the inbox reflects
-// the cascade.
+// POST /clients/from-domain: creates the client and cascades to matching pending timesheets.
 export const useCreateClientFromDomain = () => {
   const queryClient = useQueryClient();
   return useMutation({

@@ -41,12 +41,7 @@ class User(Base, TimestampMixin):
         Boolean, nullable=False, default=False)
     role: Mapped[UserRole] = mapped_column(
         SQLEnum(UserRole), nullable=False, default=UserRole.EMPLOYEE)
-    # The set of roles this user is allowed to act as. The active role
-    # (the one require_role checks against, the one that lands in the
-    # JWT) lives in the `role` column above; `roles` is the menu of
-    # allowed values that can be flipped to via /auth/switch-role.
-    # For single-role users it is always [role]. For a user who is both
-    # an admin and a manager it is ["ADMIN", "MANAGER"].
+    # Allowed roles for /auth/switch-role; active one is `role` above.
     roles: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
     )

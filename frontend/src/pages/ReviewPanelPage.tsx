@@ -35,11 +35,7 @@ import type { ChainCandidate, EmailAttachmentSummary, IngestionLineItem, Ingesti
 
 type LineItemFormState = { work_date: string; hours: string; description: string; project_code: string; project_id: string };
 
-// R9: small popover anchored under a button, used for Reject and Hold.
-// Both share the same shape (textarea + cancel/confirm) but differ in
-// tone (red for reject, neutral for hold). Anchored positioning is
-// computed in a layout effect so it tracks the trigger button on
-// scroll and resize.
+// Anchored popover for Reject and Hold; tone differs but shape is shared.
 const ReasonPopover: React.FC<{
   open: boolean;
   anchorEl: HTMLElement | null;
@@ -583,11 +579,7 @@ export const ReviewPanelPage: React.FC = () => {
   const [bulkExcludeReason, setBulkExcludeReason] = React.useState<string>('');
   const [bulkBusy, setBulkBusy] = React.useState(false);
 
-  // R9: Reject and Hold popovers, both with required-reason text.
-  // The previous Reject UX was a full-width banner that pushed the
-  // table down; Hold had no reason field at all. Anchored popovers
-  // keep the in-page context, and a non-empty reason becomes a real
-  // audit signal (vs the prior "click and forget" Hold).
+  // Reject and Hold popovers; both require a reason for audit.
   const [rejectPopoverAnchor, setRejectPopoverAnchor] = React.useState<HTMLElement | null>(null);
   const [holdPopoverAnchor, setHoldPopoverAnchor] = React.useState<HTMLElement | null>(null);
   const [holdReason, setHoldReason] = React.useState<string>('');
@@ -724,12 +716,7 @@ export const ReviewPanelPage: React.FC = () => {
     ? clients.some((c: { id: number; name: string }) =>
         c.name.trim().toLowerCase() === extractedClientHint.toLowerCase())
     : false;
-  // Sender domain drives both the cascade target and the smart-guess
-  // pre-fill for the "+ Add client" popover. Prefer the forwarded-from
-  // address (the actual submitter on a forwarded email); fall back to
-  // the outer sender. Personal-email domains (gmail/outlook/etc.)
-  // disable the cascade — the popover falls back to plain client create
-  // in that case.
+  // Forwarded-from > outer sender. Personal domains disable the cascade.
   const senderDomain = (() => {
     const forwardedFrom = (emailContext as { forwarded_from_email?: string | null } | null)?.forwarded_from_email;
     return domainOf(forwardedFrom || emailContext?.sender_email);
@@ -821,12 +808,7 @@ export const ReviewPanelPage: React.FC = () => {
     setLineItemModalOpen(true);
   };
 
-  // Confirm handler for the "+ Add client" popover. If the sender domain
-  // is a real (non-personal) domain we use the cascade endpoint so other
-  // pending emails from that domain auto-resolve. For personal-domain
-  // senders the cascade endpoint refuses (422), so we fall back to a
-  // plain create. Either way, the new client is auto-selected on this
-  // timesheet so the reviewer doesn't have to reach for the dropdown.
+  // "+ Add client" confirm: cascade for real domains, plain create for personal.
   const handleAddClientConfirm = async (
     payload: { name: string; existing: { id: number; name: string } | null },
   ) => {
@@ -974,13 +956,7 @@ export const ReviewPanelPage: React.FC = () => {
     setHoldReason('');
   };
 
-  // ── Bulk line-item handlers (R4) ──
-  // The single-item PATCH/reject endpoints already exist and handle the
-  // audit-log + status transition correctly. For bulk we fire N
-  // concurrent calls; the UI shows a single busy state and refreshes
-  // the timesheet once at the end. A future bulk endpoint would shave
-  // the N round-trips but the audit log is still the same per-item
-  // shape, so the UX is identical from the reviewer's perspective.
+  // Bulk line-item ops fire N concurrent single-item PATCH/reject calls.
   const toggleLineItemSelection = (itemId: number) => {
     setSelectedLineItemIds((prev) => {
       const next = new Set(prev);
@@ -1142,11 +1118,7 @@ export const ReviewPanelPage: React.FC = () => {
           </span>
         )}
         <div className="flex shrink-0 items-center gap-2">
-          {/* Reprocess: icon-only dropdown with two scopes (R10).
-              Replaces a separate "Reprocess linked attachment" link
-              that used to live near the attachment card; both scopes
-              now share one place so the reviewer doesn't have to
-              remember which control does which. */}
+          {/* Reprocess: icon-only dropdown with two scopes. */}
           <div ref={reprocessMenuRef} className="relative">
             <button
               type="button"
@@ -1282,11 +1254,6 @@ export const ReviewPanelPage: React.FC = () => {
                     );
                   })}
                 </div>
-                {/* "Reprocess linked attachment" used to live here as a
-                    text link. Both reprocess scopes (this timesheet vs
-                    whole email) now live in the topbar's icon dropdown
-                    so the reviewer doesn't have to remember which
-                    control does which. See setReprocessMenuOpen above. */}
               </div>
             )}
           </div>
@@ -1474,13 +1441,7 @@ export const ReviewPanelPage: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Supervisor: free-form editable string, for-the-record.
-                    The supervisor named on a timesheet is typically a person
-                    at the client (not an Acuent user), so this is a string
-                    column not a user FK. The original LLM extraction is
-                    preserved on the record's extracted_data JSON; this
-                    field is what carries to TimeEntry.supervisor_name on
-                    approval. */}
+                {/* Supervisor: free-form (typically a client contact). */}
                 <div className="mt-3">
                   <label className="mb-1.5 block text-sm font-medium text-foreground">Supervisor</label>
                   <input
@@ -1561,11 +1522,7 @@ export const ReviewPanelPage: React.FC = () => {
                   </div>
                 </div>
 
-                {/* R4: bulk action toolbar — appears once anything is
-                    selected. Cascades the same per-item PATCH/reject
-                    endpoints over Promise.all so the audit-log and
-                    state-transition behavior is identical to clicking
-                    them one at a time. */}
+                {/* Bulk action toolbar; fires per-item PATCH/reject in parallel. */}
                 {isActionable && selectedLineItemIds.size > 0 && (
                   <div className="mb-3 rounded-lg border border-primary/30 bg-primary/5 p-3">
                     <div className="mb-2 flex items-center justify-between gap-3">

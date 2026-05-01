@@ -31,17 +31,9 @@ async def _eligible_internal_reminder_recipients(
     user_ids: list[int] | None = None,
     max_created_at: datetime | None = None,
 ) -> list[User]:
-    """
-    EMPLOYEE users in ``tenant_id`` who can actually submit a timesheet.
-
-    Filters out users who would otherwise receive a reminder or auto-lock they
-    cannot act on: no active manager assignment (submissions would dead-end),
-    unverified email (haven't accepted the invite), already timesheet-locked,
-    or external contractors (they follow the monthly external reminder path,
-    not the weekly one). When ``max_created_at`` is supplied, also excludes
-    accounts created on/after that moment (used by the auto-lock path so
-    brand-new users aren't locked for a week they didn't exist during).
-    """
+    """EMPLOYEE users who can submit a timesheet (active, verified, unlocked,
+    has a manager, not external). ``max_created_at`` excludes brand-new
+    accounts from the auto-lock path."""
     conditions = [
         User.tenant_id == tenant_id,
         User.role == UserRole.EMPLOYEE,
@@ -69,16 +61,7 @@ async def _eligible_internal_reminder_recipients(
 
 
 async def check_and_send_reminders(ctx: dict) -> None:
-    """arq task — check all tenants and send due reminders.
-
-    Lists active tenants from ``acufy_control.tenants`` (the
-    authoritative directory after 3.A), then opens a session per
-    tenant against that tenant's DB so reads of ``users`` /
-    ``time_entries`` / ``tenant_settings`` route correctly once
-    ``is_isolated`` flips. While ``is_isolated=False`` for every
-    tenant, ``tenant_session`` returns the shared timesheet_db --
-    behaviour is unchanged.
-    """
+    """arq task: fan out over active tenants and send due reminders."""
     from app.db_control import AsyncControlSessionLocal
     from app.db_tenant import tenant_session
     from app.models.control import ControlTenant
@@ -92,10 +75,7 @@ async def check_and_send_reminders(ctx: dict) -> None:
     for control_tenant in control_tenants:
         try:
             async with tenant_session(control_tenant.slug) as session:
-                # Re-hydrate the per-tenant ``Tenant`` row so downstream
-                # code that reads ``tenant.timezone`` keeps working.
-                # That row exists on every tenant DB (additive
-                # split-out is still in place).
+                # Re-hydrate the per-tenant Tenant row for tenant.timezone.
                 tenant_row = await session.get(Tenant, control_tenant.id)
                 if tenant_row is None:
                     logger.warning(

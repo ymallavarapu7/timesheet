@@ -49,28 +49,9 @@ export const ManagerConversation: React.FC<ManagerConversationProps> = ({
   );
   const ptoToday = overview.members.filter((m) => m.is_on_pto_today);
 
-  // Build the paragraph as a sequence of small, plain-English
-  // sentences. Goal: a new user can read this once and know what's
-  // going on without learning our jargon. Tone: trimmed and warm, not
-  // a status report.
-  //
-  // Wording guardrails:
-  //   - No "critical". Soften to "needs follow-up".
-  //   - Lead with the human meaning ("X reports haven't logged"),
-  //     not the system ratio ("0 of 3 on track").
-  //   - Suppress alarming framings when the data is just empty
-  //     (e.g. nobody's submitted yet because the deadline hasn't
-  //     hit).
-  //   - Always say *whose* approval / inbox the queue is waiting on.
-  // The greeting heading ("Good morning, Bharat.") now lives in the
-  // shared <DashboardGreeting> component slotted above this card by
-  // the page. We deliberately don't repeat it here.
   const fragments: React.ReactNode[] = [];
 
-  // Determine whether we have any signal at all about the team. If
-  // every report has zero submitted days AND nobody's flagged as
-  // late/PTO, the team simply hasn't entered time yet — don't lead
-  // with a doom number.
+  // Suppress alarming framings when the team simply hasn't entered time yet.
   const noSubmissionsYet = overview.team_size > 0
     && critical.length === 0
     && behind.length === 0

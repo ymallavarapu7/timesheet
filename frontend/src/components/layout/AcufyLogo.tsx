@@ -9,12 +9,7 @@ interface AcufyLogoProps {
   height?: number;
 }
 
-/**
- * Renders the current theme variant's logo PNG.
- * Source PNGs are 1350x288 (≈4.69:1). We render at a generous display
- * height so the baked-in tagline stays readable on hi-DPI screens, and use
- * image-rendering hints so the browser resamples cleanly.
- */
+// Renders the current theme variant's logo PNG (1350x288 source).
 export const AcufyLogo: React.FC<AcufyLogoProps> = ({ variant = 'full', className, height = 56 }) => {
   const { variant: themeVariant } = useTheme();
   const src = themeVariant.logoPath;

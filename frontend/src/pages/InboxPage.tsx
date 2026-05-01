@@ -402,12 +402,7 @@ export const InboxPage: React.FC = () => {
   const [showTechnicalDetails, setShowTechnicalDetails] = React.useState(false);
   const [selectedEmailIds, setSelectedEmailIds] = useState<Set<number>>(new Set());
 
-  // ── Cascade-create-client-from-domain popover state ──
-  // When the user clicks a "+ Create from <domain> (N)" inline button on an
-  // unresolved Client cell, we anchor a popover under that button. The
-  // popover handles the create / link-to-existing decision and triggers the
-  // backend cascade endpoint, which assigns the new (or existing) client to
-  // every pending row from the same domain in this tenant.
+  // Cascade-create-client-from-domain popover state.
   const [cascadePopover, setCascadePopover] = React.useState<{
     domain: string;
     anchorEl: HTMLElement;
@@ -451,11 +446,7 @@ export const InboxPage: React.FC = () => {
   }, [fetchStatus?.status, fetchStatus?.message, queryClient]);
   const { data: clients = [] } = useClients();
 
-  // Pre-fill the popover input with the matching existing client name when
-  // the smart-guess from the domain hits an existing client (case-insensitive,
-  // word-boundary fuzzy match). Otherwise, use the smart-guess so the
-  // reviewer just confirms a fresh "DXC" / "Aegon" / etc. The reviewer can
-  // edit the input freely either way.
+  // Pre-fill with an existing-client fuzzy match, else the smart-guess.
   const cascadeInitialValue = React.useMemo(() => {
     if (!cascadePopover) return '';
     const guess = suggestNameFromDomain(cascadePopover.domain);
@@ -1249,12 +1240,7 @@ export const InboxPage: React.FC = () => {
                             <span className="text-muted-foreground">--</span>
                           ) : (() => {
                             const senderDomain = domainOf(rowTarget.sender_email);
-                            // Personal-domain rows can't cascade — the backend
-                            // refuses gmail/outlook/etc. Show a static pill
-                            // and let the reviewer assign manually via the
-                            // review page. Surfacing a dropdown of all clients
-                            // here would crowd the row and duplicate the work
-                            // that's already inline on the review page.
+                            // Personal domains can't cascade; reviewer assigns manually.
                             if (!senderDomain || isPersonalDomain(senderDomain)) {
                               return (
                                 <span

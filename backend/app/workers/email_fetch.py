@@ -86,16 +86,10 @@ async def fetch_emails_for_tenant(
     attachment_ids: list[int] | None = None,
     tenant_slug: str | None = None,
 ) -> dict:
-    """arq job: fetch and process emails for a tenant, or reprocess stored ones.
+    """arq job: fetch and process emails for a tenant (or reprocess).
 
-    ``tenant_slug`` (Phase 3.C) routes the job's DB sessions to the
-    tenant's database via ``app.db_tenant.tenant_session``. If absent --
-    legacy enqueued jobs from before this change, or the
-    cron-scheduled fan-out -- the slug is resolved from
-    ``acufy_control.tenants`` once and reused for the lifetime of the
-    job. While every tenant has ``is_isolated=False`` the resolver
-    returns the shared timesheet_db URL, so adding the slug is a
-    behavioural no-op until cutover.
+    ``tenant_slug`` routes DB sessions to the tenant DB; resolved from the
+    control plane when absent.
     """
     from app.db import AsyncSessionLocal
     from app.db_tenant import resolve_slug_for_tenant_id, tenant_session
@@ -104,8 +98,6 @@ async def fetch_emails_for_tenant(
         try:
             tenant_slug = await resolve_slug_for_tenant_id(tenant_id)
         except LookupError:
-            # Tenant id not in control plane: surface the failure path
-            # below, where it's wrapped with a job-status update.
             tenant_slug = None
 
     def _open_session():
@@ -129,7 +121,7 @@ async def fetch_emails_for_tenant(
         message="Loading tenant ingestion context...",
     )
 
-    # Session 1: validate tenant only, then close before any IMAP work.
+    # Validate tenant in a short session, then close before any IMAP work.
     async with _open_session() as session:
         tenant = await session.get(Tenant, tenant_id)
         if not tenant:
@@ -163,17 +155,14 @@ async def fetch_emails_for_tenant(
                 error=summary["errors"][0],
             )
             return summary
-    # Session 1 is now closed. Safe to do IMAP fetches (asyncio.to_thread).
-
-    # For fetch mode: pre-fetch all messages (IMAP) before opening the
-    # processing session, so asyncio.to_thread never runs inside a session.
+    # Pre-fetch IMAP messages outside any session so asyncio.to_thread
+    # never runs inside one.
     prefetched: list[tuple[Mailbox, list[dict]]] | None = None
     if mode == "fetch":
         prefetched = await _prefetch_mailbox_messages(
             ctx, tenant_id, job_id, summary, tenant_slug=tenant_slug
         )
 
-    # Session 2: processing session, opened after all IMAP work is done.
     try:
         async with _open_session() as session:
             if mode == "fetch":
@@ -236,11 +225,7 @@ async def _prefetch_mailbox_messages(
     *,
     tenant_slug: str | None = None,
 ) -> list[tuple[Mailbox, list[dict]]]:
-    """
-    Load mailboxes and fetch raw messages via IMAP/Graph.
-    Uses short-lived sessions that are fully closed before returning,
-    so no session is open when asyncio.to_thread runs inside fetch_messages.
-    """
+    """Load mailboxes and fetch raw messages; sessions close before IMAP work."""
     from app.db import AsyncSessionLocal
     from app.db_tenant import tenant_session
 
@@ -271,8 +256,6 @@ async def _prefetch_mailbox_messages(
             message=f"Connecting to {mailbox.label}...",
         )
         try:
-            # Each fetch_messages call gets its own session that closes before
-            # the next one opens — asyncio.to_thread never runs inside a session.
             async with _open_session() as fetch_session:
                 messages = await fetch_messages(mailbox, fetch_session)
             mailbox_messages.append((mailbox, messages))
@@ -465,12 +448,7 @@ async def _process_mailbox(
     *,
     tenant_slug: str | None = None,
 ) -> dict:
-    """
-    Process pre-fetched messages from a single mailbox.
-    Messages must be fetched before calling this function (outside any open
-    session) to avoid the asyncio.to_thread → SQLAlchemy greenlet conflict.
-    Returns a result dict and never raises.
-    """
+    """Process pre-fetched messages from one mailbox. Never raises."""
     mailbox_id = mailbox.id
     mailbox_label = mailbox.label
     result = {
@@ -491,8 +469,7 @@ async def _process_mailbox(
             result["success"] = True
             return result
 
-        # Phase 2: process messages concurrently (up to 5 in parallel).
-        # Each message gets its own DB session to avoid transaction conflicts.
+        # Up to 5 in parallel; each message gets its own DB session.
         import asyncio
         from app.db import AsyncSessionLocal
         from app.db_tenant import tenant_session
@@ -598,24 +575,9 @@ async def enqueue_reprocess_skipped_fanout(
     *,
     tenant_slug: str | None = None,
 ) -> str:
-    """
-    Enqueue one `reprocess_email` job per email id and return an umbrella
-    batch id whose status record is written as `complete` immediately.
-
-    Motivation: the previous `reprocess_skipped` path processed every skipped
-    email in a single arq job's main loop. One slow attachment (typically a
-    pdftoppm hang or a long Vision extraction) would consume the entire 300s
-    job_timeout and kill the batch mid-flight, leaving the rest of the list
-    stuck. Fan-out lets arq's worker pool run the emails concurrently and
-    scopes each 300s budget to a single email, so one slow or malformed
-    attachment can no longer poison the batch.
-
-    The umbrella status is recorded as `complete` immediately because the
-    "dispatch" phase is done — per-email jobs each have their own status
-    records. The frontend's skipped-emails query invalidates on complete,
-    and the banner re-checks the skipped count, so the UI stays accurate
-    as child jobs finish in the background.
-    """
+    """Enqueue one reprocess job per email so a slow attachment can't
+    consume the whole 300s budget. Umbrella status is marked complete
+    immediately; per-email jobs track their own progress."""
     from arq import create_pool
     from app.workers.settings import get_redis_settings
 
@@ -648,9 +610,6 @@ async def enqueue_reprocess_skipped_fanout(
                 progress=0,
                 message=f"Reprocess job queued for email {email_id}.",
             )
-            # Pass tenant_slug as a keyword arg so legacy queued jobs
-            # (without slug) deserialise into None and trigger the
-            # control-plane fallback inside fetch_emails_for_tenant.
             enqueue_kwargs = {"_job_id": child_id}
             if tenant_slug is not None:
                 enqueue_kwargs["tenant_slug"] = tenant_slug
@@ -692,14 +651,8 @@ async def enqueue_fetch_job(
     attachment_ids: list[int] | None = None,
     tenant_slug: str | None = None,
 ) -> str:
-    """Enqueue a fetch or reprocess job for the tenant.
-
-    ``tenant_slug`` (Phase 3.C) propagates into the job payload so the
-    worker can route DB sessions to the tenant's database. Optional;
-    when omitted the worker resolves the slug from the control plane
-    on first DB use. Existing routes pass it through to avoid the
-    extra round-trip.
-    """
+    """Enqueue a fetch/reprocess job; ``tenant_slug`` lets the worker
+    skip a control-plane lookup when known by the caller."""
     from arq import create_pool
     from arq.constants import (
         default_queue_name,
@@ -750,9 +703,6 @@ async def enqueue_fetch_job(
             ),
         )
 
-        # Pass tenant_slug as a keyword payload arg. arq serialises
-        # both args and kwargs, so the worker receives the slug via
-        # its kw-only parameter.
         enqueue_kwargs = {"_job_id": job_id}
         if tenant_slug is not None:
             enqueue_kwargs["tenant_slug"] = tenant_slug
@@ -774,14 +724,7 @@ async def enqueue_fetch_job(
 
 
 async def scheduled_fetch_emails(ctx: dict) -> None:
-    """arq cron task — runs every 15 minutes.
-
-    Lists active tenants from the control plane (post-3.A the
-    authoritative tenants directory), then for each one opens a
-    session against that tenant's DB to read ``tenant_settings`` and
-    decide whether to enqueue a fetch. The slug threads into the
-    enqueued job so the worker binds to the same tenant DB.
-    """
+    """arq cron task: every 15 min, fan out fetch jobs over active tenants."""
     from app.workers.reminder_worker import _load_tenant_settings
     from app.db_control import AsyncControlSessionLocal
     from app.db_tenant import tenant_session
@@ -793,10 +736,7 @@ async def scheduled_fetch_emails(ctx: dict) -> None:
         )
         control_tenants = list(result.scalars().all())
 
-    # Each tenant gets its fetch window evaluated in its own timezone
-    # (control_tenant.timezone, IANA string from migration 029). When
-    # the column is NULL we fall back to UTC. The previous version read
-    # one global TZ env var, which broke for tenants in other regions.
+    # Evaluate each tenant's fetch window in its own timezone.
     from app.core.timezone_utils import now_for_tenant
 
     for control_tenant in control_tenants:

@@ -63,11 +63,7 @@ class IngestionTimesheet(Base, TimestampMixin):
     )
     llm_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Reviewer-confirmed supervisor name. Pre-filled by ingestion from the
-    # LLM's extracted supervisor_name; the reviewer can edit it freely on
-    # the review page. The original LLM value remains in extracted_data
-    # JSON as the audit anchor, so we don't need a second immutable column.
-    # Carried forward to TimeEntry.supervisor_name on approval.
+    # Reviewer-confirmed supervisor; LLM original lives in extracted_data.
     extracted_supervisor_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     internal_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     submitted_at: Mapped[datetime | None] = mapped_column(

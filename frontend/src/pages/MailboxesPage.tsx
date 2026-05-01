@@ -252,11 +252,7 @@ export const MailboxesPage: React.FC = () => {
     }
   };
 
-  // Reconnect an existing OAuth mailbox whose refresh token is dead (e.g. Google
-  // invalid_grant). Starts the same OAuth flow as a new connection — the
-  // callback upserts on (tenant, provider, oauth_email) and bypasses the
-  // mailbox cap for the existing-row path. Google's account picker is what
-  // steers the user to the matching account.
+  // Reconnect a dead OAuth mailbox; callback upserts on (tenant, provider, oauth_email).
   const handleOAuthReconnect = async (mailbox: Mailbox) => {
     const provider = mailbox.oauth_provider as OAuthProvider | null;
     if (!provider) {

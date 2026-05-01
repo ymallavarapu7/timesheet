@@ -22,17 +22,8 @@ from typing import Any
 
 from sqlalchemy import text
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Catalog
-# ─────────────────────────────────────────────────────────────────────────────
-#
-# Order of fields in each dict:
-#   category, data_type, default_value, validation, label, description,
-#   is_public, sort_order.
-#
-# ``default_value`` is always a Python value (int, float, bool, str) — the
-# seed helper JSON-encodes it before writing.
-
+# Each entry: category, data_type, default_value, validation, label,
+# description, is_public, sort_order. default_value is Python; seeded as JSON.
 CATALOG: dict[str, dict[str, Any]] = {
     # ── time_entry ─────────────────────────────────────────────────
     "time_entry_past_days": {

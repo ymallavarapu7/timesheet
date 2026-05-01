@@ -27,14 +27,7 @@ export interface CreateClientFromDomainPopoverProps {
   initialValue: string;
   /** Whether the underlying mutation is in flight. Disables the primary button. */
   isSubmitting?: boolean;
-  /** Called when the user confirms.
-   *  - If their input matches an existing client name (case-insensitive,
-   *    trimmed), `existing` is that client. The caller should "link" via the
-   *    cascade (the backend cascade endpoint also handles this when the
-   *    domain hasn't been mapped yet, returning 409 with the existing info if
-   *    it has).
-   *  - If no match, `existing` is null and the caller should create a new
-   *    client with `name`. */
+  /** Called on confirm. `existing` set if the name matches a client. */
   onConfirm: (payload: { name: string; existing: ExistingClient | null }) => void;
   /** Cancel / overlay click / escape key. */
   onClose: () => void;

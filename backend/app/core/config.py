@@ -115,11 +115,7 @@ class Settings(BaseModel):
         default="postgresql+asyncpg://timesheet_user:timesheet_pass@localhost:5432/timesheet_db",
         description="PostgreSQL connection URL for the per-tenant data."
     )
-    # Control-plane database. Holds tenants, platform_admins,
-    # platform_settings, and provisioning audit logs. Lives separate
-    # from any tenant data. Defaults to the same Postgres instance with
-    # a `acufy_control` database; production should run it on a
-    # dedicated instance for blast-radius reasons.
+    # Control-plane DB; production should run on a dedicated instance.
     control_database_url: str = Field(
         default="postgresql+asyncpg://timesheet_user:timesheet_pass@localhost:5432/acufy_control",
         description="PostgreSQL connection URL for the control-plane database."

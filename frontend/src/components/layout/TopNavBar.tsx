@@ -22,11 +22,7 @@ import { useAuth, useIngestionEnabled, useMarkAllNotificationsRead, useMarkNotif
 import type { NavSection } from '@/components/layout/navigation';
 import type { UserRole } from '@/types';
 
-/* ── New-tab role handoff (multi-role users). Issues a single-use
-   role-handoff token, opens /login?role-handoff=<token> in a new tab,
-   and the new tab exchanges the token for its own independent session.
-   Logging out of one tab does not affect the other because each tab
-   has its own access + refresh token pair. */
+// New-tab role handoff: single-use token to /login?role-handoff=<token>.
 const PORTAL_LABEL: Partial<Record<UserRole, string>> = {
   ADMIN: 'Admin',
   MANAGER: 'Manager',
@@ -273,15 +269,8 @@ export const TopNavBar: React.FC = () => {
               </span>
             )}
 
-            {/* Multi-role switch: shown only to users with more than
-                one allowed role. The chip flips the active role
-                in-place via /auth/switch-role; no new tab. */}
+            {/* Multi-role users: switch active role via /auth/switch-role. */}
             {user?.roles && user.roles.length > 1 && (() => {
-              // Pick the first role that isn't the current active one
-              // as the switch target. For users with exactly two roles
-              // this gives the "other" role; for ones with more, it's
-              // the first non-current entry (rare today; CEO stays
-              // single-role for now).
               const target = user.roles.find((r) => r !== user.role);
               return target ? <SwitchPortalChip targetRole={target} /> : null;
             })()}

@@ -1,13 +1,7 @@
 """Audit log of tenant provisioning operations.
 
-Every "create tenant", "run migration", or "deactivate tenant" run
-gets a row here with start/finish timestamps, the alembic revision it
-landed on, and the outcome. This is the system of record for "what
-state is this tenant's database in?" and is what the migration runner
-reads when deciding whether a tenant needs another upgrade pass.
-
-Phase 3.A creates the table but only the future provisioning script
-writes to it; we don't backfill historical rows.
+System of record for tenant DB state; the migration runner reads it
+to decide whether a tenant needs another upgrade pass.
 """
 from __future__ import annotations
 
@@ -59,13 +53,9 @@ class TenantProvisioningJob(ControlBase, TimestampMixin):
     completed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # Alembic revision the tenant DB landed on after the run. Used by
-    # the migration runner to detect tenants stuck on an old revision.
     alembic_revision: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True
     )
-    # Free-text error captured when status == failed. Long enough for a
-    # full Python traceback if we want it.
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     def __repr__(self) -> str:

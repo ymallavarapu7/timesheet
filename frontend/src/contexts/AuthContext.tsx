@@ -235,12 +235,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, [persistAuthState, reconcileRolePick]);
 
-  // Multi-role new-tab handoff: the new tab opened by the topbar
-  // chip lands here with ?role-handoff=<token>. We exchange the
-  // token for an independent session, store it in this tab's
-  // sessionStorage, and let the caller navigate. The originating
-  // tab's session is untouched because each tab has its own
-  // sessionStorage scope.
+  // Multi-role new-tab handoff: exchange ?role-handoff=<token> for an
+  // independent session in this tab's sessionStorage.
   const loginWithRoleHandoff = useCallback(async (handoffToken: string) => {
     sessionVersionRef.current += 1;
     setIsLoading(true);

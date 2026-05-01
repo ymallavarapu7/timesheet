@@ -238,12 +238,8 @@ def _oauth_popup_response(status_value: str, message: str, mailbox_id: int | Non
     </script>
   </body>
 </html>"""
-    # Relax CSP just for this response: the inline script is required to
-    # postMessage back to the parent window. The default strict CSP set by
-    # the global middleware would block it. We tightly scope what's
-    # allowed: only inline script, no remote sources, no other resource
-    # types. The script content is fully server-controlled (status_value,
-    # the verified mailbox_id, and an html.escape'd message).
+    # Relax CSP just for this response so the inline postMessage script runs.
+    # Script body is fully server-controlled.
     return HTMLResponse(
         page,
         headers={
@@ -719,12 +715,8 @@ async def oauth_callback(
     except Exception as exc:
         return _oauth_popup_response("error", f"{provider.title()} OAuth setup failed: {exc}")
 
-    # Audit anchor: attribute the mailbox connection to the user who
-    # actually initiated the OAuth flow (verified via the signed state),
-    # not to whichever browser session happened to land the callback. This
-    # is the trustworthy "who connected this mailbox" record the audit
-    # asked for; it survives the popup-handoff scenario the original
-    # finding flagged.
+    # Attribute the connection to the OAuth initiator (signed state),
+    # not to whichever session landed the callback.
     try:
         await record_activity_events(
             session,

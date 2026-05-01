@@ -842,14 +842,8 @@ async def _process_timesheet_attachment(
                         )
                         break
 
-        # Chain-senders resolution: try every (name, email) pulled from the
-        # forward chain against the known-user list. If exactly one chain
-        # entry matches a real user (by exact email or fuzzy name), auto-
-        # assign. Multiple matches on *different* users means we can't be
-        # sure — leave employee_id None and surface the whole chain to
-        # the reviewer so they pick. The unmatched chain is persisted onto
-        # the IngestionTimesheet for the review UI regardless of whether
-        # we also fell through to auto-create.
+        # Resolve chain senders against known users; auto-assign only on a
+        # single match, otherwise surface the whole chain for the reviewer.
         chain_match_ids: set[int] = set()
         chain_from_email = email_record.chain_senders or []
         if employee_id is None and chain_from_email:
@@ -875,14 +869,8 @@ async def _process_timesheet_attachment(
                     employee_id,
                 )
 
-        # ── Client resolution ──────────────────────────────────────────────
-        # Optimized for the staffing-firm tenant model: the firm (e.g. Acuent)
-        # places consultants at clients (e.g. DXC), and the consultant's work
-        # email domain identifies which client they're embedded at. Project
-        # codes inside the document (e.g. "wmACoE-Aegon-L3-Revitalize") are
-        # downstream-customer / program metadata, not client identity, so the
-        # LLM-extracted client_name is the last-resort signal. See
-        # _resolve_client_id for the full precedence.
+        # Client resolution: consultant email domain wins; LLM client_name
+        # is last-resort. See _resolve_client_id for the full precedence.
         employee_default_client_id: int | None = None
         if employee_id is not None:
             for emp in employees:
@@ -933,11 +921,8 @@ async def _process_timesheet_attachment(
             email_record.forwarded_from_name or email_record.sender_name
         )
 
-        # If the forward chain carries candidates the reviewer should choose
-        # between (zero matches, or multiple matches on different users),
-        # hold off on both auto-create paths and let the reviewer pick.
-        # Creating a placeholder user now would saddle the record with the
-        # outer mailbox's email instead of the actual submitter's address.
+        # Hold off auto-create when the chain has unresolved candidates;
+        # otherwise we'd attach the wrong (outer-mailbox) email.
         needs_reviewer_chain_choice = bool(chain_from_email) and employee_id is None
 
         # Auto-create an employee user from extracted name if no match exists.
@@ -1004,11 +989,6 @@ async def _process_timesheet_attachment(
             period_end=extracted_data.get("period_end"),
         )
 
-        # Create IngestionTimesheet record. Supervisor is a free-form
-        # string the reviewer can edit on the review page; the original
-        # LLM value stays in extracted_data JSON for audit. No FK to
-        # users — supervisors are typically client-side, not tenant
-        # employees, so we don't try to map them to User rows.
         timesheet = IngestionTimesheet(
             tenant_id=tenant_id,
             email_id=email_record.id,

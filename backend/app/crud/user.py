@@ -217,11 +217,7 @@ async def create_user(db: AsyncSession, user_create: UserCreate) -> tuple["User"
         has_changed_password=False,
         email_verified=False,
         role=role,
-        # Single-role default. UserCreate doesn't (yet) accept a roles
-        # list; multi-role users are made by patching the user via
-        # PUT /users/{id} with roles=["ADMIN", "MANAGER"]. The
-        # invariant "active role is in roles" is maintained on every
-        # write path.
+        # Multi-role rows are made via PUT /users/{id} roles=[...].
         roles=[role.value],
         is_active=user_create.is_active,
         can_review=user_create.can_review,

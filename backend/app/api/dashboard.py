@@ -704,13 +704,7 @@ async def get_audit_trail(
     ]
 
 
-# ============================================================================
-# Manager Team Overview
-# ============================================================================
-#
-# Drives the redesigned manager dashboard. Returns week-to-date
-# submission status per employee plus PTO context for the current and
-# next week. Read-only; tenant scope derives from the JWT only.
+# Manager Team Overview: WTD submission status per employee + PTO context.
 
 def _working_days_between(start: date, end_inclusive: date) -> int:
     """Count weekdays (Mon-Fri) in [start, end_inclusive]. Sizes the
@@ -840,11 +834,8 @@ async def get_manager_team_overview(
             if existing is None or req_date < existing:
                 upcoming_pto_start_by_user[user_id] = req_date
 
-    # 3) Repeatedly-late pattern: missed at least 2 of the last 3
-    # working days (excluding today; today's window is still open).
-    # Only fires for users who have submission history in the wider
-    # past — a brand-new tenant or a never-active user shouldn't all
-    # show as critical on day one.
+    # Repeatedly-late: missed >=2 of last 3 working days (excluding today).
+    # Gated on having any submission history so day-one users aren't critical.
     lookback_dates = _last_n_working_days(today - timedelta(days=1), 3)
     late_eval = await db.execute(
         select(TimeEntry.user_id, TimeEntry.entry_date)
@@ -986,14 +977,7 @@ async def get_manager_team_overview(
     )
 
 
-# ============================================================================
-# Manager Project Health
-# ============================================================================
-#
-# Powers the project-health table on the manager dashboard. We restrict
-# the result set to projects that the manager's *scoped team* has logged
-# time against in the current or prior week, so a manager doesn't see
-# the entire tenant project list — only the ones relevant to them.
+# Manager Project Health: scoped to projects the manager's team has logged against.
 
 @router.get("/manager-project-health", response_model=ManagerProjectHealthResponse)
 async def get_manager_project_health(

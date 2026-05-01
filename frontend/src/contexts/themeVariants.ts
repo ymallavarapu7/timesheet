@@ -1,10 +1,5 @@
-/**
- * Theme variant definitions.
- * slate-bg and white-bg are the default dark and light themes.
- * The other 6 variants share the same dark slate background — they differ
- * only in primary/accent color and the logo.
- */
-
+// Theme variants. slate-bg + white-bg are the dark/light defaults; the
+// other 6 share slate-bg and differ only in primary/accent color and logo.
 export type ThemeVariantKey =
   | 'slate-bg'
   | 'white-bg'

@@ -47,11 +47,7 @@ export const LoginPage: React.FC = () => {
     }
   }, []);
 
-  // Multi-role new-tab handoff: when the originating tab opens this
-  // page with ?role-handoff=<token>, exchange the token for our own
-  // independent session and land in the right portal. Strip the token
-  // from the URL on success so a refresh doesn't re-attempt the
-  // (now-expired, single-use) exchange.
+  // ?role-handoff=<token>: exchange for an independent session, then strip the param.
   useEffect(() => {
     const roleHandoffToken = searchParams.get('role-handoff');
     if (!roleHandoffToken || roleHandoffAttemptedRef.current) return;
