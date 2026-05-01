@@ -54,17 +54,49 @@ def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None) 
     return encoded_jwt, jti, expire
 
 
-def generate_service_token() -> str:
+def generate_service_token_id() -> str:
+    """Public token identifier surfaced as the prefix of new tokens.
+
+    Indexed on ``service_tokens.token_id`` so authentication does a
+    single keyed lookup instead of a per-tenant bcrypt sweep. 16 hex
+    characters = 64 bits of entropy, plenty to make collisions
+    practically impossible while keeping the on-the-wire prefix short.
     """
-    Generate a cryptographically secure random service token.
-    Returns the plaintext token — store this securely in the ingestion platform.
-    The timesheet app only stores the bcrypt hash.
+    return secrets.token_hex(8)
+
+
+def generate_service_token() -> tuple[str, str, str]:
+    """Generate a new service token.
+
+    Returns ``(public_token, token_id, secret)`` where ``public_token``
+    is the value the caller hands to the ingestion platform, and the
+    other two are persisted on ``service_tokens`` (token_id verbatim,
+    secret hashed via :func:`hash_service_token`). Surfaced as a tuple
+    so the API endpoint that creates the row stays explicit about
+    which piece goes where.
     """
-    return secrets.token_urlsafe(48)  # 64-character URL-safe string
+    token_id = generate_service_token_id()
+    secret = secrets.token_urlsafe(48)  # 64-char URL-safe
+    return f"{token_id}.{secret}", token_id, secret
+
+
+def split_service_token(raw: str) -> tuple[str | None, str]:
+    """Split an inbound token into ``(token_id, secret)``.
+
+    New-format tokens carry a ``<token_id>.<secret>`` shape; legacy
+    tokens (no dot) are returned as ``(None, raw)`` so the caller can
+    fall through to the loop-and-bcrypt path.
+    """
+    if "." not in raw:
+        return None, raw
+    token_id, _, secret = raw.partition(".")
+    if not token_id or not secret:
+        return None, raw
+    return token_id, secret
 
 
 def hash_service_token(token: str) -> str:
-    """Hash a service token for storage. Uses bcrypt."""
+    """Hash a service token (or its secret half) for storage. Uses bcrypt."""
     return bcrypt.hashpw(token.encode(), bcrypt.gensalt()).decode()
 
 

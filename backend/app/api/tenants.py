@@ -172,10 +172,15 @@ async def create_service_token(
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    plaintext = generate_service_token()
+    # New-format tokens (post-041) embed a public token_id prefix so
+    # the auth dep does an indexed lookup instead of a per-tenant
+    # bcrypt sweep. We only persist the secret half — the prefix is
+    # stored verbatim alongside it.
+    plaintext, token_id, secret = generate_service_token()
     token_record = ServiceToken(
         name=token_in.name,
-        token_hash=hash_service_token(plaintext),
+        token_id=token_id,
+        token_hash=hash_service_token(secret),
         tenant_id=tenant_id,
         issuer=token_in.issuer,
         is_active=True,

@@ -2,7 +2,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.security import decode_token, verify_service_token
+from app.core.security import decode_token, split_service_token, verify_service_token
 from app.db import get_db
 from app.db_tenant import get_session_factory_for_slug
 from app.models import User
@@ -354,20 +354,39 @@ async def get_service_token_tenant(
             detail="X-Tenant-ID must be an integer",
         )
 
-    # Load all active tokens for this tenant and verify against each
-    result = await db.execute(
-        select(ServiceToken).where(
-            (ServiceToken.tenant_id == tenant_id) &
-            (ServiceToken.is_active == True)  # noqa: E712
-        )
-    )
-    tokens = result.scalars().all()
+    # Token format: ``<token_id>.<secret>`` for new-format tokens. We
+    # look up by the indexed token_id (one row), then bcrypt-verify
+    # only the secret. Legacy tokens (no dot) fall through to the
+    # historical loop-and-compare path so existing deployments keep
+    # working until they rotate.
+    token_id, secret = split_service_token(raw_token)
+    matched_token: ServiceToken | None = None
 
-    matched_token = None
-    for stored in tokens:
-        if verify_service_token(raw_token, stored.token_hash):
+    if token_id is not None:
+        stored = (await db.execute(
+            select(ServiceToken).where(
+                (ServiceToken.token_id == token_id) &
+                (ServiceToken.tenant_id == tenant_id) &
+                (ServiceToken.is_active == True)  # noqa: E712
+            )
+        )).scalar_one_or_none()
+        if stored is not None and verify_service_token(secret, stored.token_hash):
             matched_token = stored
-            break
+    else:
+        # Legacy fallback: pre-041 tokens have no token_id. Sweep the
+        # active tokens for this tenant. Slow with many tokens, but
+        # only fires for un-rotated legacy tokens.
+        result = await db.execute(
+            select(ServiceToken).where(
+                (ServiceToken.tenant_id == tenant_id) &
+                (ServiceToken.is_active == True) &  # noqa: E712
+                (ServiceToken.token_id.is_(None))
+            )
+        )
+        for stored in result.scalars().all():
+            if verify_service_token(raw_token, stored.token_hash):
+                matched_token = stored
+                break
 
     if not matched_token:
         raise HTTPException(
