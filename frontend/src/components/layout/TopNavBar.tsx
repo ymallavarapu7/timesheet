@@ -45,7 +45,7 @@ const SwitchPortalChip: React.FC<{ targetRole: UserRole }> = ({ targetRole }) =>
       // login page reads ?role-handoff=... and exchanges it inside
       // the new tab's sessionStorage. noopener prevents the new tab
       // from referencing window.opener and tampering with our state.
-      window.open(`${import.meta.env.BASE_URL}login?role-handoff=${encodeURIComponent(token)}`, '_blank', 'noopener');
+      window.open(`${import.meta.env.BASE_URL.replace(/\/$/, '')}/login?role-handoff=${encodeURIComponent(token)}`, '_blank', 'noopener');
     } catch (err) {
       console.error('Role handoff failed', err);
     } finally {
