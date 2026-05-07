@@ -1,11 +1,7 @@
 import axios, { AxiosInstance, InternalAxiosRequestConfig } from 'axios';
 
 // Create axios instance
-const _rawBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
-// Strip a trailing /api so the env var works whether set to
-// "https://acufy.ai" or "https://acufy.ai/api" — endpoint paths
-// already include /api/ where needed.
-const _apiBase = _rawBase.replace(/\/api\/?$/, '');
+const _apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 export const apiClient: AxiosInstance = axios.create({
   baseURL: _apiBase,
