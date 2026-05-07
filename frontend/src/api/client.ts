@@ -52,9 +52,9 @@ apiClient.interceptors.response.use(
 
     const refreshToken = sessionStorage.getItem('refreshToken');
     if (!refreshToken) {
-      // No refresh token — force logout
       sessionStorage.clear();
-      window.location.href = '/login';
+      const base = (import.meta.env.BASE_URL as string || '/').replace(/\/$/, '');
+      window.location.href = `${base}/login`;
       return Promise.reject(error);
     }
 
@@ -82,26 +82,28 @@ apiClient.interceptors.response.use(
 
       const { access_token, refresh_token: newRefreshToken } = response.data;
 
-      // Update stored tokens
+      // Write new tokens to storage BEFORE releasing the queue so that
+      // any request interceptor that reads sessionStorage picks up the
+      // new token, not the expired one.
       sessionStorage.setItem('accessToken', access_token);
       if (newRefreshToken) {
         sessionStorage.setItem('refreshToken', newRefreshToken);
       }
 
-      // Retry queued requests with new token
+      // Clear the refreshing flag before draining the queue so newly
+      // arriving 401s don't get queued behind an already-resolved refresh.
+      isRefreshing = false;
       processQueue(null, access_token);
 
-      // Retry the original request
       originalRequest.headers.Authorization = `Bearer ${access_token}`;
       return apiClient(originalRequest);
     } catch (refreshError) {
-      // Refresh failed — force logout
+      isRefreshing = false;
       processQueue(refreshError, null);
       sessionStorage.clear();
-      window.location.href = '/login';
+      const base = (import.meta.env.BASE_URL as string || '/').replace(/\/$/, '');
+      window.location.href = `${base}/login`;
       return Promise.reject(refreshError);
-    } finally {
-      isRefreshing = false;
     }
   },
 );

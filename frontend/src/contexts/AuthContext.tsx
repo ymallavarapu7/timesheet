@@ -372,14 +372,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     // No access token but have refresh token — attempt silent refresh
     if (savedRefreshToken) {
-      axios.post(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/auth/refresh`, {
+      const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+      axios.post(`${apiBase}/auth/refresh`, {
         refresh_token: savedRefreshToken,
       }).then((res) => {
         const { access_token, refresh_token: newRefresh } = res.data;
         sessionStorage.setItem(TOKEN_STORAGE_KEY, access_token);
         if (newRefresh) sessionStorage.setItem(REFRESH_TOKEN_STORAGE_KEY, newRefresh);
         setAccessToken(access_token);
-        return axios.get(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/auth/me`, {
+        return axios.get(`${apiBase}/auth/me`, {
           headers: { Authorization: `Bearer ${access_token}` },
         });
       }).then((res) => {
