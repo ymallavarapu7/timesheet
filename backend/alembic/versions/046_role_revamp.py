@@ -41,17 +41,21 @@ def upgrade() -> None:
           AND (roles::text LIKE '%SENIOR_MANAGER%' OR roles::text LIKE '%CEO%')
     """)
 
-    # Step 4: drop the old enum and create the new one
+    # Step 4: drop default (depends on enum type), drop old enum, create new one
+    op.execute("ALTER TABLE users ALTER COLUMN role DROP DEFAULT")
     op.execute("DROP TYPE userrole")
     op.execute(f"CREATE TYPE userrole AS ENUM {NEW_VALUES}")
 
-    # Step 5: reattach column to new enum
+    # Step 5: reattach column to new enum and restore default
     op.execute("ALTER TABLE users ALTER COLUMN role TYPE userrole USING role::userrole")
+    op.execute("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'EMPLOYEE'::userrole")
 
 
 def downgrade() -> None:
     op.execute("ALTER TABLE users ALTER COLUMN role TYPE text USING role::text")
     op.execute("UPDATE users SET role = 'CEO' WHERE role = 'VIEWER'")
+    op.execute("ALTER TABLE users ALTER COLUMN role DROP DEFAULT")
     op.execute("DROP TYPE userrole")
     op.execute(f"CREATE TYPE userrole AS ENUM {OLD_VALUES}")
     op.execute("ALTER TABLE users ALTER COLUMN role TYPE userrole USING role::userrole")
+    op.execute("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'EMPLOYEE'::userrole")
