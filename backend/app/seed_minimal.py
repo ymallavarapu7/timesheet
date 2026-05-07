@@ -46,7 +46,7 @@ async def seed_database():
                 department="Executive",
                 hashed_password=get_password_hash("password"),
                 has_changed_password=True,
-                role=UserRole.CEO,
+                role=UserRole.VIEWER,
                 is_active=True
             ),
             User(

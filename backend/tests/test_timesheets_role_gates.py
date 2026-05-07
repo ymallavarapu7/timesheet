@@ -1,6 +1,6 @@
 """
 Regression tests for Fix 8 — the create-time-entry role gate in
-``timesheets.py`` previously omitted SENIOR_MANAGER and CEO, returning 403
+``timesheets.py`` previously omitted VIEWER, returning 403
 for users the frontend lets navigate there. The fix adds both roles to the
 allow-list.
 """
@@ -137,7 +137,7 @@ async def test_ceo_can_access_previously_gated_endpoint(
     tenant = tenant_with_project["tenant"]
     project = tenant_with_project["project"]
     ceo = await _make_user(
-        db_session, email="ceo@a.example", tenant_id=tenant.id, role=UserRole.CEO
+        db_session, email="ceo@a.example", tenant_id=tenant.id, role=UserRole.VIEWER
     )
     await db_session.commit()
 
@@ -158,7 +158,7 @@ async def test_senior_manager_can_access_previously_gated_endpoint(
     tenant = tenant_with_project["tenant"]
     project = tenant_with_project["project"]
     senior = await _make_user(
-        db_session, email="senior@a.example", tenant_id=tenant.id, role=UserRole.SENIOR_MANAGER
+        db_session, email="senior@a.example", tenant_id=tenant.id, role=UserRole.MANAGER
     )
     await db_session.commit()
 

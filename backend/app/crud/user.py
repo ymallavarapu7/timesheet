@@ -148,16 +148,11 @@ def _validate_role_profile(
 
 def _allowed_manager_roles_for_role(role: UserRole) -> set[UserRole]:
     if role == UserRole.EMPLOYEE:
-        return {UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO, UserRole.ADMIN}
+        return {UserRole.MANAGER, UserRole.ADMIN}
     if role == UserRole.MANAGER:
-        return {UserRole.SENIOR_MANAGER, UserRole.CEO}
-    if role == UserRole.SENIOR_MANAGER:
-        return {UserRole.CEO}
+        return {UserRole.MANAGER, UserRole.ADMIN}
     if role == UserRole.ADMIN:
-        # Admins are employees with elevated permissions; their reporting chain
-        # follows normal org lines — any people-manager role, including another
-        # admin, is a valid supervisor.
-        return {UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO, UserRole.ADMIN}
+        return {UserRole.MANAGER, UserRole.ADMIN}
     return set()
 
 

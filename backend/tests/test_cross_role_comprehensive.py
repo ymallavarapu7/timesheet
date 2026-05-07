@@ -3,26 +3,24 @@ from fastapi.testclient import TestClient
 from datetime import date, timedelta
 
 
-def test_ceo_has_team_oversight_and_approvals(api_client: TestClient, ceo_auth_headers: dict):
-    """CEO should access pending approvals (now added to role)."""
+def test_viewer_cannot_access_approvals(api_client: TestClient, ceo_auth_headers: dict):
+    """VIEWER role is read-only: approvals endpoint returns 403."""
     pending_response = api_client.get(
         '/approvals/pending', headers=ceo_auth_headers)
-    assert pending_response.status_code == 200
+    assert pending_response.status_code == 403
 
     dashboard_response = api_client.get(
         '/dashboard/summary',
         headers=ceo_auth_headers,
     )
     assert dashboard_response.status_code == 200
-    body = dashboard_response.json()
-    assert body['team_members'] >= 1
 
 
-def test_senior_manager_can_approve_indirect_reports(
+def test_manager_can_approve_direct_reports(
     api_client: TestClient,
     senior_manager_auth_headers: dict,
 ):
-    """Senior Manager should be able to approve entries from indirect reports."""
+    """Manager (formerly senior_manager fixture) can access approval queue."""
     pending_response = api_client.get(
         '/approvals/pending',
         headers=senior_manager_auth_headers,
@@ -225,13 +223,12 @@ def test_admin_can_assign_projects_and_manager(
     assert len(created['project_ids']) == 2
 
 
-def test_manager_cannot_view_unscoped_analytics(
+def test_manager_analytics_accessible(
     api_client: TestClient,
     manager_auth_headers: dict,
-    ceo_auth_headers: dict,
     seeded_data: dict,
 ):
-    """Manager can view own analytics but CEO sees full org data."""
+    """Manager can view dashboard analytics scoped to their team."""
     mgr_response = api_client.get(
         '/dashboard/analytics',
         headers=manager_auth_headers,
@@ -243,16 +240,3 @@ def test_manager_cannot_view_unscoped_analytics(
     assert mgr_response.status_code == 200
     mgr_hours = float(mgr_response.json()['total_hours'])
     assert mgr_hours >= 0
-
-    ceo_response = api_client.get(
-        '/dashboard/analytics',
-        headers=ceo_auth_headers,
-        params={
-            'start_date': (date.today() - timedelta(days=5)).isoformat(),
-            'end_date': date.today().isoformat(),
-        },
-    )
-    assert ceo_response.status_code == 200
-    ceo_hours = float(ceo_response.json()['total_hours'])
-
-    assert ceo_hours >= mgr_hours

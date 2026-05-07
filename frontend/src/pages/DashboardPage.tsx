@@ -446,7 +446,7 @@ export const DashboardPage: React.FC = () => {
     return () => document.removeEventListener('keydown', handler);
   }, [showWeekPicker]);
 
-  const isManagerView = user?.role === 'MANAGER' || user?.role === 'SENIOR_MANAGER';
+  const isManagerView = user?.role === 'MANAGER';
   const isPlatformAdmin = user?.role === 'PLATFORM_ADMIN';
   const isAdminView = user?.role === 'ADMIN';
   const showProjectClientWidgets = !isAdminView && !isPlatformAdmin;

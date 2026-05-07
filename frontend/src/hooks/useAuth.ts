@@ -27,10 +27,9 @@ export const useHasRole = (requiredRoles: string[]) => {
 
 export const useIsAdmin = () => useHasRole(['ADMIN']);
 export const useIsPlatformAdmin = () => useHasRole(['PLATFORM_ADMIN']);
-export const useIsCEO = () => useHasRole(['CEO']);
-export const useIsSeniorManager = () => useHasRole(['SENIOR_MANAGER']);
-export const useIsManager = () => useHasRole(['MANAGER', 'SENIOR_MANAGER', 'CEO']);
-export const useIsEmployee = () => useHasRole(['EMPLOYEE', 'MANAGER', 'SENIOR_MANAGER', 'CEO', 'ADMIN']);
+export const useIsViewer = () => useHasRole(['VIEWER']);
+export const useIsManager = () => useHasRole(['MANAGER']);
+export const useIsEmployee = () => useHasRole(['EMPLOYEE', 'MANAGER', 'VIEWER', 'ADMIN']);
 
 export const useCanReview = () => {
   const { user } = useAuth();

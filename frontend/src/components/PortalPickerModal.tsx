@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowRight, Briefcase, ShieldCheck } from 'lucide-react';
+import { ArrowRight, Briefcase, Eye, ShieldCheck } from 'lucide-react';
 
 import type { UserRole } from '@/types';
 
@@ -23,24 +23,21 @@ interface PortalPickerModalProps {
 const PORTAL_LABEL: Partial<Record<UserRole, string>> = {
   ADMIN: 'Admin',
   MANAGER: 'Manager',
-  SENIOR_MANAGER: 'Manager',
-  CEO: 'Manager',
+  VIEWER: 'Viewer',
   EMPLOYEE: 'Employee',
 };
 
 const PORTAL_DESCRIPTION: Partial<Record<UserRole, string>> = {
   ADMIN: 'Tenant settings, users, clients, projects, and audit trail.',
   MANAGER: 'Approvals, reviewer inbox, and team oversight.',
-  SENIOR_MANAGER: 'Approvals across teams plus reviewer inbox.',
-  CEO: 'Tenant-wide approvals and read-only oversight.',
+  VIEWER: 'Tenant-wide read-only oversight.',
   EMPLOYEE: 'Your own time entries, time off, and calendar.',
 };
 
 const PORTAL_ICON: Partial<Record<UserRole, React.ComponentType<{ className?: string }>>> = {
   ADMIN: Briefcase,
   MANAGER: ShieldCheck,
-  SENIOR_MANAGER: ShieldCheck,
-  CEO: ShieldCheck,
+  VIEWER: Eye,
   EMPLOYEE: Briefcase,
 };
 

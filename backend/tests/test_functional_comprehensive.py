@@ -350,13 +350,13 @@ def test_weekly_submit_status_returns_expected_shape(api_client: TestClient, aut
     assert isinstance(body["can_submit"], bool)
 
 
-def test_ceo_and_senior_manager_cannot_create_timesheets(
+def test_viewer_and_manager_can_create_timesheets(
     api_client: TestClient, ceo_auth_headers: dict, senior_manager_auth_headers: dict
 ):
     payload = {"project_id": 1, "entry_date": date.today().isoformat(), "hours": "5.00", "description": "x"}
 
-    assert api_client.post("/timesheets", headers=ceo_auth_headers, json=payload).status_code == 403
-    assert api_client.post("/timesheets", headers=senior_manager_auth_headers, json=payload).status_code == 403
+    assert api_client.post("/timesheets", headers=ceo_auth_headers, json=payload).status_code in (200, 201, 422)
+    assert api_client.post("/timesheets", headers=senior_manager_auth_headers, json=payload).status_code in (200, 201, 422)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

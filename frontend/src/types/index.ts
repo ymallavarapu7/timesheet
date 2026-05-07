@@ -1,5 +1,5 @@
 // User types
-export type UserRole = 'EMPLOYEE' | 'MANAGER' | 'SENIOR_MANAGER' | 'CEO' | 'ADMIN' | 'PLATFORM_ADMIN';
+export type UserRole = 'EMPLOYEE' | 'MANAGER' | 'VIEWER' | 'ADMIN' | 'PLATFORM_ADMIN';
 
 export interface User {
   id: number;

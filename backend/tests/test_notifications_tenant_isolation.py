@@ -280,7 +280,7 @@ async def test_ceo_sees_all_tenant_pending_not_cross_tenant(
     project_b = two_tenants["project_b"]
 
     ceo = await _make_user(
-        db_session, email="ceo@a.example", tenant_id=tenant_a.id, role=UserRole.CEO
+        db_session, email="ceo@a.example", tenant_id=tenant_a.id, role=UserRole.VIEWER
     )
     mgr1 = await _make_user(
         db_session, email="m1@a.example", tenant_id=tenant_a.id, role=UserRole.EMPLOYEE

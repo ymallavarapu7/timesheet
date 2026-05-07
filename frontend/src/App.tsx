@@ -72,7 +72,7 @@ const ManagerGuard: React.FC = () => {
   const { user } = useAuth();
   // Admin is excluded: per-role separation means an admin who is also
   // a manager logs in with their manager account for approvals.
-  return user && ['MANAGER', 'SENIOR_MANAGER', 'CEO'].includes(user.role)
+  return user && user.role === 'MANAGER'
     ? <Outlet />
     : <Navigate to="/dashboard" replace />;
 };
@@ -92,7 +92,7 @@ const TenantAdminGuard: React.FC = () => {
 
 const AdminOrManagerGuard: React.FC = () => {
   const { user } = useAuth();
-  return user && ['ADMIN', 'MANAGER', 'SENIOR_MANAGER', 'CEO'].includes(user.role)
+  return user && ['ADMIN', 'MANAGER', 'VIEWER'].includes(user.role)
     ? <Outlet />
     : <Navigate to="/dashboard" replace />;
 };

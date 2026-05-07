@@ -108,17 +108,17 @@ async def get_all_timesheets(
     current_user: User = Depends(get_current_user),
 ) -> list:
     """
-    Get time entries for the entire tenant (Admin/CEO/Senior Manager/Manager only).
+    Get time entries for the entire tenant (Admin/Manager only).
     Optionally filter by a specific employee via user_id.
     """
-    allowed = {UserRole.ADMIN, UserRole.PLATFORM_ADMIN, UserRole.CEO, UserRole.SENIOR_MANAGER, UserRole.MANAGER}
+    allowed = {UserRole.ADMIN, UserRole.PLATFORM_ADMIN, UserRole.VIEWER, UserRole.MANAGER}
     if current_user.role not in allowed:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
-    # Managers and Senior Managers only see their reporting tree's entries
+    # Managers only see their reporting tree's entries
     effective_user_id = user_id
     scoped_user_ids: list[int] | None = None
-    if current_user.role in (UserRole.MANAGER, UserRole.SENIOR_MANAGER) and not user_id:
+    if current_user.role == UserRole.MANAGER and not user_id:
         # Get full descendant tree
         descendant_ids: set[int] = set()
         frontier: set[int] = {current_user.id}
@@ -187,7 +187,7 @@ async def export_time_entries(
     if current_user.role in (UserRole.ADMIN, UserRole.PLATFORM_ADMIN):
         if current_user.tenant_id:
             query = query.where(TimeEntry.tenant_id == current_user.tenant_id)
-    elif current_user.role in (UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO):
+    elif current_user.role in (UserRole.MANAGER, UserRole.VIEWER):
         if current_user.tenant_id:
             query = query.where(TimeEntry.tenant_id == current_user.tenant_id)
     else:
@@ -270,7 +270,7 @@ async def create_timesheet_entry(
     """
     # Employees, managers, and system admins can create their own time entries
     old_decision = current_user.role in (
-        UserRole.EMPLOYEE, UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO, UserRole.ADMIN,
+        UserRole.EMPLOYEE, UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN,
     )
     await shadow_check(
         db,

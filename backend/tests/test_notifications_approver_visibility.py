@@ -6,10 +6,10 @@ Batch 1 already routes CEO/ADMIN through the ``tenant_wide_roles`` branch of
 tests verify that:
 
   * the ``pending-time-approvals`` and ``pending-timeoff-approvals`` tiles
-    are actually emitted for CEO and ADMIN (not just MANAGER/SENIOR_MANAGER),
+    are actually emitted for VIEWER and ADMIN (not just MANAGER),
   * EMPLOYEE users do not see them,
   * the ``missing-team-yesterday-entries`` tile stays gated to scoped roles
-    (MANAGER/SENIOR_MANAGER) only — the Batch 1 bonus restriction.
+    (MANAGER) only — the Batch 1 bonus restriction.
 """
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -126,10 +126,10 @@ async def tenant_with_pending(db_session: AsyncSession) -> dict:
     db_session.add(project)
     await db_session.flush()
 
-    ceo = await _make_user(db_session, email="ceo@a.example", tenant_id=tenant.id, role=UserRole.CEO)
+    ceo = await _make_user(db_session, email="ceo@a.example", tenant_id=tenant.id, role=UserRole.VIEWER)
     admin = await _make_user(db_session, email="admin@a.example", tenant_id=tenant.id, role=UserRole.ADMIN)
     manager = await _make_user(db_session, email="manager@a.example", tenant_id=tenant.id, role=UserRole.MANAGER)
-    senior = await _make_user(db_session, email="senior@a.example", tenant_id=tenant.id, role=UserRole.SENIOR_MANAGER)
+    senior = await _make_user(db_session, email="senior@a.example", tenant_id=tenant.id, role=UserRole.MANAGER)
     employee = await _make_user(db_session, email="emp@a.example", tenant_id=tenant.id, role=UserRole.EMPLOYEE)
 
     # Give the senior manager their own direct report so they, too, can approve.
@@ -197,9 +197,10 @@ def _tile_count(body: dict, tile_id: str) -> int:
 
 
 @pytest.mark.asyncio
-async def test_ceo_sees_pending_time_approvals_tile(
+async def test_viewer_does_not_see_pending_time_approvals_tile(
     db_session: AsyncSession, tenant_with_pending: dict
 ):
+    """VIEWER is read-only: no approval notifications."""
     client = _make_app(db_session)
     with client:
         response = client.get(
@@ -207,8 +208,7 @@ async def test_ceo_sees_pending_time_approvals_tile(
         )
     assert response.status_code == 200, response.text
     body = response.json()
-    assert "pending-time-approvals" in _tile_ids(body)
-    assert _tile_count(body, "pending-time-approvals") >= 1
+    assert "pending-time-approvals" not in _tile_ids(body)
 
 
 @pytest.mark.asyncio

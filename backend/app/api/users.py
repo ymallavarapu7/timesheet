@@ -28,7 +28,7 @@ from sqlalchemy.exc import IntegrityError
 router = APIRouter(prefix="/users", tags=["users"])
 logger = logging.getLogger(__name__)
 
-MANAGER_CHAIN_ROLES = {UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO}
+MANAGER_CHAIN_ROLES = {UserRole.MANAGER}
 
 
 async def _get_descendant_user_ids(
@@ -108,7 +108,7 @@ def _validate_new_password(password: str) -> None:
 async def list_assignable_users(
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
-        "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN", "PLATFORM_ADMIN"
+        "MANAGER", "VIEWER", "ADMIN", "PLATFORM_ADMIN"
     )),
 ) -> list[User]:
     """Full tenant employee list for assignment dropdowns (e.g. ingestion review panel)."""
@@ -127,8 +127,7 @@ async def list_all_users(
         UserRole.PLATFORM_ADMIN,
         UserRole.ADMIN,
         UserRole.MANAGER,
-        UserRole.SENIOR_MANAGER,
-        UserRole.CEO,
+        UserRole.VIEWER,
     }
     await shadow_check(
         db,

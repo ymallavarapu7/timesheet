@@ -232,8 +232,7 @@ export const ExportModal: React.FC<Props> = ({ onClose }) => {
                     <option value="">All roles</option>
                     <option value="EMPLOYEE">Employee</option>
                     <option value="MANAGER">Manager</option>
-                    <option value="SENIOR_MANAGER">Senior Manager</option>
-                    <option value="CEO">CEO</option>
+                    <option value="VIEWER">Viewer</option>
                     <option value="ADMIN">Admin</option>
                   </select>
                 </div>

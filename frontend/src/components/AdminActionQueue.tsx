@@ -126,7 +126,7 @@ export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
   // Internal users only — external users (ingestion-only records) never
   // log in or get approved, so the "approval chain is broken" framing
   // doesn't apply.
-  const orphanRoles = new Set(['EMPLOYEE', 'MANAGER', 'SENIOR_MANAGER']);
+  const orphanRoles = new Set(['EMPLOYEE', 'MANAGER']);
   const usersWithoutManager = users.filter(
     (u) => u.is_active && !u.is_external && orphanRoles.has(u.role) && (u.manager_id == null),
   );

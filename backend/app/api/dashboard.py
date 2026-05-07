@@ -95,23 +95,12 @@ async def _get_scoped_employee_ids(db: AsyncSession, current_user: "User") -> li
     """Return the list of active employee IDs that are in scope for the given user.
 
     - MANAGER: direct active employee reports only.
-    - SENIOR_MANAGER: active employees under all direct manager/senior-manager
-      reports, plus any employees directly assigned to the senior manager.
-    - CEO / ADMIN: all active employees in the tenant.
+    - VIEWER / ADMIN: all active employees in the tenant.
     """
     if current_user.role == UserRole.MANAGER:
         return await _get_direct_active_report_ids(db, current_user.id)
 
-    if current_user.role == UserRole.SENIOR_MANAGER:
-        direct_report_ids = await _get_managed_employee_ids(db, current_user.id)
-        employee_ids: list[int] = []
-        for report_id in direct_report_ids:
-            employee_ids.extend(await _get_direct_active_report_ids(db, report_id))
-        # Also include employees directly assigned to the senior manager
-        employee_ids.extend(await _get_direct_active_report_ids(db, current_user.id))
-        return list(set(employee_ids))
-
-    # CEO / ADMIN – whole tenant
+    # VIEWER / ADMIN – whole tenant
     return await _get_all_active_employee_ids(db, tenant_id=current_user.tenant_id)
 
 
@@ -223,7 +212,7 @@ async def get_dashboard_summary(
 
     pending_approvals = 0
     team_members = 0
-    if current_user.role in [UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO, UserRole.ADMIN]:
+    if current_user.role in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
         scoped_employee_ids = await _get_scoped_employee_ids(db, current_user)
 
         pending_time_entries_count = await _count_pending_timesheet_weeks(
@@ -262,10 +251,10 @@ async def get_dashboard_team(
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role not in [UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO, UserRole.ADMIN]:
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
         return []
 
-    if current_user.role in [UserRole.MANAGER, UserRole.SENIOR_MANAGER]:
+    if current_user.role in [UserRole.MANAGER]:
         managed_user_ids = await _get_scoped_employee_ids(db, current_user)
         if not managed_user_ids:
             return []
@@ -326,7 +315,7 @@ async def get_team_daily_overview(
     )
     has_time_remaining_until_deadline = now < submission_deadline_at
 
-    if current_user.role not in [UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO, UserRole.ADMIN]:
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
         # Note: a local loop variable named ``status`` later in this function
         # shadows the ``fastapi.status`` import, so use the numeric constant.
         raise HTTPException(
@@ -438,7 +427,7 @@ async def get_dashboard_analytics(
     current_user: User = Depends(get_current_user),
 ):
     target_user_ids = [current_user.id]
-    if current_user.role in [UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO, UserRole.ADMIN]:
+    if current_user.role in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
         scoped_user_ids = await _get_scoped_employee_ids(db, current_user)
 
         if user_id is not None:
@@ -741,9 +730,9 @@ async def get_manager_team_overview(
     """Aggregate roster + capacity context for the manager dashboard.
 
     Authorization mirrors `/dashboard/team-daily-overview`: MANAGER /
-    SENIOR_MANAGER / CEO / ADMIN. EMPLOYEE and PLATFORM_ADMIN get 403.
+    MANAGER / VIEWER / ADMIN. EMPLOYEE and PLATFORM_ADMIN get 403.
     """
-    if current_user.role not in [UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO, UserRole.ADMIN]:
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
         raise HTTPException(
             status_code=403,
             detail="This endpoint is not available for your role",
@@ -986,7 +975,7 @@ async def get_manager_project_health(
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role not in [UserRole.MANAGER, UserRole.SENIOR_MANAGER, UserRole.CEO, UserRole.ADMIN]:
+    if current_user.role not in [UserRole.MANAGER, UserRole.VIEWER, UserRole.ADMIN]:
         raise HTTPException(
             status_code=403,
             detail="This endpoint is not available for your role",

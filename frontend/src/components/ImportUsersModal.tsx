@@ -346,7 +346,7 @@ export const ImportUsersModal: React.FC<Props> = ({ onClose }) => {
                       className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-sm"
                     >
                       <option value="">— None —</option>
-                      {users?.filter((u: User) => u.role === 'MANAGER' || u.role === 'SENIOR_MANAGER' || u.role === 'CEO' || u.role === 'ADMIN').map((u: User) => (
+                      {users?.filter((u: User) => u.role === 'MANAGER' || u.role === 'ADMIN').map((u: User) => (
                         <option key={u.id} value={u.id}>{u.full_name}</option>
                       ))}
                     </select>

@@ -9,8 +9,7 @@ class UserRole(str, Enum):
     """User role enumeration."""
     EMPLOYEE = "EMPLOYEE"
     MANAGER = "MANAGER"
-    SENIOR_MANAGER = "SENIOR_MANAGER"
-    CEO = "CEO"
+    VIEWER = "VIEWER"
     ADMIN = "ADMIN"
     PLATFORM_ADMIN = "PLATFORM_ADMIN"
 

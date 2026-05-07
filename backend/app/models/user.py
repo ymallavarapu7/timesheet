@@ -11,8 +11,7 @@ class UserRole(str, Enum):
     """User role enumeration."""
     EMPLOYEE = "EMPLOYEE"
     MANAGER = "MANAGER"
-    SENIOR_MANAGER = "SENIOR_MANAGER"
-    CEO = "CEO"
+    VIEWER = "VIEWER"
     ADMIN = "ADMIN"           # Tenant-scoped admin
     PLATFORM_ADMIN = "PLATFORM_ADMIN"  # Global admin — no tenant_id
 

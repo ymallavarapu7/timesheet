@@ -316,42 +316,29 @@ async def _build_notification_summary(
             created_at=week_anchor,
         )
 
-    scoped_roles = (UserRole.MANAGER, UserRole.SENIOR_MANAGER)
+    scoped_roles = (UserRole.MANAGER,)
     # Admin role is intentionally absent: approval tiles belong on
     # the manager-side dashboard. A user who is both admin and a
     # manager logs in with their manager account for that work.
-    tenant_wide_roles = (UserRole.CEO,)
-    if current_user.role in scoped_roles + tenant_wide_roles:
-        if current_user.role in scoped_roles:
-            assigned_employee_ids = await _get_managed_employee_ids(db, current_user.id)
-            if not assigned_employee_ids:
-                # Scoped role with no direct reports: nothing to approve. Skip the
-                # helper call entirely — passing None here would remove the
-                # employee filter and leak counts from the whole tenant.
-                pending_time_entries_count, pending_time_entries_latest = 0, None
-                pending_time_off_count, pending_time_off_latest = 0, None
-            else:
-                pending_time_entries_count, pending_time_entries_latest = await _get_pending_timesheet_week_stats(
-                    db,
-                    current_user.tenant_id,
-                    assigned_employee_ids,
-                )
-                pending_time_off_count, pending_time_off_latest = await _get_pending_time_off_stats(
-                    db,
-                    current_user.tenant_id,
-                    assigned_employee_ids,
-                )
+    # VIEWER is read-only: no approval notifications.
+    if current_user.role in scoped_roles:
+        assigned_employee_ids = await _get_managed_employee_ids(db, current_user.id)
+        if not assigned_employee_ids:
+            # Scoped role with no direct reports: nothing to approve. Skip the
+            # helper call entirely — passing None here would remove the
+            # employee filter and leak counts from the whole tenant.
+            pending_time_entries_count, pending_time_entries_latest = 0, None
+            pending_time_off_count, pending_time_off_latest = 0, None
         else:
-            # Tenant-wide roles: no employee filter, but tenant filter still applies.
             pending_time_entries_count, pending_time_entries_latest = await _get_pending_timesheet_week_stats(
                 db,
                 current_user.tenant_id,
-                None,
+                assigned_employee_ids,
             )
             pending_time_off_count, pending_time_off_latest = await _get_pending_time_off_stats(
                 db,
                 current_user.tenant_id,
-                None,
+                assigned_employee_ids,
             )
 
         _add_notification(

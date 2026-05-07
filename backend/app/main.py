@@ -120,11 +120,7 @@ async def shadow_pending_approvals_permission_check(request: Request, call_next)
     if current_user is None:
         return response
 
-    permission = (
-        "time_entry.approve_any"
-        if current_user.role == UserRole.CEO
-        else "time_entry.approve"
-    )
+    permission = "time_entry.approve"
     try:
         async with AsyncSessionLocal() as db:
             await shadow_check(

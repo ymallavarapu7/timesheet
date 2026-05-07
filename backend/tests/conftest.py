@@ -88,7 +88,7 @@ async def seeded_data(db_session: AsyncSession) -> dict:
         username="senior-manager",
         full_name="Senior Manager",
         hashed_password=get_password_hash("password"),
-        role=UserRole.SENIOR_MANAGER,
+        role=UserRole.MANAGER,
         is_active=True,
     )
     ceo = User(
@@ -99,7 +99,7 @@ async def seeded_data(db_session: AsyncSession) -> dict:
         title="Chief Executive Officer",
         department="Executive",
         hashed_password=get_password_hash("password"),
-        role=UserRole.CEO,
+        role=UserRole.VIEWER,
         is_active=True,
     )
     inactive_employee = User(
@@ -125,10 +125,6 @@ async def seeded_data(db_session: AsyncSession) -> dict:
     db_session.add(
         EmployeeManagerAssignment(
             employee_id=manager.id, manager_id=senior_manager.id)
-    )
-    db_session.add(
-        EmployeeManagerAssignment(
-            employee_id=senior_manager.id, manager_id=ceo.id)
     )
 
     project = Project(

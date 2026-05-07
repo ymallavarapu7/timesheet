@@ -2,7 +2,7 @@
 Regression tests for Fix 9 — ``/dashboard/team-daily-overview`` returns 403
 for roles that do not have a team (EMPLOYEE, PLATFORM_ADMIN). Previously the
 endpoint returned a well-formed zero response, which misrepresented the
-resource as existing-but-empty. Authorized roles (MANAGER, SENIOR_MANAGER,
+resource as existing-but-empty. Authorized roles (MANAGER,
 CEO, ADMIN) continue to receive 200.
 """
 from datetime import date
@@ -186,7 +186,7 @@ async def test_senior_manager_gets_200_on_team_daily_overview(
 ):
     senior = await _make_user(
         db_session, email="senior@a.example",
-        tenant_id=tenant_and_project["tenant"].id, role=UserRole.SENIOR_MANAGER,
+        tenant_id=tenant_and_project["tenant"].id, role=UserRole.MANAGER,
     )
     await db_session.commit()
 
@@ -204,7 +204,7 @@ async def test_ceo_gets_200_on_team_daily_overview(
 ):
     ceo = await _make_user(
         db_session, email="ceo@a.example",
-        tenant_id=tenant_and_project["tenant"].id, role=UserRole.CEO,
+        tenant_id=tenant_and_project["tenant"].id, role=UserRole.VIEWER,
     )
     await db_session.commit()
 

@@ -1,7 +1,7 @@
 """Tests for ``GET /admin/system-health``.
 
 Coverage:
-- 403 for non-admin roles (EMPLOYEE, MANAGER, SENIOR_MANAGER, CEO).
+- 403 for non-admin roles (EMPLOYEE, MANAGER, VIEWER).
 - 200 for ADMIN and PLATFORM_ADMIN.
 - Database check returns "healthy" when SELECT 1 round-trips.
 - Email-ingestion check classification:
@@ -124,8 +124,8 @@ def stub_redis_check(monkeypatch):
 @pytest.mark.parametrize("role", [
     UserRole.EMPLOYEE,
     UserRole.MANAGER,
-    UserRole.SENIOR_MANAGER,
-    UserRole.CEO,
+    UserRole.MANAGER,
+    UserRole.VIEWER,
 ])
 async def test_non_admin_roles_get_403(db_session, tenant, role):
     user = await _make_user(db_session, email=f"{role.value.lower()}@t.io", role=role, tenant_id=tenant.id)

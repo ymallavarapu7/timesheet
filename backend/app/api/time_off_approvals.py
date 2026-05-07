@@ -50,10 +50,10 @@ async def get_pending_time_off(
     limit: int = Query(100, ge=1, le=1000),
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
-        "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
+        "MANAGER", "ADMIN")),
 ):
     employee_ids = None
-    if current_user.role != UserRole.CEO:
+    if current_user.role != UserRole.ADMIN:
         assigned_employee_ids = await _get_direct_report_ids(db, current_user.id)
         employee_ids = assigned_employee_ids or []
 
@@ -80,10 +80,10 @@ async def get_time_off_approval_history(
     limit: int = Query(100, ge=1, le=1000),
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
-        "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
+        "MANAGER", "ADMIN")),
 ) -> list[TimeOffRequest]:
     employee_ids = None
-    if current_user.role != UserRole.CEO:
+    if current_user.role != UserRole.ADMIN:
         assigned_employee_ids = await _get_direct_report_ids(db, current_user.id)
         employee_ids = assigned_employee_ids or []
 
@@ -142,14 +142,14 @@ async def approve_time_off_item(
     approve_request: TimeOffApproveRequest,
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
-        "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
+        "MANAGER", "ADMIN")),
 ):
     item = await get_time_off_request_by_id(db, request_id, tenant_id=current_user.tenant_id)
     if not item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Time off request not found")
 
-    if current_user.role not in (UserRole.CEO, UserRole.ADMIN) and item.user_id not in await _get_direct_report_ids(db, current_user.id):
+    if current_user.role != UserRole.ADMIN and item.user_id not in await _get_direct_report_ids(db, current_user.id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only approve requests for your direct reports",
@@ -195,14 +195,14 @@ async def reject_time_off_item(
     reject_request: TimeOffRejectRequest,
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(require_role(
-        "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN")),
+        "MANAGER", "ADMIN")),
 ):
     item = await get_time_off_request_by_id(db, request_id, tenant_id=current_user.tenant_id)
     if not item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Time off request not found")
 
-    if current_user.role not in (UserRole.CEO, UserRole.ADMIN) and item.user_id not in await _get_direct_report_ids(db, current_user.id):
+    if current_user.role != UserRole.ADMIN and item.user_id not in await _get_direct_report_ids(db, current_user.id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only reject requests for your direct reports",

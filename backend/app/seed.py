@@ -404,7 +404,7 @@ async def seed_database() -> None:
             full_name="Casey CEO",
             title="Chief Executive Officer",
             department="Executive",
-            role=UserRole.CEO,
+            role=UserRole.VIEWER,
             tenant_id=tid,
         )
 
@@ -415,7 +415,7 @@ async def seed_database() -> None:
             full_name="Alexander Chen",
             title="Senior Manager - Engineering",
             department="Engineering",
-            role=UserRole.SENIOR_MANAGER,
+            role=UserRole.MANAGER,
             tenant_id=tid,
         )
         sr_mgr_margaret = await _ensure_user(
@@ -425,7 +425,7 @@ async def seed_database() -> None:
             full_name="Margaret Ross",
             title="Senior Manager - Operations",
             department="Operations",
-            role=UserRole.SENIOR_MANAGER,
+            role=UserRole.MANAGER,
             tenant_id=tid,
         )
 

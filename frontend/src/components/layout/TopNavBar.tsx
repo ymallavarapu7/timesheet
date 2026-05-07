@@ -27,8 +27,7 @@ import type { UserRole } from '@/types';
 const PORTAL_LABEL: Partial<Record<UserRole, string>> = {
   ADMIN: 'Admin',
   MANAGER: 'Manager',
-  SENIOR_MANAGER: 'Manager',
-  CEO: 'Manager',
+  VIEWER: 'Viewer',
   EMPLOYEE: 'Employee',
 };
 

@@ -46,7 +46,7 @@ type UserMutationPayload = {
   phones?: string[];
 };
 
-const TENANT_ROLES: UserRole[] = ['EMPLOYEE', 'MANAGER', 'SENIOR_MANAGER', 'CEO', 'ADMIN'];
+const TENANT_ROLES: UserRole[] = ['EMPLOYEE', 'MANAGER', 'VIEWER', 'ADMIN'];
 const ALL_ROLES: UserRole[] = [...TENANT_ROLES, 'PLATFORM_ADMIN'];
 
 type UserActionMenuProps = {
@@ -130,10 +130,9 @@ const UserActionMenu: React.FC<UserActionMenuProps> = ({
 };
 
 const getAllowedSupervisorRoles = (role: UserRole): UserRole[] => {
-  if (role === 'EMPLOYEE') return ['MANAGER', 'SENIOR_MANAGER', 'CEO', 'ADMIN'];
-  if (role === 'MANAGER') return ['SENIOR_MANAGER', 'CEO'];
-  if (role === 'SENIOR_MANAGER') return ['CEO'];
-  if (role === 'ADMIN') return ['MANAGER', 'SENIOR_MANAGER', 'ADMIN'];
+  if (role === 'EMPLOYEE') return ['MANAGER', 'ADMIN'];
+  if (role === 'MANAGER') return ['MANAGER', 'ADMIN'];
+  if (role === 'ADMIN') return ['MANAGER', 'ADMIN'];
   return [];
 };
 
@@ -152,8 +151,7 @@ const roleBadge = (role: UserRole, allRoles?: UserRole[] | null) => {
   const styles: Record<UserRole, string> = {
     EMPLOYEE: 'bg-[var(--bg-surface-3)] text-[var(--text-secondary)]',
     MANAGER: 'bg-[var(--info-light)] text-[var(--info)]',
-    SENIOR_MANAGER: 'bg-[var(--info-light)] text-[var(--info)]',
-    CEO: 'bg-[var(--danger-light)] text-[var(--danger)]',
+    VIEWER: 'bg-[var(--danger-light)] text-[var(--danger)]',
     ADMIN: 'bg-[var(--accent-light)] text-[var(--accent-blue)]',
     PLATFORM_ADMIN: 'bg-[var(--accent-light)] text-[var(--accent-blue)]',
   };
@@ -216,7 +214,7 @@ type FormState = {
 // PLATFORM_ADMIN are intentionally excluded: nobody asks for an
 // "employee" portal on top of a manager account, and platform-admin
 // is its own identity (no tenant_id).
-const ADDITIONAL_ROLE_OPTIONS: UserRole[] = ['MANAGER', 'SENIOR_MANAGER', 'CEO', 'ADMIN'];
+const ADDITIONAL_ROLE_OPTIONS: UserRole[] = ['MANAGER', 'VIEWER', 'ADMIN'];
 
 const emptyForm = (): FormState => ({
   full_name: '',
@@ -296,8 +294,7 @@ export const AdminPage: React.FC = () => {
   const canManageEmployeeProjects =
     currentUser?.role === 'ADMIN' || currentUser?.role === 'PLATFORM_ADMIN' ||
     currentUser?.role === 'MANAGER' ||
-    currentUser?.role === 'SENIOR_MANAGER' ||
-    currentUser?.role === 'CEO';
+    currentUser?.role === 'VIEWER';
 
   React.useEffect(() => {
     refreshUser();
@@ -313,7 +310,7 @@ export const AdminPage: React.FC = () => {
   const [search, setSearch] = useState(() => searchParams.get('search') ?? '');
   const [roleFilter, setRoleFilter] = useState<'ALL' | UserRole>(() => {
     const role = searchParams.get('role');
-    if (role === 'EMPLOYEE' || role === 'MANAGER' || role === 'SENIOR_MANAGER' || role === 'CEO' || role === 'ADMIN' || role === 'PLATFORM_ADMIN') {
+    if (role === 'EMPLOYEE' || role === 'MANAGER' || role === 'VIEWER' || role === 'ADMIN' || role === 'PLATFORM_ADMIN') {
       return role as UserRole;
     }
     return 'ALL';
@@ -421,7 +418,7 @@ export const AdminPage: React.FC = () => {
     const nextVerified = (searchParams.get('verified') ?? '').toUpperCase();
 
     setSearch(nextSearch);
-    setRoleFilter(nextRole === 'EMPLOYEE' || nextRole === 'MANAGER' || nextRole === 'SENIOR_MANAGER' || nextRole === 'CEO' || nextRole === 'ADMIN' || nextRole === 'PLATFORM_ADMIN' ? (nextRole as UserRole) : 'ALL');
+    setRoleFilter(nextRole === 'EMPLOYEE' || nextRole === 'MANAGER' || nextRole === 'VIEWER' || nextRole === 'ADMIN' || nextRole === 'PLATFORM_ADMIN' ? (nextRole as UserRole) : 'ALL');
     setStatusFilter(nextStatus === 'ACTIVE' || nextStatus === 'INACTIVE' ? nextStatus : 'ALL');
 
     // Dashboard attention chips: ?status=NO_MANAGER and ?verified=NO.
@@ -517,7 +514,7 @@ export const AdminPage: React.FC = () => {
   // is counting.
   const STALE_INVITE_DAYS = 7;
   const STALE_INVITE_CUTOFF_MS = Date.now() - STALE_INVITE_DAYS * 24 * 60 * 60 * 1000;
-  const ORPHAN_ROLES = new Set<UserRole>(['EMPLOYEE', 'MANAGER', 'SENIOR_MANAGER']);
+  const ORPHAN_ROLES = new Set<UserRole>(['EMPLOYEE', 'MANAGER']);
   const matchesAttention = (u: User): boolean => {
     if (attentionFilter === 'NO_MANAGER') {
       return Boolean(u.is_active) && !u.is_external && ORPHAN_ROLES.has(u.role) && u.manager_id == null;
