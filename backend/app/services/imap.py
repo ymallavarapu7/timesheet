@@ -45,6 +45,22 @@ def _microsoft_scope_for_mailbox(mailbox: Mailbox) -> str:
     )
 
 
+class OAuthTokenRevokedError(Exception):
+    """Raised when the OAuth provider rejects the refresh token as revoked or
+    expired (e.g. Google invalid_grant). The mailbox needs to be reconnected
+    by an admin -- retrying will not help."""
+
+
+def _check_oauth_error(data: dict) -> None:
+    """Raise the appropriate exception for an OAuth error response dict."""
+    error = data.get("error", "")
+    description = data.get("error_description", error)
+    if error in ("invalid_grant", "invalid_token", "token_revoked"):
+        raise OAuthTokenRevokedError(description)
+    if error:
+        raise ValueError(f"OAuth token refresh error: {description}")
+
+
 async def _refresh_google_token(mailbox: Mailbox, session: AsyncSession) -> str:
     import httpx
 
@@ -60,10 +76,13 @@ async def _refresh_google_token(mailbox: Mailbox, session: AsyncSession) -> str:
             },
         )
         if response.status_code != 200:
+            data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+            error = data.get("error", "")
+            if error in ("invalid_grant", "invalid_token", "token_revoked"):
+                raise OAuthTokenRevokedError(data.get("error_description", error))
             raise ValueError(f"OAuth token refresh failed: {response.status_code} {response.text[:200]}")
         data = response.json()
-        if "error" in data:
-            raise ValueError(f"OAuth token refresh error: {data.get('error_description', data['error'])}")
+        _check_oauth_error(data)
 
     access_token = data["access_token"]
     expires_in = data.get("expires_in", 3600)
@@ -89,10 +108,13 @@ async def _refresh_microsoft_token(mailbox: Mailbox, session: AsyncSession) -> s
             },
         )
         if response.status_code != 200:
+            data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+            error = data.get("error", "")
+            if error in ("invalid_grant", "invalid_token", "token_revoked"):
+                raise OAuthTokenRevokedError(data.get("error_description", error))
             raise ValueError(f"OAuth token refresh failed: {response.status_code} {response.text[:200]}")
         data = response.json()
-        if "error" in data:
-            raise ValueError(f"OAuth token refresh error: {data.get('error_description', data['error'])}")
+        _check_oauth_error(data)
 
     access_token = data["access_token"]
     expires_in = data.get("expires_in", 3600)
@@ -346,6 +368,9 @@ def _parse_raw_message(raw: bytes) -> dict:
         "has_attachments": parsed.has_attachments,
         "raw_headers": parsed.raw_headers,
         "attachments": attachments,
+        "forwarded_from_email": parsed.forwarded_from_email,
+        "forwarded_from_name": parsed.forwarded_from_name,
+        "chain_senders": list(parsed.chain_senders) if parsed.chain_senders else [],
     }
 
 
@@ -635,11 +660,21 @@ async def test_connection(mailbox: Mailbox, session: AsyncSession) -> dict:
             "latency_ms": latency_ms,
             "message_count": message_count,
         }
+    except OAuthTokenRevokedError as exc:
+        latency_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+        return {
+            "success": False,
+            "error": f"OAuth token has been revoked or expired. Please reconnect this mailbox. ({exc})",
+            "needs_reauth": True,
+            "latency_ms": latency_ms,
+            "message_count": 0,
+        }
     except Exception as exc:
         latency_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
         return {
             "success": False,
             "error": str(exc),
+            "needs_reauth": False,
             "latency_ms": latency_ms,
             "message_count": 0,
         }

@@ -16,6 +16,7 @@ import { authAPI } from '@/api/endpoints';
 
 import { AcufyLogo, NeuralPrismIcon } from '@/components/layout/AcufyLogo';
 import { ThemePicker } from '@/components/layout/ThemePicker';
+import { TopbarTimer } from '@/components/timer/TopbarTimer';
 import { buildNavigation } from '@/components/layout/navigation';
 import { cn } from '@/lib/utils';
 import { useAuth, useIngestionEnabled, useMarkAllNotificationsRead, useMarkNotificationRead, useNotifications } from '@/hooks';
@@ -58,7 +59,7 @@ const SwitchPortalChip: React.FC<{ targetRole: UserRole }> = ({ targetRole }) =>
       type="button"
       onClick={handleClick}
       disabled={pending}
-      className="hidden md:inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-[12px] font-medium text-primary transition hover:bg-primary/20 disabled:opacity-60"
+      className="hidden md:inline-flex items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition hover:bg-primary/20 disabled:opacity-60"
       title={`Open the ${label} portal in a new tab`}
     >
       <ExternalLink className="h-3.5 w-3.5" />
@@ -275,6 +276,10 @@ export const TopNavBar: React.FC = () => {
               return target ? <SwitchPortalChip targetRole={target} /> : null;
             })()}
 
+            <div className="hidden sm:block mr-2">
+              <TopbarTimer />
+            </div>
+
             {/* Theme picker */}
             <ThemePicker />
 
@@ -325,10 +330,10 @@ export const TopNavBar: React.FC = () => {
                             </span>
                             <div className="min-w-0 flex-1">
                               <div className="flex items-start gap-2">
-                                <p className="truncate text-sm font-medium text-foreground">{item.title}</p>
+                                <p className="truncate text-sm font-medium text-foreground" title={item.title}>{item.title}</p>
                                 {!item.is_read && <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-primary" />}
                               </div>
-                              <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.message}</p>
+                              <p className="mt-1 line-clamp-2 text-xs text-muted-foreground" title={item.message}>{item.message}</p>
                             </div>
                             <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                           </button>
@@ -339,7 +344,7 @@ export const TopNavBar: React.FC = () => {
                               className="absolute right-2 top-2 hidden h-5 w-5 items-center justify-center rounded-full bg-muted text-muted-foreground transition hover:bg-primary hover:text-white group-hover:flex"
                               title="Mark as read"
                             >
-                              <Check className="h-3 w-3" />
+                              <Check className="h-3.5 w-3.5" />
                             </button>
                           )}
                         </div>
@@ -364,17 +369,17 @@ export const TopNavBar: React.FC = () => {
               {profileOpen && (
                 <div className="absolute right-0 top-10 z-50 w-56 rounded-2xl border border-border bg-card p-2 shadow-[0_18px_40px_rgba(0,0,0,0.15)]">
                   <div className="border-b border-border px-3 py-2">
-                    <p className="truncate text-sm font-semibold text-foreground">{user?.full_name || 'User'}</p>
-                    <p className="truncate text-xs text-muted-foreground">{user?.email}</p>
+                    <p className="truncate text-sm font-semibold text-foreground" title={user?.full_name || undefined}>{user?.full_name || 'User'}</p>
+                    <p className="truncate text-xs text-muted-foreground" title={user?.email}>{user?.email}</p>
                     {tenant && (
-                      <p className="mt-1 truncate text-xs text-primary">{tenant.name}</p>
+                      <p className="mt-1 truncate text-xs text-primary" title={tenant.name}>{tenant.name}</p>
                     )}
                   </div>
                   <div className="pt-2">
                     <button
                       type="button"
                       onClick={() => { setProfileOpen(false); navigate('/profile'); }}
-                      className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-foreground transition hover:bg-muted/50"
+                      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-foreground transition hover:bg-muted/50"
                     >
                       <UserIcon className="h-4 w-4" />
                       Profile
@@ -405,12 +410,16 @@ export const TopNavBar: React.FC = () => {
         </div>
       </nav>
 
-      {/* ── Mobile slide-out menu ── */}
+      {/* ── Mobile bottom-sheet menu ── */}
       {mobileMenuOpen && (
         <>
           <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm lg:hidden" onClick={() => setMobileMenuOpen(false)} />
-          <div className="fixed inset-y-0 right-0 z-50 w-[280px] bg-card p-5 shadow-xl lg:hidden">
-            <div className="mb-6 flex items-center justify-between">
+          <div
+            className="fixed inset-x-0 bottom-0 z-50 max-h-[80vh] rounded-t-2xl bg-card p-5 shadow-xl lg:hidden overflow-y-auto"
+            style={{ animation: 'slideUpSheet 0.3s ease-out' }}
+          >
+            <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-muted-foreground/30" />
+            <div className="mb-4 flex items-center justify-between">
               <NeuralPrismIcon size={28} />
               <button
                 type="button"
@@ -454,6 +463,12 @@ export const TopNavBar: React.FC = () => {
               </button>
             </div>
           </div>
+          <style>{`
+            @keyframes slideUpSheet {
+              from { transform: translateY(100%); }
+              to { transform: translateY(0); }
+            }
+          `}</style>
         </>
       )}
     </>

@@ -149,6 +149,9 @@ def _build_parsed_email(raw_message: dict):
         has_attachments=bool(attachments),
         raw_headers=raw_message.get("raw_headers") or {},
         attachments=attachments,
+        forwarded_from_email=raw_message.get("forwarded_from_email") or None,
+        forwarded_from_name=raw_message.get("forwarded_from_name") or None,
+        chain_senders=tuple(raw_message.get("chain_senders") or []),
     )
 
 
@@ -182,6 +185,13 @@ async def process_email(
     )
     existing_email = existing.scalar_one_or_none()
     if existing_email:
+        # Backfill chain_senders / forwarded fields if they were missing when
+        # this email was first stored (e.g. old pipeline version).
+        if existing_email.chain_senders is None and parsed.chain_senders:
+            existing_email.chain_senders = list(parsed.chain_senders)
+        if existing_email.forwarded_from_email is None and parsed.forwarded_from_email:
+            existing_email.forwarded_from_email = parsed.forwarded_from_email
+            existing_email.forwarded_from_name = parsed.forwarded_from_name
         result.skipped = True
         result.skip_reason = "already_ingested"
         result.skip_detail = "This email was already ingested earlier and was not retried."
@@ -625,6 +635,66 @@ def _normalize_line_items(
     return normalized
 
 
+def _name_tokens(name: str) -> set[str]:
+    """Lowercase word tokens from a name, length >= 2, skipping noise words."""
+    _NOISE = {"mr", "ms", "mrs", "dr", "jr", "sr", "the", "and"}
+    return {t for t in name.lower().split() if len(t) >= 2 and t not in _NOISE}
+
+
+def _filter_to_submitter(
+    extracted_list: list[dict],
+    chain_senders: list[dict],
+    forwarded_from_name: str | None,
+) -> list[dict]:
+    """
+    When the attachment has multiple employee rows but we know who submitted
+    (from the email chain), keep only the row(s) matching the submitter.
+
+    Matching: any token from the submitter's name appears in the extracted
+    employee_name. Requires at least 2 tokens to overlap to avoid false
+    matches on common first names.
+
+    Falls back to the full list when:
+    - No submitter name is known
+    - No extracted row has an employee_name
+    - The attachment has only one row (nothing to filter)
+    - No row scores 2+ token overlaps
+    """
+    if len(extracted_list) <= 1:
+        return extracted_list
+
+    # Build candidate name tokens from chain (deepest first = original submitter)
+    submitter_tokens: set[str] = set()
+    for entry in reversed(chain_senders or []):
+        name = (entry.get("name") or "").strip()
+        if name:
+            submitter_tokens = _name_tokens(name)
+            break
+    if not submitter_tokens and forwarded_from_name:
+        submitter_tokens = _name_tokens(forwarded_from_name)
+
+    if not submitter_tokens:
+        return extracted_list
+
+    # Score each row
+    matched = []
+    for item in extracted_list:
+        extracted_name = (item.get("employee_name") or "").strip()
+        if not extracted_name:
+            continue
+        row_tokens = _name_tokens(extracted_name)
+        overlap = submitter_tokens & row_tokens
+        if len(overlap) >= 2:
+            matched.append(item)
+
+    # Only apply filter when we get a clear single match (or all matched)
+    if matched:
+        return matched
+
+    # No confident match -- return full list so reviewer can assign manually
+    return extracted_list
+
+
 def _dedupe_extracted_timesheets(extracted_list: list[dict]) -> list[dict]:
     """Remove exact duplicate timesheet payloads produced by OCR/LLM extraction."""
     deduped: list[dict] = []
@@ -663,6 +733,7 @@ def _dedupe_extracted_timesheets(extracted_list: list[dict]) -> list[dict]:
         deduped.append(item)
 
     return deduped
+
 
 
 async def _process_timesheet_attachment(
@@ -761,6 +832,14 @@ async def _process_timesheet_attachment(
     if not extracted_list:
         return 0
 
+    # When the attachment has multiple employee rows, filter to the submitter's
+    # row using chain_senders name tokens. Falls back to full list if no match.
+    extracted_list = _filter_to_submitter(
+        extracted_list,
+        chain_senders=email_record.chain_senders or [],
+        forwarded_from_name=email_record.forwarded_from_name,
+    )
+
     # Backfill contact_emails from the raw extracted text for any row where the
     # LLM returned nothing — regex is cheap and covers signatures the LLM may
     # have skipped.
@@ -783,20 +862,84 @@ async def _process_timesheet_attachment(
             continue
 
         # ── Employee resolution ────────────────────────────────────────────
-        # Precedence (highest first):
-        # 1. Name on the timesheet body (LLM employee_name)
-        # 2. Name derived from the attachment filename
-        # 3. Name on the forwarded-from header (when forwarded)
-        # 4. Any email in the document body matching a known user's email
-        # 5. Outer/forwarded sender → _resolve_or_create_external_user later
-        employee_id = _fuzzy_match_employee(
-            extracted_data.get("employee_name"), employees
-        )
+        # Email is the primary key. Precedence (highest first):
+        #
+        # Phase 1 — exact email match:
+        #   1. employee_email extracted from the document itself (LLM field)
+        #   2. contact_emails extracted from the document body/signatures
+        #   3. All chain_senders emails (employee buried in forwarded thread)
+        #   4. forwarded_from_email (direct forwarder — usually manager, but
+        #      covers the case where an employee forwards their own timesheet)
+        #
+        # Phase 2 — fuzzy name match (fallback when no email found/matched):
+        #   5. employee_name from the document (LLM field)
+        #   6. Name derived from attachment filename
+        #   7. forwarded_from_name / chain sender display names
+        #
+        # resolved_employee_email tracks the real email of whichever address
+        # produced the match, so the auto-create path uses it instead of the
+        # outer sender/forwarder address.
 
-        # Filename-derived fallback: if LLM returned no employee_name, try to
-        # recover one from the attachment filename (e.g. "Sridhar Kakulavaram
-        # March 2026.pdf"). Stamped onto extracted_data so downstream auto-
-        # create and the review UI both pick it up. Requires >=2 tokens.
+        employee_id: int | None = None
+        resolved_employee_email: str | None = None  # real email of matched employee
+
+        # Build the known-email → user_id map once (primary + all aliases).
+        known_emails_map: dict[str, int] = {}
+        for emp in employees:
+            for addr in emp.get("emails") or [emp.get("email")]:
+                if addr:
+                    known_emails_map[str(addr).strip().lower()] = emp["id"]
+
+        # Phase 1-A: employee_email field extracted directly from the document.
+        doc_employee_email = (extracted_data.get("employee_email") or "").strip().lower()
+        if doc_employee_email and doc_employee_email in known_emails_map:
+            employee_id = known_emails_map[doc_employee_email]
+            resolved_employee_email = doc_employee_email
+            logger.info("Resolved employee via doc employee_email: %r", doc_employee_email)
+
+        # Phase 1-B: contact_emails from document body/signatures.
+        if employee_id is None:
+            body_emails = extracted_data.get("contact_emails") or []
+            if isinstance(body_emails, list):
+                for candidate_email in body_emails:
+                    normalized = str(candidate_email).strip().lower()
+                    if normalized in known_emails_map:
+                        employee_id = known_emails_map[normalized]
+                        resolved_employee_email = normalized
+                        logger.info("Resolved employee via body email: %r", normalized)
+                        break
+
+        # Phase 1-C: all chain_senders emails. Collect every match; auto-assign
+        # only when exactly one known employee is found in the chain.
+        chain_match_ids: set[int] = set()
+        chain_match_emails: dict[int, str] = {}  # user_id → matched email
+        chain_from_email = email_record.chain_senders or []
+        if employee_id is None and chain_from_email:
+            for entry in chain_from_email:
+                entry_email = (entry.get("email") or "").strip().lower()
+                if entry_email and entry_email in known_emails_map:
+                    uid = known_emails_map[entry_email]
+                    chain_match_ids.add(uid)
+                    chain_match_emails[uid] = entry_email
+            if len(chain_match_ids) == 1:
+                employee_id = next(iter(chain_match_ids))
+                resolved_employee_email = chain_match_emails[employee_id]
+                logger.info(
+                    "Resolved employee via chain email (unique match): user_id=%s email=%r",
+                    employee_id, resolved_employee_email,
+                )
+
+        # Phase 1-D: forwarded_from_email (direct forwarder).
+        if employee_id is None and email_record.forwarded_from_email:
+            fwd_email = email_record.forwarded_from_email.strip().lower()
+            if fwd_email in known_emails_map:
+                employee_id = known_emails_map[fwd_email]
+                resolved_employee_email = fwd_email
+                logger.info("Resolved employee via forwarded_from_email: %r", fwd_email)
+
+        # Phase 2-A: fuzzy match on LLM-extracted employee_name.
+        # Filename-derived fallback: stamp the filename name onto extracted_data
+        # so the review UI and auto-create path both see it.
         if not (extracted_data.get("employee_name") or "").strip():
             filename_name = _derive_name_from_filename(attachment.filename)
             if filename_name and len(filename_name.split()) >= 2:
@@ -806,12 +949,13 @@ async def _process_timesheet_attachment(
                     "Filename-derived name fallback: %r (file=%s)",
                     display_name, attachment.filename,
                 )
-                if employee_id is None:
-                    employee_id = _fuzzy_match_employee(filename_name, employees)
 
-        # Forwarded-from name fallback: use the original-sender name from the
-        # forward block. Never overwrite the extracted name — it's only a
-        # signal for matching known users.
+        if employee_id is None:
+            employee_id = _fuzzy_match_employee(
+                extracted_data.get("employee_name"), employees
+            )
+
+        # Phase 2-B: forwarded-from display name fallback.
         if employee_id is None and email_record.forwarded_from_name:
             employee_id = _fuzzy_match_employee(
                 email_record.forwarded_from_name, employees
@@ -822,41 +966,9 @@ async def _process_timesheet_attachment(
                     email_record.forwarded_from_name,
                 )
 
-        # Body-email fallback: if the document carries an email address whose
-        # exact value matches a known user's email, use that user.
-        if employee_id is None:
-            body_emails = extracted_data.get("contact_emails") or []
-            if isinstance(body_emails, list):
-                known_emails = {
-                    (emp.get("email") or "").strip().lower(): emp["id"]
-                    for emp in employees
-                    if emp.get("email")
-                }
-                for candidate_email in body_emails:
-                    normalized = str(candidate_email).strip().lower()
-                    if normalized in known_emails:
-                        employee_id = known_emails[normalized]
-                        logger.info(
-                            "Resolved employee via in-document email: %r",
-                            normalized,
-                        )
-                        break
-
-        # Resolve chain senders against known users; auto-assign only on a
-        # single match, otherwise surface the whole chain for the reviewer.
-        chain_match_ids: set[int] = set()
-        chain_from_email = email_record.chain_senders or []
+        # Phase 2-C: fuzzy match on chain sender display names (email headers).
         if employee_id is None and chain_from_email:
-            known_emails_map = {
-                (emp.get("email") or "").strip().lower(): emp["id"]
-                for emp in employees
-                if emp.get("email")
-            }
             for entry in chain_from_email:
-                entry_email = (entry.get("email") or "").strip().lower()
-                if entry_email and entry_email in known_emails_map:
-                    chain_match_ids.add(known_emails_map[entry_email])
-                    continue
                 entry_name = entry.get("name") or ""
                 if entry_name:
                     matched = _fuzzy_match_employee(entry_name, employees)
@@ -865,7 +977,7 @@ async def _process_timesheet_attachment(
             if len(chain_match_ids) == 1:
                 employee_id = next(iter(chain_match_ids))
                 logger.info(
-                    "Resolved employee via forward chain (unique match): user_id=%s",
+                    "Resolved employee via chain display name (unique match): user_id=%s",
                     employee_id,
                 )
 
@@ -912,60 +1024,96 @@ async def _process_timesheet_attachment(
             session=session,
         )
 
-        # Prefer the forwarded-from sender when we have one — the outer sender
-        # on a forwarded email is the forwarder, not the timesheet owner.
-        effective_sender_email = (
-            email_record.forwarded_from_email or email_record.sender_email
-        )
-        effective_sender_name = (
-            email_record.forwarded_from_name or email_record.sender_name
-        )
-
         # Hold off auto-create when the chain has unresolved candidates;
-        # otherwise we'd attach the wrong (outer-mailbox) email.
+        # otherwise we'd attach the outer-mailbox (forwarder) email to the
+        # wrong person.
         needs_reviewer_chain_choice = bool(chain_from_email) and employee_id is None
+
+        # Best email to use for auto-creating a new employee user, in order:
+        #   1. The email that was actually matched during Phase 1 above.
+        #   2. The employee_email field extracted from the document.
+        #   3. Only for non-forwarded emails: the direct sender (they are the
+        #      submitter). For forwarded emails the sender is the forwarder
+        #      (manager/admin), not the employee — never use that for creation.
+        auto_create_email: str | None = resolved_employee_email
+        if not auto_create_email and doc_employee_email:
+            auto_create_email = doc_employee_email
+        if not auto_create_email and not email_record.forwarded_from_email:
+            # Non-forwarded: sender IS the submitter.
+            auto_create_email = email_record.sender_email or None
+
+        # Display name to accompany the auto-created user. Pull from the chain
+        # entry or forwarded header whose email we matched, so we get the header
+        # display name (e.g. "Joseph Doe") rather than the address string.
+        auto_create_name: str | None = None
+        if resolved_employee_email:
+            for entry in (chain_from_email or []):
+                if (entry.get("email") or "").strip().lower() == resolved_employee_email:
+                    auto_create_name = (entry.get("name") or "").strip() or None
+                    break
+            if not auto_create_name and email_record.forwarded_from_email and \
+                    email_record.forwarded_from_email.strip().lower() == resolved_employee_email:
+                auto_create_name = email_record.forwarded_from_name or None
+        if not auto_create_name:
+            auto_create_name = (
+                (extracted_data.get("employee_name") or "").strip() or None
+            )
+        if not auto_create_name and not email_record.forwarded_from_email:
+            auto_create_name = email_record.sender_name or None
 
         # Auto-create an employee user from extracted name if no match exists.
         if employee_id is None and not needs_reviewer_chain_choice:
             employee_id = await _resolve_or_create_extracted_employee_user(
                 extracted_employee_name=extracted_data.get("employee_name"),
-                sender_email=effective_sender_email,
+                sender_email=auto_create_email,
                 tenant_id=tenant_id,
                 session=session,
             )
 
-        # External user fallback — only when we have a real sender email address
+        # External user fallback — only when we have a real unambiguous email
+        # that belongs to the employee (not the forwarder).
         if (
             employee_id is None
             and not needs_reviewer_chain_choice
-            and effective_sender_email
-            and effective_sender_email != "unknown@unknown.com"
-            and "@" in effective_sender_email
+            and auto_create_email
+            and auto_create_email != "unknown@unknown.com"
+            and "@" in auto_create_email
         ):
             employee_id = await _resolve_or_create_external_user(
-                sender_email=effective_sender_email,
-                sender_name=effective_sender_name,
+                sender_email=auto_create_email,
+                sender_name=auto_create_name,
                 extracted_employee_name=extracted_data.get("employee_name"),
                 tenant_id=tenant_id,
                 session=session,
             )
 
-        # Build the match-suggestions payload the reviewer UI consumes. Only
-        # included when there's at least one chain entry AND the system
-        # wasn't able to auto-assign a unique employee from it.
+        # Build the match-suggestions payload the reviewer UI consumes.
+        # Two cases trigger this:
+        #   (a) Chain had entries but could not auto-assign (0 or >1 matches).
+        #   (b) Employee still unresolved after all phases — collect every email
+        #       seen across the thread so the reviewer can pick or alias one.
         llm_match_suggestions: dict | None = None
-        if chain_from_email and len(chain_match_ids) != 1:
+        unresolved = employee_id is None
+        ambiguous_chain = bool(chain_from_email) and len(chain_match_ids) != 1
+
+        if ambiguous_chain or unresolved:
             suggestions = []
             extracted_name_norm = (extracted_data.get("employee_name") or "").strip().lower()
+
             for entry in chain_from_email:
                 entry_email = (entry.get("email") or "").strip().lower() or None
                 entry_name = (entry.get("name") or "").strip() or None
                 existing_user_id: int | None = None
                 if entry_email:
-                    for emp in employees:
-                        if (emp.get("email") or "").strip().lower() == entry_email:
-                            existing_user_id = emp["id"]
-                            break
+                    existing_user_id = (
+                        known_emails_map.get(entry_email)
+                        or next(
+                            (emp["id"] for emp in employees
+                             if any((a or "").strip().lower() == entry_email
+                                    for a in (emp.get("emails") or [emp.get("email")]))),
+                            None,
+                        )
+                    )
                 if existing_user_id is None and entry_name:
                     existing_user_id = _fuzzy_match_employee(entry_name, employees)
                 suggestions.append({
@@ -978,7 +1126,28 @@ async def _process_timesheet_attachment(
                         and entry_name.lower() == extracted_name_norm
                     ),
                 })
-            llm_match_suggestions = {"chain_candidates": suggestions}
+
+            # Collect every email seen in this email that didn't match any
+            # known employee so the reviewer knows what to work with.
+            all_seen_emails: list[str] = []
+            for addr in [
+                doc_employee_email,
+                *(extracted_data.get("contact_emails") or []),
+                *[e.get("email", "") for e in chain_from_email],
+                email_record.forwarded_from_email or "",
+            ]:
+                normalized = (addr or "").strip().lower()
+                if normalized and normalized not in known_emails_map and normalized not in all_seen_emails:
+                    all_seen_emails.append(normalized)
+
+            llm_match_suggestions = {
+                "chain_candidates": suggestions,
+                "unmatched_emails": all_seen_emails,
+                "suggestion": (
+                    f"Found {len(all_seen_emails)} email(s) in the thread that did not match "
+                    "any known employee. Please assign manually or add an email alias."
+                ) if all_seen_emails else None,
+            }
 
         # Anomaly detection
         anomalies = await detect_anomalies(
@@ -1049,19 +1218,36 @@ async def _process_timesheet_attachment(
 
 
 async def _load_known_employees(session: AsyncSession, tenant_id: int) -> list[dict]:
+    from app.models.user_email_alias import UserEmailAlias
+
     result = await session.execute(
         select(User.id, User.full_name, User.email, User.default_client_id).where(
             User.tenant_id == tenant_id
         )
     )
+    rows = list(result)
+    user_ids = [row.id for row in rows]
+
+    aliases_by_user: dict[int, list[str]] = {uid: [] for uid in user_ids}
+    if user_ids:
+        alias_rows = await session.execute(
+            select(UserEmailAlias.user_id, UserEmailAlias.email).where(
+                UserEmailAlias.user_id.in_(user_ids)
+            )
+        )
+        for uid, alias_email in alias_rows:
+            if alias_email:
+                aliases_by_user.setdefault(uid, []).append(alias_email)
+
     return [
         {
             "id": row.id,
             "full_name": row.full_name,
             "email": row.email or "",
+            "emails": [e for e in [row.email, *aliases_by_user.get(row.id, [])] if e],
             "default_client_id": row.default_client_id,
         }
-        for row in result
+        for row in rows
     ]
 
 
@@ -1608,12 +1794,25 @@ async def _resolve_or_create_extracted_employee_user(
     base_slug = _slugify_identity(display_name)
 
     if use_email:
-        # Check if the real email is already taken by another user (different tenant, etc.)
+        # Check if this email is already taken by any user in the system.
+        # The users table has a global unique constraint on email, so we cannot
+        # insert the same address twice regardless of tenant.
         email_taken = await session.execute(
             select(User.id).where(User.email == use_email)
         )
-        if email_taken.scalar_one_or_none() is not None:
-            use_email = None  # Fall back to generated email
+        taken_user_id = email_taken.scalar_one_or_none()
+        if taken_user_id is not None:
+            # If the existing user is in the same tenant, return them directly
+            # rather than creating a duplicate with a fake address.
+            same_tenant_result = await session.execute(
+                select(User.id).where(
+                    (User.id == taken_user_id) & (User.tenant_id == tenant_id)
+                )
+            )
+            if same_tenant_result.scalar_one_or_none() is not None:
+                return taken_user_id
+            # Taken by a different tenant — fall back to generated email.
+            use_email = None
 
     if not use_email:
         # Generate a placeholder email as fallback

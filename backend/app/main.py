@@ -12,6 +12,7 @@ from app.db import AsyncSessionLocal, init_db, close_db
 from app.api import (
     admin,
     approvals,
+    attention_signals,
     auth,
     clients,
     dashboard,
@@ -159,6 +160,7 @@ app.include_router(mailboxes.router, prefix="/api")
 app.include_router(mailboxes.oauth_router)
 app.include_router(ingestion.router, prefix="/api")
 app.include_router(admin.router)
+app.include_router(attention_signals.router)
 
 
 @app.get("/health")

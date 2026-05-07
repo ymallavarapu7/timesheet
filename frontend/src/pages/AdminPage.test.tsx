@@ -26,6 +26,21 @@ vi.mock('@/hooks', () => ({
   useCreateUser: mocks.useCreateUser,
   useUpdateUser: mocks.useUpdateUser,
   useDeleteUser: mocks.useDeleteUser,
+  useResetUserPassword: () => ({ mutate: vi.fn(), isPending: false }),
+  useResendVerification: () => ({ mutate: vi.fn(), isPending: false }),
+  useBulkDeleteUsers: () => ({ mutate: vi.fn(), isPending: false }),
+  useUnlockUserTimesheet: () => ({ mutate: vi.fn(), isPending: false }),
+  useUserEmailAliases: () => ({ data: [], isLoading: false }),
+  useAddUserEmailAlias: () => ({ mutate: vi.fn(), isPending: false }),
+  useDeleteUserEmailAlias: () => ({ mutate: vi.fn(), isPending: false }),
+  useClients: () => ({ data: [], isLoading: false }),
+  useDepartments: () => ({ data: [], isLoading: false }),
+  useCreateDepartment: () => ({ mutate: vi.fn(), isPending: false }),
+  useDeleteDepartment: () => ({ mutate: vi.fn(), isPending: false }),
+  useLeaveTypes: () => ({ data: [], isLoading: false }),
+  useCreateLeaveType: () => ({ mutate: vi.fn(), isPending: false }),
+  useUpdateLeaveType: () => ({ mutate: vi.fn(), isPending: false }),
+  useDeleteLeaveType: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock('@/components', () => ({
@@ -162,8 +177,8 @@ describe('AdminPage', () => {
     const managerEmailCell = screen.getByText('manager@example.com');
     const managerRow = managerEmailCell.closest('tr');
     expect(managerRow).toBeTruthy();
-    const managerRowEditButton = within(managerRow as HTMLElement).getByTitle('Edit');
-    fireEvent.click(managerRowEditButton);
+    fireEvent.click(within(managerRow as HTMLElement).getByRole('button', { name: /user actions/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
 
     const reportsToLabel = screen.getByText('Reports To');
     const reportsToSelect = reportsToLabel.parentElement?.querySelector('select') as HTMLSelectElement;
@@ -256,8 +271,8 @@ describe('AdminPage', () => {
     const adminEmailCell = screen.getByText('admin@example.com');
     const adminRow = adminEmailCell.closest('tr');
     expect(adminRow).toBeTruthy();
-    const editButton = within(adminRow as HTMLElement).getByTitle('Edit');
-    fireEvent.click(editButton);
+    fireEvent.click(within(adminRow as HTMLElement).getByRole('button', { name: /user actions/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
 
     const reportsToLabel = screen.getByText('Reports To');
     const reportsToSelect = reportsToLabel.parentElement?.querySelector('select') as HTMLSelectElement;

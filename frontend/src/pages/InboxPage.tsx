@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AlertTriangle, ArrowRight, ChevronDown, ChevronRight, Clock, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react';
+import { AlertTriangle, ArrowRight, ChevronDown, ChevronRight, Clock, Loader2, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import axios from 'axios';
@@ -10,6 +10,7 @@ import { BulkSelectBar } from '@/components/ui/BulkSelectBar';
 import { CreateClientFromDomainPopover } from '@/components/ui/CreateClientFromDomainPopover';
 import {
   useAuth,
+  useAssignChainCandidate,
   useBulkReprocessEmails,
   useBulkDeleteIngestedEmails,
   useClients,
@@ -23,7 +24,7 @@ import {
   useSkippedEmails,
   useTriggerFetchEmails,
 } from '@/hooks';
-import type { FetchMessageDiagnostic, IngestionTimesheetSummary, SkippedEmail } from '@/types';
+import type { ChainCandidate, FetchMessageDiagnostic, IngestionTimesheetSummary, SkippedEmail } from '@/types';
 
 const getApiErrorMessage = (error: unknown, fallback: string): string => {
   if (axios.isAxiosError(error) && typeof error.response?.data?.detail === 'string') {
@@ -316,12 +317,9 @@ const buildRowGroups = (timesheets: IngestionTimesheetSummary[]): TimesheetRowGr
   const map = new Map<string, TimesheetRowGroup>();
 
   for (const ts of timesheets) {
-    // Group by attachment first: each attachment should represent one employee's source document.
-    // This avoids OCR/name-variant splits (e.g. VENU/JHALAVYA spellings) creating duplicate rows.
-    const extractedName = (ts.extracted_employee_name ?? ts.employee_name ?? '').toLowerCase().trim();
-    const fallbackEmployeeKey = extractedName || (ts.employee_id != null ? String(ts.employee_id) : 'unassigned');
-    const sourceKey = ts.attachment_id != null ? `att-${ts.attachment_id}` : `emp-${fallbackEmployeeKey}`;
-    const key = `${ts.email_id}-${sourceKey}`;
+    // Group all timesheets from the same email into one inbox row.
+    // The review panel shows individual week tabs inside.
+    const key = `email-${ts.email_id}`;
     if (!map.has(key)) {
       map.set(key, {
         key,
@@ -409,6 +407,7 @@ export const InboxPage: React.FC = () => {
   } | null>(null);
   const createClientFromDomain = useCreateClientFromDomain();
 
+  const assignChainCandidate = useAssignChainCandidate();
   const queryClient = useQueryClient();
   const triggerFetch = useTriggerFetchEmails();
   const { data: mailboxes = [] } = useMailboxes();
@@ -424,6 +423,7 @@ export const InboxPage: React.FC = () => {
   const reprocessSkipped = useReprocessSkippedEmails();
   const reprocessEmail = useReprocessIngestionEmail();
   const deleteEmail = useDeleteIngestedEmail();
+  const [deletingEmailId, setDeletingEmailId] = useState<number | null>(null);
   const bulkReprocessEmails = useBulkReprocessEmails();
   const bulkDeleteEmails = useBulkDeleteIngestedEmails();
   const { data: fetchStatus } = useFetchJobStatus(activeJobId, Boolean(activeJobId));
@@ -700,6 +700,7 @@ export const InboxPage: React.FC = () => {
     if (!window.confirm(`${action} "${subject || '(no subject)'}" from this application?${suffix}`)) {
       return;
     }
+    setDeletingEmailId(emailId);
     try {
       await deleteEmail.mutateAsync({ emailId, refetch });
       if (refetch) {
@@ -719,6 +720,8 @@ export const InboxPage: React.FC = () => {
     } catch (error) {
       setStatusTone('danger');
       setStatusMessage(getApiErrorMessage(error, 'Unable to delete stored email.'));
+    } finally {
+      setDeletingEmailId(null);
     }
   };
 
@@ -1137,7 +1140,7 @@ export const InboxPage: React.FC = () => {
           ) : (
             <table className="min-w-full text-left">
               <thead className="border-b border-border">
-                <tr className="text-[11px] uppercase tracking-[0.06em] text-muted-foreground">
+                <tr className="text-xs uppercase tracking-[0.06em] text-muted-foreground">
                   <th className="w-10 px-2 py-4">
                     <input
                       type="checkbox"
@@ -1154,11 +1157,11 @@ export const InboxPage: React.FC = () => {
                   </th>
                   <th className="px-4 py-4 font-medium">Sender</th>
                   <th className="px-4 py-4 font-medium">Subject</th>
+                  <th className="px-4 py-4 font-medium">Status</th>
                   <th className="px-4 py-4 font-medium">Client</th>
                   <th className="px-4 py-4 font-medium">Employee</th>
                   <th className="px-4 py-4 font-medium">Week</th>
                   <th className="px-4 py-4 font-medium">Hours</th>
-                  <th className="px-4 py-4 font-medium">Status</th>
                   <th className="px-4 py-4 font-medium">Received</th>
                   <th className="px-4 py-4 font-medium text-right">Actions</th>
                 </tr>
@@ -1225,26 +1228,30 @@ export const InboxPage: React.FC = () => {
                         </td>
                         <td className="px-4 py-5 align-top">
                           <div className="min-w-[200px] space-y-2">
-                            <p className="font-medium text-foreground">{rowTarget.subject || 'No subject'}</p>
+                            <p className="font-medium text-foreground" title={rowTarget.subject ?? undefined}>{rowTarget.subject || 'No subject'}</p>
                             {isMultiPeriod ? (
-                              <Badge tone="info" className="normal-case tracking-normal">
+                              <span className="inline-flex items-center rounded-full border border-blue-400/40 bg-blue-500/10 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300">
                                 {group.periods} weeks
-                              </Badge>
+                              </span>
                             ) : null}
                           </div>
                         </td>
+                        <td className="px-4 py-5 align-top whitespace-nowrap">
+                          <Badge tone={getStatusTone(group.status)} className="normal-case tracking-normal whitespace-nowrap">
+                            {statusLabel(group.status)}
+                          </Badge>
+                        </td>
                         <td className="px-4 py-5 align-top text-sm">
                           {rowTarget.client_name ? (
-                            <span className="text-foreground">{rowTarget.client_name}</span>
+                            <span className="text-sm text-foreground">{rowTarget.client_name}</span>
                           ) : isSkipped ? (
-                            <span className="text-muted-foreground">--</span>
+                            <span className="text-sm text-muted-foreground">--</span>
                           ) : (() => {
                             const senderDomain = domainOf(rowTarget.sender_email);
-                            // Personal domains can't cascade; reviewer assigns manually.
                             if (!senderDomain || isPersonalDomain(senderDomain)) {
                               return (
                                 <span
-                                  className="inline-flex items-center rounded-md border border-dashed border-amber-400/45 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-300"
+                                  className="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300"
                                   title={
                                     senderDomain
                                       ? `${senderDomain} is a personal email provider. Open this row to assign a client manually.`
@@ -1266,57 +1273,73 @@ export const InboxPage: React.FC = () => {
                                     anchorEl: event.currentTarget,
                                   });
                                 }}
-                                className="inline-flex items-center gap-1 rounded-md border border-dashed border-amber-400/45 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-700 transition hover:border-amber-400/70 hover:bg-amber-500/15 dark:text-amber-300"
+                                className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-700 transition hover:bg-amber-500/20 dark:text-amber-300"
                                 title={`Create or link a client for ${senderDomain}`}
                               >
-                                <Plus className="h-3 w-3" />
-                                <span>Create from</span>
-                                <span className="font-mono">{senderDomain}</span>
-                                {count > 1 ? <span className="opacity-70">({count})</span> : null}
+                                <Plus className="h-3.5 w-3.5" />
+                                {senderDomain}
+                                {count > 1 ? <span className="opacity-60">({count})</span> : null}
                               </button>
                             );
                           })()}
                         </td>
                         <td className="px-4 py-5 align-top">
-                          {rowTarget.extracted_employee_name || rowTarget.employee_name ? (
+                          {rowTarget.employee_name || rowTarget.extracted_employee_name ? (
                             <span className="text-sm text-foreground">
-                              {cleanEmployeeNameForDisplay(rowTarget.extracted_employee_name || rowTarget.employee_name)}
+                              {cleanEmployeeNameForDisplay(rowTarget.employee_name || rowTarget.extracted_employee_name)}
                             </span>
                           ) : isSkipped ? (
                             <span className="text-sm text-muted-foreground">--</span>
-                          ) : (
-                            <span
-                              className="inline-flex items-center rounded-md border border-dashed border-amber-400/45 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-300"
-                              title="Employee not yet assigned"
-                            >
-                              Needs employee
-                            </span>
-                          )}
+                          ) : (() => {
+                            const candidates: ChainCandidate[] = rowTarget.llm_match_suggestions?.chain_candidates ?? [];
+                            if (candidates.length > 0) {
+                              return (
+                                <div className="flex flex-wrap gap-1">
+                                  {candidates.map((c, i) => (
+                                    <button
+                                      key={i}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        assignChainCandidate.mutate({ id: rowTarget.id, data: { name: c.name, email: c.email } });
+                                      }}
+                                      className="inline-flex items-center rounded-full border border-blue-400/40 bg-blue-500/10 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300 hover:bg-blue-500/20 transition-colors"
+                                      title={c.email ?? undefined}
+                                    >
+                                      {c.name || c.email}
+                                    </button>
+                                  ))}
+                                </div>
+                              );
+                            }
+                            return (
+                              <span
+                                className="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300"
+                                title="Employee not yet assigned"
+                              >
+                                Needs employee
+                              </span>
+                            );
+                          })()}
                         </td>
-                        <td className="px-4 py-5 align-top text-sm text-muted-foreground">
+                        <td className="px-4 py-5 align-top text-sm text-muted-foreground whitespace-nowrap">
                           {isMultiPeriod
                             ? formatDateRange(group.timesheets[0]?.period_start ?? null, group.timesheets[group.timesheets.length - 1]?.period_end ?? null)
                             : formatDateRange(rowTarget.period_start, rowTarget.period_end)}
                         </td>
                         <td className="px-4 py-5 align-top">
                           {isSkipped ? (
-                            <span className="font-sans text-sm text-muted-foreground">--</span>
+                            <span className="text-sm text-muted-foreground">--</span>
                           ) : group.anomalyCount > 0 ? (
                             <span
-                              className="inline-flex items-center gap-1 rounded-md border border-dashed border-amber-400/45 bg-amber-500/10 px-2 py-1 font-mono text-xs font-medium text-amber-700 dark:text-amber-300"
+                              className="inline-flex items-center gap-1 whitespace-nowrap font-mono text-sm font-medium text-amber-700 dark:text-amber-400"
                               title={`${group.anomalyCount} anomaly${group.anomalyCount === 1 ? '' : 'ies'} flagged. Open to review.`}
                             >
                               {formatHours(group.totalHours)}
-                              <AlertTriangle className="h-3 w-3" />
+                              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
                             </span>
                           ) : (
-                            <span className="font-mono text-sm font-medium text-foreground">{formatHours(group.totalHours)}</span>
+                            <span className="whitespace-nowrap font-mono text-sm font-medium text-foreground">{formatHours(group.totalHours)}</span>
                           )}
-                        </td>
-                        <td className="px-4 py-5 align-top">
-                          <Badge tone={getStatusTone(group.status)} className="normal-case tracking-normal">
-                            {statusLabel(group.status)}
-                          </Badge>
                         </td>
                         <td className="px-4 py-5 align-top">
                           {(() => {
@@ -1327,19 +1350,12 @@ export const InboxPage: React.FC = () => {
                             const titleAttr = date && !Number.isNaN(date.getTime())
                               ? date.toLocaleString()
                               : undefined;
-                            if (stale) {
-                              return (
-                                <span
-                                  className="inline-flex items-center gap-1 rounded-md border border-dashed border-amber-400/45 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-700 dark:text-amber-300"
-                                  title={`Waiting longer than ${STALE_BUSINESS_DAYS} business days${titleAttr ? ' · ' + titleAttr : ''}`}
-                                >
-                                  <Clock className="h-3 w-3" />
-                                  {label}
-                                </span>
-                              );
-                            }
                             return (
-                              <span className="text-sm text-muted-foreground" title={titleAttr}>
+                              <span
+                                className={stale ? 'inline-flex items-center gap-1 text-sm font-medium text-amber-700 dark:text-amber-400 whitespace-nowrap' : 'text-sm text-muted-foreground whitespace-nowrap'}
+                                title={stale ? `Waiting longer than ${STALE_BUSINESS_DAYS} business days${titleAttr ? ' · ' + titleAttr : ''}` : titleAttr}
+                              >
+                                {stale && <Clock className="h-3.5 w-3.5 shrink-0" />}
                                 {label}
                               </span>
                             );
@@ -1354,7 +1370,7 @@ export const InboxPage: React.FC = () => {
                                   event.stopPropagation();
                                   void handleReprocessEmail(group.skipped!.id);
                                 }}
-                                className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-muted text-foreground transition hover:bg-muted/70"
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-muted text-foreground transition hover:bg-muted/70"
                                 aria-label={`Reprocess email ${group.skipped.id}`}
                                 title="Reprocess"
                                 disabled={isBusy}
@@ -1368,7 +1384,7 @@ export const InboxPage: React.FC = () => {
                                 event.stopPropagation();
                                 openReview();
                               }}
-                              className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-muted text-foreground transition hover:bg-muted/70"
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-muted text-foreground transition hover:bg-muted/70"
                               aria-label={isSkipped ? `Open email ${group.skipped?.id}` : `Open submission ${rowTarget.id}`}
                               title="Open"
                               disabled={!canOpenReview}
@@ -1381,11 +1397,15 @@ export const InboxPage: React.FC = () => {
                                 event.stopPropagation();
                                 void handleDeleteEmail(rowTarget.email_id, rowTarget.subject);
                               }}
-                              className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-muted text-foreground transition hover:bg-red-50 hover:text-red-700"
+                              disabled={isBusy}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-muted text-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
                               aria-label={`Delete email ${rowTarget.email_id}`}
                               title="Delete"
                             >
-                              <Trash2 className="h-4 w-4" />
+                              {deletingEmailId === rowTarget.email_id
+                                ? <Loader2 className="h-4 w-4 animate-spin" />
+                                : <Trash2 className="h-4 w-4" />
+                              }
                             </button>
                           </div>
                         </td>

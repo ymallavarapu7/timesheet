@@ -1,9 +1,36 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { addWeeks, differenceInCalendarWeeks, endOfWeek, format, isThisWeek, parseISO, startOfWeek } from 'date-fns';
+import { addWeeks, endOfWeek, format, isThisWeek, isToday, parseISO, startOfWeek } from 'date-fns';
 import { Calendar, Check, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Loading, Error, ChangePasswordModal, AdminActionQueue, DashboardGreeting, SystemHealthCard, WeeklyRoster, ManagerConversation, ManagerGlanceTiles, ProjectHealthTable, QuickLogButton } from '@/components';
 import type { SystemHealthStatus } from '@/components/SystemHealthCard';
+import {
+  TotalTimeWidget,
+  TodayTimeWidget,
+  UtilizationWidget,
+  TopProjectWidget,
+  DailyBarChartWidget,
+  TopActivitiesWidget,
+  ProjectsBreakdownWidget,
+  TimeOffBalanceWidget,
+  ProductivityWidget,
+  OvertimeWidget,
+  AddWidgetCard,
+  WidgetPickerPanel,
+} from '@/components/dashboard';
+import { useDashboardPrefs } from '@/hooks/useDashboardPrefs';
+import { WIDGET_REGISTRY, type WidgetKey } from '@/hooks/useWidgetPreferences';
+import { WidgetWrapper } from '@/components/dashboard/WidgetWrapper';
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import { SortableContext, rectSortingStrategy } from '@dnd-kit/sortable';
 import {
   useAuth,
   useChangePassword,
@@ -25,19 +52,7 @@ import {
   useManagerTeamOverview,
   useManagerProjectHealth,
 } from '@/hooks';
-import type { DashboardActivity, DashboardBarEntryDetail, DashboardDayBreakdown, DashboardProjectBreakdown, DashboardRecentActivityItem, NotificationItem, Project, TeamDailyOverview, Tenant, User } from '@/types';
-
-// CSS vars (not resolved hex) so theme switches repaint without re-render.
-const PROJECT_COLORS = [
-  'var(--chart-1)',
-  'var(--chart-2)',
-  'var(--chart-3)',
-  'var(--chart-4)',
-  'var(--chart-5)',
-  'var(--chart-6)',
-  'var(--chart-7)',
-  'var(--chart-8)',
-];
+import type { DashboardActivity, DashboardDayBreakdown, DashboardProjectBreakdown, DashboardRecentActivityItem, NotificationItem, Project, Tenant, User } from '@/types';
 
 const toNumber = (value: string | number) => (typeof value === 'string' ? parseFloat(value) : value);
 
@@ -59,14 +74,6 @@ const getLatestWorkingDate = (input: Date): Date => {
     reference.setDate(reference.getDate() - 1);
   }
   return reference;
-};
-
-type SelectedBarSegment = {
-  projectName: string;
-  clientName: string;
-  entryDate: string;
-  totalHours: number;
-  entries: DashboardBarEntryDetail[];
 };
 
 type AdminStatsTileKey = 'people' | 'clients' | 'active-projects' | 'pending-invites' | 'notifications';
@@ -109,123 +116,206 @@ const buildRouteWithParams = (
   return query ? `${route}?${query}` : route;
 };
 
-const DashboardBarChart: React.FC<{
-  data: DashboardDayBreakdown[];
-  projectColorMap: Record<number, string>;
-  onSelectSegment: (segment: SelectedBarSegment) => void;
-}> = ({ data, projectColorMap, onSelectSegment }) => {
-  const maxValue = Math.max(...data.map((item) => toNumber(item.hours)), 0.01);
-  const [hoverText, setHoverText] = useState<string>('');
+const EmployeeWidgetGrid: React.FC<{
+  weekRange: { startDate: string; endDate: string; label: string };
+  totalHours: number;
+  billableHours: number;
+  dailyBreakdown: DashboardDayBreakdown[];
+  topActivities: DashboardActivity[];
+  projectBreakdown: DashboardProjectBreakdown[];
+  projects: Project[];
+  topProjectName: string | null;
+  topProjectHours: number;
+  selectedEmployeeName: string | null;
+}> = ({
+  totalHours,
+  billableHours,
+  dailyBreakdown,
+  topActivities,
+  projectBreakdown,
+  topProjectName,
+  topProjectHours,
+  selectedEmployeeName,
+}) => {
+  const { prefs, toggleWidget, setOrder, cycleSize } = useDashboardPrefs();
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const [screenWidth, setScreenWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1200);
+  useEffect(() => {
+    const handler = () => setScreenWidth(window.innerWidth);
+    window.addEventListener('resize', handler);
+    return () => window.removeEventListener('resize', handler);
+  }, []);
+  const isMobile = screenWidth < 768;
+  const isTablet = screenWidth >= 768 && screenWidth < 1024;
+  const gridCols = isMobile ? 1 : isTablet ? 6 : 12;
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+  );
+
+  const todayHours = useMemo(() => {
+    const todayEntry = dailyBreakdown.find((d) => isToday(parseISO(d.entry_date)));
+    return todayEntry ? toNumber(todayEntry.hours) : 0;
+  }, [dailyBreakdown]);
+
+  const visibleKeys = useMemo(() => {
+    return prefs.order.filter((key) => prefs.visible[key]);
+  }, [prefs.order, prefs.visible]);
+
+  const getEffectiveSpan = (key: WidgetKey): number => {
+    if (isMobile) return 1;
+    const rawSpan = prefs.sizes[key];
+    if (isTablet) return Math.max(2, Math.round(rawSpan / 2));
+    return rawSpan;
+  };
+
+  const renderWidget = (key: WidgetKey) => {
+    switch (key) {
+      case 'total':
+        return (
+          <TotalTimeWidget
+            totalHours={totalHours}
+            onRemove={() => toggleWidget('total')}
+          />
+        );
+      case 'today':
+        return (
+          <TodayTimeWidget
+            todayHours={todayHours}
+            onRemove={() => toggleWidget('today')}
+          />
+        );
+      case 'util':
+        return (
+          <UtilizationWidget
+            totalHours={totalHours}
+            onRemove={() => toggleWidget('util')}
+          />
+        );
+      case 'productivity':
+        return (
+          <ProductivityWidget
+            totalHours={totalHours}
+            billableHours={billableHours}
+            onRemove={() => toggleWidget('productivity')}
+          />
+        );
+      case 'overtime':
+        return (
+          <OvertimeWidget
+            totalHours={totalHours}
+            targetHours={40}
+            onRemove={() => toggleWidget('overtime')}
+          />
+        );
+      case 'tproject':
+        return (
+          <TopProjectWidget
+            projectName={topProjectName}
+            hours={topProjectHours}
+            totalHours={totalHours}
+            onRemove={() => toggleWidget('tproject')}
+          />
+        );
+      case 'barchart':
+        return (
+          <DailyBarChartWidget
+            data={dailyBreakdown}
+            onRemove={() => toggleWidget('barchart')}
+          />
+        );
+      case 'activity':
+        return (
+          <TopActivitiesWidget
+            activities={topActivities}
+            totalHours={totalHours}
+            onRemove={() => toggleWidget('activity')}
+          />
+        );
+      case 'projects':
+        return (
+          <ProjectsBreakdownWidget
+            projects={projectBreakdown}
+            onRemove={() => toggleWidget('projects')}
+          />
+        );
+      case 'timeoff':
+        return (
+          <TimeOffBalanceWidget
+            annual={12}
+            sick={6}
+            wfh={24}
+            onRemove={() => toggleWidget('timeoff')}
+          />
+        );
+      default:
+        return null;
+    }
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (over && active.id !== over.id) {
+      const oldIdx = prefs.order.indexOf(active.id as WidgetKey);
+      const newIdx = prefs.order.indexOf(over.id as WidgetKey);
+      if (oldIdx !== -1 && newIdx !== -1) {
+        const newOrder = [...prefs.order];
+        newOrder.splice(oldIdx, 1);
+        newOrder.splice(newIdx, 0, active.id as WidgetKey);
+        setOrder(newOrder);
+      }
+    }
+  };
 
   return (
     <>
-      {hoverText && (
-        <div className="mb-3 text-xs text-muted-foreground">{hoverText}</div>
-      )}
-      <div className="grid grid-cols-7 gap-3 items-end h-72">
-        {data.map((item) => {
-          const value = toNumber(item.hours);
-          const height = value <= 0 ? 2 : Math.max((value / maxValue) * 220, 12);
-          const [weekday, monthDay] = item.formatted_date.split(', ');
-
-          return (
-            <div key={item.entry_date} className="flex flex-col items-center justify-end h-full">
-              <span className="text-xs text-muted-foreground mb-2">{formatHours(value)}</span>
-              <div className="w-full flex items-end justify-center h-56">
-                <div
-                  className="w-full max-w-[88px] rounded-t-md overflow-hidden flex flex-col-reverse"
-                  style={{ height }}
-                >
-                  {item.segments.length === 0 ? (
-                    <div className="w-full h-[2px]" style={{ background: 'var(--chart-1)' }} />
-                  ) : (
-                    item.segments.map((segment) => {
-                      const segmentHours = toNumber(segment.hours);
-                      const segmentHeight = Math.max((segmentHours / maxValue) * 220, 8);
-                      const firstEntry = segment.entries[0];
-                      return (
-                        <button
-                          type="button"
-                          key={`${item.entry_date}-${segment.project_id}`}
-                          onMouseEnter={() => setHoverText(`${segment.project_name}: ${formatHours(segmentHours)}`)}
-                          onMouseLeave={() => setHoverText('')}
-                          onClick={() => {
-                            if (firstEntry) {
-                              onSelectSegment({
-                                projectName: segment.project_name,
-                                clientName: segment.client_name,
-                                entryDate: item.entry_date,
-                                totalHours: segmentHours,
-                                entries: segment.entries,
-                              });
-                            }
-                          }}
-                          className="w-full"
-                          style={{
-                            height: segmentHeight,
-                            backgroundColor: projectColorMap[segment.project_id] ?? PROJECT_COLORS[0],
-                          }}
-                          title={`${segment.project_name} • ${formatHours(segmentHours)}`}
-                        />
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-              <span className="mt-3 text-xs text-foreground text-center">{weekday}</span>
-              <span className="text-[11px] text-muted-foreground text-center">{monthDay}</span>
-            </div>
-          );
-        })}
-      </div>
-    </>
-  );
-};
-
-const DashboardDonutChart: React.FC<{ data: DashboardProjectBreakdown[]; totalHours: number }> = ({ data, totalHours }) => {
-  const radius = 70;
-  const circumference = 2 * Math.PI * radius;
-  let offset = 0;
-
-  if (data.length === 0) {
-    return (
-      <div className="relative h-56 w-56 shrink-0">
-        <svg viewBox="0 0 200 200" className="h-full w-full -rotate-90">
-          <circle cx="100" cy="100" r={radius} fill="none" stroke="var(--chart-track)" strokeWidth="36" />
-        </svg>
-        <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-2xl font-bold">00:00</span>
+      {selectedEmployeeName && (
+        <div className="mb-4 rounded-lg border bg-muted/30 px-4 py-3 text-base font-bold text-foreground md:text-lg">
+          Viewing data for: {selectedEmployeeName}
         </div>
-      </div>
-    );
-  }
+      )}
 
-  return (
-    <div className="relative h-56 w-56 shrink-0">
-      <svg viewBox="0 0 200 200" className="h-full w-full -rotate-90">
-        {data.map((item, index) => {
-          const segment = (item.percentage / 100) * circumference;
-          const circle = (
-            <circle
-              key={item.project_id}
-              cx="100"
-              cy="100"
-              r={radius}
-              fill="none"
-              stroke={PROJECT_COLORS[index % PROJECT_COLORS.length]}
-              strokeWidth="36"
-              strokeDasharray={`${segment} ${circumference - segment}`}
-              strokeDashoffset={-offset}
-            />
-          );
-          offset += segment;
-          return circle;
-        })}
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-2xl font-bold">{formatHours(totalHours)}</span>
-      </div>
-    </div>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={handleDragEnd}
+      >
+        <SortableContext items={visibleKeys} strategy={rectSortingStrategy}>
+          <div
+            className="grid gap-4 grid-flow-dense"
+            style={{
+              gridTemplateColumns: isMobile ? '1fr' : `repeat(${gridCols}, 1fr)`,
+            }}
+          >
+            {visibleKeys.map((key) => (
+              <WidgetWrapper
+                key={key}
+                id={key}
+                span={getEffectiveSpan(key)}
+                title={WIDGET_REGISTRY.find((w) => w.key === key)?.label}
+                onResize={() => cycleSize(key)}
+                isMobile={isMobile}
+              >
+                {renderWidget(key)}
+              </WidgetWrapper>
+            ))}
+
+            <div style={{ gridColumn: isMobile ? '1 / -1' : 'span 3' }}>
+              <AddWidgetCard onClick={() => setPickerOpen(true)} />
+            </div>
+          </div>
+        </SortableContext>
+      </DndContext>
+
+      <WidgetPickerPanel
+        isOpen={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        state={prefs.visible}
+        onToggle={toggleWidget}
+      />
+    </>
   );
 };
 
@@ -307,7 +397,6 @@ export const DashboardPage: React.FC = () => {
   const [weekOffset, setWeekOffset] = useState(0);
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
-  const [selectedBarSegment, setSelectedBarSegment] = useState<SelectedBarSegment | null>(null);
   const [adminDashboardView, setAdminDashboardView] = useState<'stats' | 'my-time'>('stats');
   const [managerDashboardView, setManagerDashboardView] = useState<'team' | 'my-time'>('team');
   const [isNotificationsModalOpen, setIsNotificationsModalOpen] = useState(false);
@@ -325,12 +414,16 @@ export const DashboardPage: React.FC = () => {
   // sets pendingStart and shows a hover preview; second click commits
   // the range. Reset on popover close.
   const [pendingRangeStart, setPendingRangeStart] = useState<Date | null>(null);
-  // Recent Activity is the admin's "what happened while I was away"
-  // feed; we want it visible by default rather than hidden behind a
-  // chevron. Stays as an explicit collapse for the rare cases where
-  // an admin wants to focus on the action queue alone.
-  const [showRecentActivity, setShowRecentActivity] = useState(true);
+  // Recent Activity collapsed by default; a "N new since last login"
+  // chip on the header tells the admin if anything's worth opening.
+  const [showRecentActivity, setShowRecentActivity] = useState(false);
   const [recentActivityExpanded, setRecentActivityExpanded] = useState(false);
+  const previousLoginAt = useMemo(() => {
+    const stored = sessionStorage.getItem('previous_last_login_at');
+    if (!stored) return null;
+    const ts = Date.parse(stored);
+    return Number.isFinite(ts) ? ts : null;
+  }, []);
   const weekStartsOn = useWeekStartsOn();
   const [pickerMonth, setPickerMonth] = useState<Date>(() => new Date());
 
@@ -343,6 +436,15 @@ export const DashboardPage: React.FC = () => {
   useEffect(() => {
     void refreshUser();
   }, [refreshUser]);
+
+  useEffect(() => {
+    if (!showWeekPicker) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setShowWeekPicker(false); setWeekPickerMode('presets'); }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [showWeekPicker]);
 
   const isManagerView = user?.role === 'MANAGER' || user?.role === 'SENIOR_MANAGER';
   const isPlatformAdmin = user?.role === 'PLATFORM_ADMIN';
@@ -434,21 +536,6 @@ export const DashboardPage: React.FC = () => {
   const dailyBreakdown = useMemo(() => analytics?.daily_breakdown ?? [], [analytics?.daily_breakdown]);
   const projectBreakdown = useMemo(() => analytics?.project_breakdown ?? [], [analytics?.project_breakdown]);
   const topActivities = analytics?.top_activities ?? [];
-  const projectColorMap = useMemo(() => {
-    const map: Record<number, string> = {};
-    projectBreakdown.forEach((project: DashboardProjectBreakdown, index: number) => {
-      map[project.project_id] = PROJECT_COLORS[index % PROJECT_COLORS.length];
-    });
-    dailyBreakdown.forEach((day) => {
-      day.segments.forEach((segment) => {
-        if (!map[segment.project_id]) {
-          const colorIndex = Object.keys(map).length % PROJECT_COLORS.length;
-          map[segment.project_id] = PROJECT_COLORS[colorIndex];
-        }
-      });
-    });
-    return map;
-  }, [projectBreakdown, dailyBreakdown]);
 
   if (!user || (!isPlatformAdmin && analyticsLoading) || (!isPlatformAdmin && projectsLoading) || ((isManagerView || isAdminView) && teamLoading) || (isManagerView && teamDailyLoading) || (isPlatformAdmin && tenantsLoading)) {
     return <Loading />;
@@ -465,7 +552,6 @@ export const DashboardPage: React.FC = () => {
     : employeeOptions.find((employee) => employee.id === selectedUserId)?.full_name ?? null;
   const totalHours = toNumber(analytics?.total_hours ?? 0);
   const billableHours = toNumber(analytics?.billable_hours ?? 0);
-  const nonBillableHours = toNumber(analytics?.non_billable_hours ?? 0);
   const allUsers = users as User[];
   const allTenants = tenants as Tenant[];
   const allClients = clients as { id: number }[];
@@ -569,7 +655,7 @@ export const DashboardPage: React.FC = () => {
                 doesn't compete with the dashboard's read content. */}
             <QuickLogButton className="relative" />
             {isManagerView && (
-              <div className="flex items-center rounded-md border bg-card overflow-hidden">
+              <div className="flex items-center rounded-lg border bg-card overflow-hidden">
                 <button
                   type="button"
                   onClick={() => setManagerDashboardView('team')}
@@ -588,7 +674,7 @@ export const DashboardPage: React.FC = () => {
             )}
 
             {isAdminView && (
-              <div className="flex items-center rounded-md border bg-card overflow-hidden">
+              <div className="flex items-center rounded-lg border bg-card overflow-hidden">
                 <button
                   type="button"
                   onClick={() => setAdminDashboardView('stats')}
@@ -663,7 +749,7 @@ export const DashboardPage: React.FC = () => {
                                   setWeekOffset(offset);
                                   setShowWeekPicker(false);
                                 }}
-                                className={`flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-sm transition ${active ? 'bg-primary/10 text-primary font-semibold' : 'hover:bg-muted'}`}
+                                className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-sm transition ${active ? 'bg-primary/10 text-primary font-semibold' : 'hover:bg-muted'}`}
                               >
                                 <span>{label}</span>
                                 {active && <Check className="h-3.5 w-3.5" />}
@@ -678,7 +764,7 @@ export const DashboardPage: React.FC = () => {
                               setWeekPickerMode('custom');
                               setPendingRangeStart(null);
                             }}
-                            className={`flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-sm transition ${customRange ? 'bg-primary/10 text-primary font-semibold' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
+                            className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-sm transition ${customRange ? 'bg-primary/10 text-primary font-semibold' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
                           >
                             <span>Custom range…</span>
                             <ChevronRight className="h-3.5 w-3.5" />
@@ -702,14 +788,14 @@ export const DashboardPage: React.FC = () => {
                             </button>
                           </div>
                         </div>
-                        <p className="px-1 pb-2 text-[11px] text-muted-foreground">
+                        <p className="px-1 pb-2 text-xs text-muted-foreground">
                           {pendingRangeStart
                             ? `Start: ${format(pendingRangeStart, 'MMM d')}. Pick the end date.`
                             : 'Pick a start date.'}
                         </p>
                         <div className="grid grid-cols-7 mb-1">
                           {['Su','Mo','Tu','We','Th','Fr','Sa'].map((d) => (
-                            <div key={d} className="text-center text-[11px] font-medium text-muted-foreground py-1">{d}</div>
+                            <div key={d} className="text-center text-xs font-medium text-muted-foreground py-1">{d}</div>
                           ))}
                         </div>
                         {(() => {
@@ -774,7 +860,7 @@ export const DashboardPage: React.FC = () => {
                   </div>
                 </>
               )}
-              <div className="flex items-center rounded-md border bg-card overflow-hidden">
+              <div className="flex items-center rounded-lg border bg-card overflow-hidden">
                 <button
                   type="button"
                   onClick={() => setWeekOffset((current) => current - 1)}
@@ -819,6 +905,7 @@ export const DashboardPage: React.FC = () => {
                 notifications={notificationItems as NotificationItem[]}
                 recentActivity={recentActivity}
                 recentActivityLoading={recentActivityLoading}
+                currentUserId={user?.id ?? null}
                 onOpenNotifications={() => setIsNotificationsModalOpen(true)}
               />
             )}
@@ -831,7 +918,7 @@ export const DashboardPage: React.FC = () => {
                 {platformStatsTiles.map((tile) => (
                   <div
                     key={tile.label}
-                    className="rounded-lg bg-card p-4 text-center shadow-[0_1px_2px_rgba(0,0,0,0.05)]"
+                    className="rounded-lg bg-card p-3 text-center shadow-[0_1px_2px_rgba(0,0,0,0.05)]"
                   >
                     <p className="text-xs text-muted-foreground">{tile.label}</p>
                     <p className="text-2xl font-bold mt-1">{tile.value}</p>
@@ -852,25 +939,38 @@ export const DashboardPage: React.FC = () => {
                     <p className="text-xs text-muted-foreground">{tile.label}</p>
                     <p className="text-2xl font-bold mt-1 leading-tight">{tile.value}</p>
                     {tile.hint && (
-                      <p className="mt-1 text-[11px] text-muted-foreground">{tile.hint}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{tile.hint}</p>
                     )}
                   </button>
                 ))}
               </div>
             )}
 
-            {/* 3. Recent Activity: "what happened in the org while I was
-                away." Expanded by default with a 5-row preview; collapse
-                stays an option, and a Show more reveals the full list. */}
+            {/* Recent Activity collapsed by default; "N new" chip on header. */}
+            {(() => {
+              const newSinceLogin = previousLoginAt == null
+                ? 0
+                : recentActivity.filter((it) => {
+                    const ts = Date.parse(it.created_at);
+                    return Number.isFinite(ts) && ts > previousLoginAt;
+                  }).length;
+              return (
             <div className="rounded-lg bg-card p-4 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
               <button
                 type="button"
                 onClick={() => setShowRecentActivity((v) => !v)}
                 className="flex w-full items-center justify-between gap-3"
               >
-                <h2 className="text-base font-semibold">
-                  {isPlatformAdmin ? 'Recent Platform Activity' : 'Recent Org Activity'}
-                </h2>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base font-semibold">
+                    {isPlatformAdmin ? 'Recent Platform Activity' : 'Recent Org Activity'}
+                  </h2>
+                  {newSinceLogin > 0 && (
+                    <span className="inline-flex items-center rounded-full border border-sky-400/40 bg-sky-500/10 px-2 py-0.5 text-[11px] font-semibold text-sky-700 dark:text-sky-300">
+                      {newSinceLogin} new since last login
+                    </span>
+                  )}
+                </div>
                 <div className="flex items-center gap-2">
                   <p className="text-xs text-muted-foreground">{recentActivity.length || 0} items</p>
                   <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${showRecentActivity ? 'rotate-180' : ''}`} />
@@ -891,16 +991,28 @@ export const DashboardPage: React.FC = () => {
                     return (
                       <>
                         <div className="space-y-2">
-                          {visibleActivity.map((item: DashboardRecentActivityItem) => (
+                          {visibleActivity.map((item: DashboardRecentActivityItem) => {
+                            const ts = Date.parse(item.created_at);
+                            const isNew = previousLoginAt != null && Number.isFinite(ts) && ts > previousLoginAt;
+                            return (
                             <button
                               key={item.id}
                               type="button"
                               onClick={() => navigate(buildRouteWithParams(item.route, item.route_params))}
-                              className="w-full rounded-md border px-3 py-2 text-left transition-colors hover:bg-muted/30"
+                              className={`w-full rounded-md border px-3 py-2 text-left transition-colors hover:bg-muted/30 ${
+                                isNew
+                                  ? 'border-sky-400/40 bg-sky-500/[0.07]'
+                                  : ''
+                              }`}
                             >
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
-                                  <p className="text-sm font-medium text-foreground">{item.summary}</p>
+                                  <p className="text-sm font-medium text-foreground">
+                                    {isNew && (
+                                      <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-sky-500 align-middle" aria-label="New" />
+                                    )}
+                                    {item.summary}
+                                  </p>
                                   <p className="mt-0.5 text-xs text-muted-foreground">
                                     {format(parseISO(item.created_at), 'MMM d, yyyy • h:mm a')}
                                   </p>
@@ -910,7 +1022,8 @@ export const DashboardPage: React.FC = () => {
                                 </span>
                               </div>
                             </button>
-                          ))}
+                            );
+                          })}
                         </div>
                         {hiddenCount > 0 && (
                           <button
@@ -936,6 +1049,8 @@ export const DashboardPage: React.FC = () => {
                 </div>
               )}
             </div>
+              );
+            })()}
 
             {/* 4. System Health: demoted to bottom. Infra is healthy 99%
                 of the time; when it's not, the issue surfaces in the
@@ -1037,181 +1152,18 @@ export const DashboardPage: React.FC = () => {
         )}
 
         {showPersonalTimeView && (
-          <>
-        {selectedEmployeeName && (
-          <div className="mb-4 rounded-md border bg-muted/30 px-4 py-3 text-base font-bold text-foreground md:text-lg">
-            Viewing data for: {selectedEmployeeName}
-          </div>
-        )}
-
-        <div className="mb-4 rounded-lg border bg-card p-6">
-          <div className="mb-4 flex items-center justify-between gap-3 flex-wrap rounded-md border border-primary/20 bg-primary/5 px-3 py-2">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-primary">Weekly View</span>
-              <span className="text-sm font-medium text-foreground">{weekRange.label}</span>
-              {/* Drafts-pending chip: only meaningful when an admin is
-                  looking at their own week. Surfaces work-in-progress
-                  that the Weekly View totals already include but the
-                  reader might miss is still draft. */}
-              {isAdminView && !isPlatformAdmin && (selectedUserId == null || selectedUserId === user?.id) && (adminDraftEntries as { id: number }[]).length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => navigate('/my-time')}
-                  className="rounded-full border border-amber-400/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300 hover:bg-amber-500/20"
-                >
-                  {(adminDraftEntries as { id: number }[]).length} draft{(adminDraftEntries as { id: number }[]).length === 1 ? '' : 's'} pending
-                </button>
-              )}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {format(parseISO(weekRange.startDate), 'EEE, MMM d')} to {format(parseISO(weekRange.endDate), 'EEE, MMM d')}
-            </p>
-          </div>
-
-          <div className={`grid gap-4 ${showProjectClientWidgets ? 'grid-cols-1 md:grid-cols-3' : 'grid-cols-1'}`}>
-            <div className="text-center">
-            <p className="text-sm text-muted-foreground mb-1">Total time</p>
-            <p className="text-3xl font-bold">{formatHours(totalHours)}</p>
-            {totalHours > 0 && (
-              <div className="mt-1 flex justify-center gap-3 text-xs text-muted-foreground">
-                <span className="text-green-700 font-medium">{formatHours(billableHours)} billable</span>
-                {nonBillableHours > 0 && (
-                  <span className="text-orange-600 font-medium">{formatHours(nonBillableHours)} non-billable</span>
-                )}
-              </div>
-            )}
-            </div>
-            {showProjectClientWidgets && (
-              <>
-                <div className="text-center">
-                  <p className="text-sm text-muted-foreground mb-1">Top Project</p>
-                  <p className="text-2xl font-semibold truncate">{analytics?.top_project_name ?? '---'}</p>
-                </div>
-                <div className="text-center">
-                  <p className="text-sm text-muted-foreground mb-1">Top Client</p>
-                  <p className="text-2xl font-semibold truncate">{analytics?.top_client_name ?? '---'}</p>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-4 mb-4">
-          <div className="rounded-lg border bg-card p-6 overflow-x-auto">
-            <div className="min-w-[720px]">
-              <DashboardBarChart data={dailyBreakdown} projectColorMap={projectColorMap} onSelectSegment={setSelectedBarSegment} />
-            </div>
-          </div>
-
-          <div className="rounded-lg border bg-card p-5">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Most tracked activities</h2>
-              <span className="text-sm text-muted-foreground">Top 10</span>
-            </div>
-            <div className="space-y-3">
-              {topActivities.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No activity for this range.</p>
-              ) : (
-                topActivities.map((activity: DashboardActivity, index: number) => (
-                  <div key={`${activity.project_name}-${activity.description}-${index}`} className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-sm truncate">{activity.description || '(no description)'}</p>
-                      {showProjectClientWidgets && (
-                        <p className="text-xs text-muted-foreground truncate">• {activity.project_name}</p>
-                      )}
-                    </div>
-                    <span className="text-sm font-medium whitespace-nowrap">{formatHours(toNumber(activity.hours))}</span>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-
-        {showProjectClientWidgets && (
-          <div className="rounded-lg border bg-card p-6">
-            <div className="flex flex-col xl:flex-row items-start xl:items-center gap-8">
-              <DashboardDonutChart data={projectBreakdown} totalHours={totalHours} />
-
-              <div className="flex-1 w-full space-y-4">
-                {projectBreakdown.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No project data for this range.</p>
-                ) : (
-                  projectBreakdown.map((project: DashboardProjectBreakdown, index: number) => (
-                    <div key={project.project_id} className="flex items-center gap-3">
-                      <div
-                        className="h-3 w-3 rounded-full shrink-0"
-                        style={{ backgroundColor: projectColorMap[project.project_id] ?? PROJECT_COLORS[index % PROJECT_COLORS.length] }}
-                      />
-                      <span className="text-sm flex-1 truncate">{project.project_name}</span>
-                      <span className="text-sm text-muted-foreground whitespace-nowrap">{formatHours(toNumber(project.hours))}</span>
-                      <div className="w-40 h-4 rounded-sm bg-muted overflow-hidden">
-                        <div
-                          className="h-full"
-                          style={{
-                            width: `${Math.max(project.percentage, 4)}%`,
-                            backgroundColor: projectColorMap[project.project_id] ?? PROJECT_COLORS[index % PROJECT_COLORS.length],
-                          }}
-                        />
-                      </div>
-                      <span className="text-sm text-muted-foreground w-16 text-right">{project.percentage.toFixed(2)}%</span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-          </>
-        )}
-
-        {showPersonalTimeView && selectedBarSegment && (
-          <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-            <div className="w-full max-w-lg rounded-lg border bg-card p-5 shadow-2xl">
-              <div className="flex items-start justify-between gap-4 mb-4">
-                <div>
-                  <h3 className="text-lg font-semibold">Entry details</h3>
-                  <p className="text-sm text-muted-foreground">{format(parseISO(selectedBarSegment.entryDate), 'MMM d, yyyy')}</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setSelectedBarSegment(null)}
-                  className="px-2 py-1 text-sm rounded border hover:bg-muted"
-                >
-                  Close
-                </button>
-              </div>
-              <div className="space-y-2 text-sm">
-                {showProjectClientWidgets && (
-                  <>
-                    <p><span className="text-muted-foreground">Project:</span> {selectedBarSegment.projectName}</p>
-                    <p><span className="text-muted-foreground">Client:</span> {selectedBarSegment.clientName}</p>
-                  </>
-                )}
-                <p><span className="text-muted-foreground">Hours:</span> {formatHours(selectedBarSegment.totalHours)}</p>
-              </div>
-              <div className="mt-4 border-t pt-3 space-y-2 max-h-64 overflow-y-auto">
-                {selectedBarSegment.entries.map((entry) => (
-                  <button
-                    type="button"
-                    key={entry.entry_id}
-                    onClick={() => {
-                      const mode = entry.status === 'DRAFT' ? 'edit' : 'view';
-                      navigate(`/my-time?entryId=${entry.entry_id}&date=${entry.entry_date}&mode=${mode}`);
-                      setSelectedBarSegment(null);
-                    }}
-                    className="w-full text-left rounded border p-2 text-sm hover:bg-muted/40"
-                  >
-                    <p><span className="text-muted-foreground">Entry #:</span> {entry.entry_id}</p>
-                    <p><span className="text-muted-foreground">Status:</span> {entry.status}</p>
-                    <p><span className="text-muted-foreground">Hours:</span> {formatHours(toNumber(entry.hours))}</p>
-                    <p><span className="text-muted-foreground">Description:</span> {entry.description}</p>
-                  </button>
-                ))}
-              </div>
-              <p className="mt-3 text-xs text-muted-foreground">Click an entry to open it in My Time (draft opens in edit mode).</p>
-            </div>
-          </div>
+          <EmployeeWidgetGrid
+            weekRange={weekRange}
+            totalHours={totalHours}
+            billableHours={billableHours}
+            dailyBreakdown={dailyBreakdown}
+            topActivities={topActivities}
+            projectBreakdown={projectBreakdown}
+            projects={projectOptions}
+            topProjectName={analytics?.top_project_name ?? null}
+            topProjectHours={toNumber(analytics?.top_project_hours ?? 0)}
+            selectedEmployeeName={selectedEmployeeName}
+          />
         )}
 
         {showAdminStatsView && isNotificationsModalOpen && (

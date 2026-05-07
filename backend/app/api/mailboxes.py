@@ -42,6 +42,9 @@ from app.services.activity import (
 from app.services.encryption import encrypt
 from app.services.imap import test_connection
 
+import logging
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/mailboxes", tags=["mailboxes"])
 oauth_router = APIRouter(prefix="/auth/oauth", tags=["mailboxes"])
 
@@ -652,8 +655,11 @@ async def oauth_callback(
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
     error_description: str | None = Query(default=None),
-    session: AsyncSession = Depends(get_tenant_db),
 ) -> HTMLResponse:
+    # This endpoint is hit by a plain browser GET redirect from the OAuth
+    # provider — there is no Authorization header. Authentication is provided
+    # by the HMAC-signed state token which already carries tenant_id and
+    # user_id. We open a DB session from the state, not from a Bearer token.
     if error:
         message = error_description or error.replace("_", " ")
         return _oauth_popup_response("error", f"{provider.title()} OAuth failed: {message}")
@@ -669,87 +675,117 @@ async def oauth_callback(
     if state_data["provider"] != provider:
         return _oauth_popup_response("error", "OAuth callback provider did not match the original request.")
 
-    tenant = await session.get(Tenant, state_data["tenant_id"])
-    if not tenant:
-        return _oauth_popup_response("error", "Tenant not found for this OAuth callback.")
-    if not tenant.ingestion_enabled:
-        return _oauth_popup_response("error", "Ingestion is not enabled for this tenant.")
-
-    # Verify the user the state was issued to is still valid in the same
-    # tenant. The signature already prevents tampering, so user_id is
-    # trustworthy; this check guards against an admin who initiated the
-    # flow being deactivated or moved to another tenant before completing.
-    initiating_user = await session.get(User, state_data["user_id"])
-    if not initiating_user:
-        return _oauth_popup_response("error", "The user who started this OAuth flow no longer exists.")
-    if not initiating_user.is_active:
-        return _oauth_popup_response("error", "The user who started this OAuth flow is no longer active.")
-    if initiating_user.tenant_id != tenant.id:
-        return _oauth_popup_response("error", "OAuth flow user does not match the tenant on this state.")
+    # Open a tenant-scoped session using the tenant_id from the verified state.
+    # We resolve the tenant slug via the control plane so isolated-DB tenants
+    # get the right session; shared-DB tenants fall back to AsyncSessionLocal.
+    from app.db_tenant import get_session_factory_for_slug
+    from app.db import AsyncSessionLocal
+    from app.db_control import AsyncControlSessionLocal
+    from app.models.control import ControlTenant
 
     try:
-        if provider == OAuthProvider.google.value:
-            oauth_data = await _exchange_google_oauth_code(code)
-            mailbox = await _upsert_oauth_mailbox(
-                session,
-                tenant.id,
-                OAuthProvider.google,
-                oauth_data["email"],
-                oauth_data["access_token"],
-                oauth_data["refresh_token"],
-                oauth_data["expires_in"],
-            )
-        elif provider == OAuthProvider.microsoft.value:
-            oauth_data = await _exchange_microsoft_oauth_code(code)
-            mailbox = await _upsert_oauth_mailbox(
-                session,
-                tenant.id,
-                OAuthProvider.microsoft,
-                oauth_data["email"],
-                oauth_data["access_token"],
-                oauth_data["refresh_token"],
-                oauth_data["expires_in"],
-            )
-        else:
-            return _oauth_popup_response("error", f"Unknown OAuth provider: {provider}")
-    except Exception as exc:
-        return _oauth_popup_response("error", f"{provider.title()} OAuth setup failed: {exc}")
-
-    # Attribute the connection to the OAuth initiator (signed state),
-    # not to whichever session landed the callback.
-    try:
-        await record_activity_events(
-            session,
-            [
-                build_activity_event(
-                    activity_type="MAILBOX_CONNECTED",
-                    visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
-                    tenant_id=tenant.id,
-                    actor_user=initiating_user,
-                    entity_type="mailbox",
-                    entity_id=mailbox.id,
-                    summary=(
-                        f"{initiating_user.full_name} connected {provider.title()} mailbox "
-                        f"{mailbox.oauth_email}."
-                    ),
-                    route="/mailboxes",
-                    route_params={"mailboxId": mailbox.id},
-                    metadata={
-                        "provider": provider,
-                        "mailbox_email": mailbox.oauth_email,
-                    },
-                )
-            ],
-        )
-        await session.commit()
+        async with AsyncControlSessionLocal() as ctrl:
+            ctrl_tenant = await ctrl.get(ControlTenant, state_data["tenant_id"])
+        tenant_slug = ctrl_tenant.slug if ctrl_tenant else None
     except Exception:
-        # Activity logging is best-effort here. The mailbox is already saved;
-        # losing the audit event is preferable to failing the whole OAuth
-        # flow. The actual mailbox row still records its created_at timestamp.
-        await session.rollback()
+        tenant_slug = None
 
-    return _oauth_popup_response(
-        "success",
-        f"Connected mailbox for {mailbox.oauth_email}.",
-        mailbox_id=mailbox.id,
-    )
+    async def _run_with_session(fn):
+        if tenant_slug:
+            try:
+                factory = await get_session_factory_for_slug(tenant_slug)
+                async with factory() as s:
+                    return await fn(s)
+            except LookupError:
+                pass
+        async with AsyncSessionLocal() as s:
+            return await fn(s)
+
+    async def _callback_body(session: AsyncSession):
+        tenant = await session.get(Tenant, state_data["tenant_id"])
+        if not tenant:
+            return _oauth_popup_response("error", "Tenant not found for this OAuth callback.")
+        if not tenant.ingestion_enabled:
+            return _oauth_popup_response("error", "Ingestion is not enabled for this tenant.")
+
+        # Verify the user the state was issued to is still valid in the same
+        # tenant. The signature already prevents tampering, so user_id is
+        # trustworthy; this check guards against an admin who initiated the
+        # flow being deactivated or moved to another tenant before completing.
+        initiating_user = await session.get(User, state_data["user_id"])
+        if not initiating_user:
+            return _oauth_popup_response("error", "The user who started this OAuth flow no longer exists.")
+        if not initiating_user.is_active:
+            return _oauth_popup_response("error", "The user who started this OAuth flow is no longer active.")
+        if initiating_user.tenant_id != tenant.id:
+            return _oauth_popup_response("error", "OAuth flow user does not match the tenant on this state.")
+
+        try:
+            if provider == OAuthProvider.google.value:
+                oauth_data = await _exchange_google_oauth_code(code)
+                mailbox = await _upsert_oauth_mailbox(
+                    session,
+                    tenant.id,
+                    OAuthProvider.google,
+                    oauth_data["email"],
+                    oauth_data["access_token"],
+                    oauth_data["refresh_token"],
+                    oauth_data["expires_in"],
+                )
+            elif provider == OAuthProvider.microsoft.value:
+                oauth_data = await _exchange_microsoft_oauth_code(code)
+                mailbox = await _upsert_oauth_mailbox(
+                    session,
+                    tenant.id,
+                    OAuthProvider.microsoft,
+                    oauth_data["email"],
+                    oauth_data["access_token"],
+                    oauth_data["refresh_token"],
+                    oauth_data["expires_in"],
+                )
+            else:
+                return _oauth_popup_response("error", f"Unknown OAuth provider: {provider}")
+        except Exception as exc:
+            import traceback
+            logger.error("OAuth setup failed for provider=%s: %s\n%s", provider, exc, traceback.format_exc())
+            return _oauth_popup_response("error", f"{provider.title()} OAuth setup failed: {exc}")
+
+        # Attribute the connection to the OAuth initiator (signed state),
+        # not to whichever session landed the callback.
+        try:
+            await record_activity_events(
+                session,
+                [
+                    build_activity_event(
+                        activity_type="MAILBOX_CONNECTED",
+                        visibility_scope=TENANT_ADMIN_ACTIVITY_SCOPE,
+                        tenant_id=tenant.id,
+                        actor_user=initiating_user,
+                        entity_type="mailbox",
+                        entity_id=mailbox.id,
+                        summary=(
+                            f"{initiating_user.full_name} connected {provider.title()} mailbox "
+                            f"{mailbox.oauth_email}."
+                        ),
+                        route="/mailboxes",
+                        route_params={"mailboxId": mailbox.id},
+                        metadata={
+                            "provider": provider,
+                            "mailbox_email": mailbox.oauth_email,
+                        },
+                    )
+                ],
+            )
+            await session.commit()
+        except Exception:
+            # Activity logging is best-effort. The mailbox is already saved;
+            # losing the audit event is preferable to failing the OAuth flow.
+            await session.rollback()
+
+        return _oauth_popup_response(
+            "success",
+            f"Connected mailbox for {mailbox.oauth_email}.",
+            mailbox_id=mailbox.id,
+        )
+
+    return await _run_with_session(_callback_body)

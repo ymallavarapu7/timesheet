@@ -31,12 +31,18 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
+vi.mock('@/hooks', () => ({
+  useDismissedAttentionSignals: () => ({ data: [] }),
+  useDismissAttentionSignal: () => ({ mutate: vi.fn() }),
+}));
+
 const renderQueue = (overrides: Partial<React.ComponentProps<typeof AdminActionQueue>> = {}) => {
   const defaults: React.ComponentProps<typeof AdminActionQueue> = {
     users: [],
     notifications: [],
     recentActivity: [],
     recentActivityLoading: false,
+    currentUserId: null,
     onOpenNotifications: vi.fn(),
   };
   return render(
@@ -51,6 +57,7 @@ const recentItem = (overrides: Partial<DashboardRecentActivityItem> = {}): Dashb
   activity_type: 'ingestion.error',
   entity_type: 'ingestion_email',
   entity_id: 42,
+  actor_id: null,
   actor_name: 'system',
   summary: 'Mailbox sync failed',
   route: '/ingestion/inbox',

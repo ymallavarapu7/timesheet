@@ -8,6 +8,7 @@ export default defineConfig(function (_a) {
     var backendHost = env.BACKEND_HOST || 'localhost';
     var backendPort = parseInt(env.BACKEND_PORT || '8000', 10);
     return {
+        base: env.VITE_BASE_PATH || '/',
         plugins: [react()],
         resolve: {
             alias: {

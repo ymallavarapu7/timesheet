@@ -187,6 +187,7 @@ class IngestionTimesheetSummary(BaseModel):
     push_status: str | None = None
     time_entries_created: bool = False
     llm_anomalies: list[dict[str, Any]] | None = None
+    llm_match_suggestions: dict[str, Any] | None = None
     received_at: datetime | None = None
     submitted_at: datetime | None
     reviewed_at: datetime | None

@@ -7,7 +7,7 @@ import { useAuth, useTimeEntries, useCreateTimeEntry, useParseNaturalTimeEntry, 
 import { timeentriesAPI } from '@/api/endpoints';
 import { Project, Task, TimeEntry, TimeEntryStatus } from '@/types';
 import { addDays, endOfWeek, format, parseISO, startOfWeek, startOfYear, subDays } from 'date-fns';
-import { ArrowDown, ArrowUp, ChevronDown, Search, Sparkles, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, Loader2, Search, Sparkles, X } from 'lucide-react';
 
 type EntryFormData = {
   project_id: number;
@@ -94,7 +94,7 @@ const RejectedGroupCard: React.FC<{
     ? new Date(group.rejectedAt).toLocaleString()
     : 'date unknown';
   return (
-    <div className="rounded-lg border border-red-200 bg-red-50/40">
+    <div className="rounded-lg border border-destructive/20 bg-destructive/5">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -102,7 +102,7 @@ const RejectedGroupCard: React.FC<{
       >
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-800">REJECTED</span>
+            <span className="rounded-full bg-destructive/10 px-2.5 py-0.5 text-xs font-semibold text-destructive">REJECTED</span>
             <span className="text-sm font-semibold text-foreground">Week of {weekLabel}</span>
             <span className="text-xs text-muted-foreground">· {group.entries.length} entr{group.entries.length === 1 ? 'y' : 'ies'} · {group.totalHours.toFixed(2)}h</span>
           </div>
@@ -110,16 +110,16 @@ const RejectedGroupCard: React.FC<{
             Rejected by <span className="font-medium text-foreground">{group.rejectorName ?? 'unknown'}</span> on {rejectedLabel}
           </p>
           {group.reason && (
-            <div className="mt-2 rounded border border-red-200 bg-white/60 p-2">
-              <p className="text-xs font-semibold text-red-900">Reason</p>
-              <p className="text-sm text-red-900 whitespace-pre-wrap">{group.reason}</p>
+            <div className="mt-2 rounded border border-destructive/20 bg-destructive/10 p-3">
+              <p className="text-xs font-semibold text-destructive">Reason</p>
+              <p className="mt-0.5 text-sm text-foreground whitespace-pre-wrap">{group.reason}</p>
             </div>
           )}
         </div>
         <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
-        <div className="space-y-2 border-t border-red-200 px-3 py-3">
+        <div className="space-y-2 border-t border-destructive/20 px-3 py-3">
           {group.entries.map((entry) => (
             <TimeEntryRow
               key={entry.id}
@@ -1051,21 +1051,24 @@ export const MyTimePage: React.FC = () => {
         )}
 
         {myTimeNotifications.length > 0 && (
-          <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-4">
-            <h2 className="text-sm font-semibold text-amber-900">Action needed in My Time</h2>
-            <div className="mt-2 space-y-2">
+          <div className="mb-6 rounded-xl border border-primary/20 bg-primary/5 backdrop-blur-md px-4 py-4">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="h-2 w-2 rounded-full bg-primary shadow-[0_0_8px_currentColor] text-primary animate-pulse" />
+              <h2 className="text-sm font-medium text-primary tracking-wide uppercase">Action needed in My Time</h2>
+            </div>
+            <div className="space-y-2">
               {myTimeNotifications.slice(0, 3).map((item) => (
                 <button
                   key={item.id}
                   type="button"
                   onClick={() => handleNotificationClick(item.id)}
-                  className="w-full flex items-start justify-between gap-3 rounded-lg border border-amber-100 bg-white/70 px-3 py-2 text-left transition hover:bg-white"
+                  className="w-full flex items-start justify-between gap-3 rounded-lg border border-primary/10 bg-background/40 px-4 py-3 text-left transition hover:bg-background/80 hover:border-primary/30"
                 >
                   <div>
-                    <p className="text-sm font-medium text-amber-950">{item.title}</p>
-                    <p className="text-xs text-amber-800">{item.message}</p>
+                    <p className="text-sm font-medium text-foreground">{item.title}</p>
+                    <p className="text-xs text-muted-foreground">{item.message}</p>
                   </div>
-                  <span className="rounded-full bg-amber-600 px-2 py-0.5 text-[11px] font-semibold text-white">
+                  <span className="rounded-full border border-primary/20 bg-primary/20 px-2.5 py-0.5 text-xs font-semibold text-primary">
                     {item.count > 99 ? '99+' : item.count}
                   </span>
                 </button>
@@ -1075,10 +1078,11 @@ export const MyTimePage: React.FC = () => {
         )}
 
         {/* ── Natural Language Input ── */}
-        <section className="mb-6 rounded-lg border bg-card">
+        <section className="mb-6 surface-card overflow-hidden">
           <div className="border-b px-4 py-3 flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-primary" />
             <h2 className="text-sm font-semibold text-muted-foreground">Quick Entry — Describe your work</h2>
+            <span className="text-xs text-muted-foreground/60 ml-1">e.g. "8h on Project X debugging login issue"</span>
           </div>
           <div className="p-4">
             <div className="flex gap-2">
@@ -1293,12 +1297,12 @@ export const MyTimePage: React.FC = () => {
           </div>
         </section>
 
-        <section ref={projectsSectionRef} className="mb-6 rounded-lg border bg-card">
+        <section ref={projectsSectionRef} className="mb-6 surface-card overflow-hidden">
           <div className="border-b px-4 py-3 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-muted-foreground">Projects</h2>
             <div className="flex items-center gap-2 text-sm">
               <button
-                className="h-7 w-7 rounded border hover:bg-muted"
+                className="h-7 w-7 rounded-lg border hover:bg-muted"
                 onClick={() => setWeekAnchorDate((current) => addDays(current, -7))}
                 aria-label="Previous week"
               >
@@ -1306,7 +1310,7 @@ export const MyTimePage: React.FC = () => {
               </button>
               <span>{format(weekStart, 'MMM d')} - {format(weekEnd, 'MMM d')}</span>
               <button
-                className="h-7 w-7 rounded border hover:bg-muted"
+                className="h-7 w-7 rounded-lg border hover:bg-muted"
                 onClick={() => setWeekAnchorDate((current) => addDays(current, 7))}
                 aria-label="Next week"
               >
@@ -1490,14 +1494,14 @@ export const MyTimePage: React.FC = () => {
                   <button
                     onClick={handleSaveGridRows}
                     disabled={createMutation.isPending}
-                    className="px-3 py-2 bg-muted text-foreground rounded hover:bg-muted/70 disabled:opacity-50"
+                    className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-muted text-foreground hover:bg-muted/70 disabled:opacity-50 text-sm font-medium transition"
                   >
-                    {createMutation.isPending ? 'Saving...' : 'Save Week'}
+                    {createMutation.isPending ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving...</> : 'Save Week'}
                   </button>
                   <button
                     onClick={handleSubmitWeek}
                     disabled={!weeklySubmitStatus?.can_submit || submitMutation.isPending}
-                    className="px-3 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/90 disabled:opacity-50"
+                    className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 text-sm font-medium transition"
                     title={weeklySubmitStatus?.can_submit ? 'Submit drafts in the editable window for approval' : weeklySubmitStatus?.reason ?? 'Nothing to submit'}
                   >
                     {submitMutation.isPending ? 'Submitting...' : 'Submit for Approval'}
@@ -1542,7 +1546,7 @@ export const MyTimePage: React.FC = () => {
           </div>
         </section>
 
-        <div className="bg-card border rounded-lg p-4 mb-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="surface-card p-4 mb-4 grid grid-cols-1 md:grid-cols-3 gap-3">
           <SearchInput
             value={search}
             onChange={setSearch}

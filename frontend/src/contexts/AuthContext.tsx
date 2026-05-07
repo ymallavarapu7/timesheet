@@ -199,10 +199,16 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     try {
       const response = await authAPI.login({ email: email.trim().toLowerCase(), password });
-      const { access_token, refresh_token: refreshToken, user: nextUser } = response.data;
+      const { access_token, refresh_token: refreshToken, user: nextUser, previous_last_login_at } = response.data;
       setUser(nextUser);
       setAccessToken(access_token);
       if (refreshToken) sessionStorage.setItem(REFRESH_TOKEN_STORAGE_KEY, refreshToken);
+      // Stash for the dashboard "N new since last login" chip.
+      if (previous_last_login_at) {
+        sessionStorage.setItem('previous_last_login_at', previous_last_login_at);
+      } else {
+        sessionStorage.removeItem('previous_last_login_at');
+      }
       persistAuthState(nextUser, null, access_token);
 
       let nextTenant: Tenant | null = null;

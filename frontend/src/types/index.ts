@@ -24,6 +24,7 @@ export interface User {
   manager_id?: number | null;
   project_ids?: number[];
   default_client_id?: number | null;
+  phones?: string[];
   timesheet_locked?: boolean;
   timesheet_locked_reason?: string | null;
   created_at: string;
@@ -297,6 +298,7 @@ export interface DashboardRecentActivityItem {
   activity_type: string;
   entity_type: string;
   entity_id: number | null;
+  actor_id: number | null;
   actor_name: string | null;
   summary: string;
   route: string;
@@ -311,6 +313,7 @@ export interface DashboardAnalytics {
   billable_hours: string | number;
   non_billable_hours: string | number;
   top_project_name: string | null;
+  top_project_hours: number | null;
   top_client_name: string | null;
   daily_breakdown: DashboardDayBreakdown[];
   project_breakdown: DashboardProjectBreakdown[];
@@ -398,6 +401,7 @@ export interface TokenResponse {
   refresh_token?: string;
   token_type: string;
   user: User;
+  previous_last_login_at?: string | null;
 }
 
 export interface AuthState {
@@ -643,6 +647,7 @@ export interface IngestionTimesheetSummary {
   time_entries_created: boolean;
   is_likely_resubmission?: boolean;
   llm_anomalies: Array<Record<string, unknown>> | null;
+  llm_match_suggestions: { chain_candidates?: ChainCandidate[]; unmatched_emails?: string[]; suggestion?: string | null } | null;
   received_at: string | null;
   submitted_at: string | null;
   reviewed_at: string | null;

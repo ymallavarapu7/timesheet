@@ -81,6 +81,7 @@ const makeSkippedSummary = (overrides: Partial<IngestionTimesheetSummary> = {}):
   push_status: null,
   time_entries_created: false,
   llm_anomalies: null,
+  llm_match_suggestions: null,
   received_at: null,
   submitted_at: null,
   reviewed_at: null,

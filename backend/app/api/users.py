@@ -1,7 +1,8 @@
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, status, Query, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel as PydanticBaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -101,6 +102,17 @@ def _validate_new_password(password: str) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=error,
         )
+
+
+@router.get("/assignable", response_model=list[UserResponse])
+async def list_assignable_users(
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(require_role(
+        "MANAGER", "SENIOR_MANAGER", "CEO", "ADMIN", "PLATFORM_ADMIN"
+    )),
+) -> list[User]:
+    """Full tenant employee list for assignment dropdowns (e.g. ingestion review panel)."""
+    return await list_users(db, tenant_id=current_user.tenant_id, skip=0, limit=1000)
 
 
 @router.get("", response_model=list[UserResponse])
@@ -948,6 +960,386 @@ async def delete_user_endpoint(
         metadata={"deleted_role": deleted_user_role, "deleted_email": deleted_user_email},
         severity="warning",
     )])
+
+
+MAX_ALIASES_PER_USER = 2
+
+
+class EmailAliasRead(PydanticBaseModel):
+    id: int
+    email: str
+    created_at: datetime
+
+
+class EmailAliasCreateRequest(PydanticBaseModel):
+    email: str
+
+
+def _normalize_email(value: str) -> str:
+    return (value or "").strip().lower()
+
+
+@router.get("/{user_id}/email-aliases", response_model=list[EmailAliasRead])
+async def list_email_aliases(
+    user_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(get_current_user),
+) -> list[EmailAliasRead]:
+    """Aliases on a user. Self or admin only; cross-tenant access denied."""
+    from app.models.user_email_alias import UserEmailAlias
+
+    target = await get_user_by_id(db, user_id)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if user_id != current_user.id:
+        if current_user.role not in (UserRole.ADMIN, UserRole.PLATFORM_ADMIN):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        require_same_tenant(target.tenant_id, current_user)
+
+    result = await db.execute(
+        select(UserEmailAlias)
+        .where(UserEmailAlias.user_id == user_id)
+        .order_by(UserEmailAlias.created_at.asc())
+    )
+    return [
+        EmailAliasRead(id=row.id, email=row.email, created_at=row.created_at)
+        for row in result.scalars().all()
+    ]
+
+
+@router.post(
+    "/{user_id}/email-aliases",
+    response_model=EmailAliasRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_email_alias(
+    user_id: int,
+    body: EmailAliasCreateRequest,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+) -> EmailAliasRead:
+    """Add an alias email (admin-only). Capped at MAX_ALIASES_PER_USER."""
+    from app.crud.user import get_user_by_email
+    from app.models.user_email_alias import UserEmailAlias
+
+    target = await get_user_by_id(db, user_id)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    require_same_tenant(target.tenant_id, current_user)
+
+    normalized = _normalize_email(body.email)
+    if not normalized or "@" not in normalized:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid email address")
+
+    if normalized == (target.email or "").lower():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Alias matches the user's primary email",
+        )
+
+    from sqlalchemy import func as sa_func
+    existing_count = (await db.execute(
+        select(sa_func.count(UserEmailAlias.id))
+        .where(UserEmailAlias.user_id == user_id)
+    )).scalar_one()
+    if existing_count >= MAX_ALIASES_PER_USER:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"At most {MAX_ALIASES_PER_USER} alias emails per user",
+        )
+
+    # Refuse if any other user already owns this address (primary or alias).
+    existing_user = await get_user_by_email(db, normalized)
+    if existing_user is not None and existing_user.id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already in use by another user",
+        )
+
+    alias = UserEmailAlias(user_id=user_id, email=normalized)
+    db.add(alias)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already in use",
+        )
+    await db.refresh(alias)
+    return EmailAliasRead(id=alias.id, email=alias.email, created_at=alias.created_at)
+
+
+@router.delete(
+    "/{user_id}/email-aliases/{alias_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_email_alias(
+    user_id: int,
+    alias_id: int,
+    db: AsyncSession = Depends(get_tenant_db),
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+) -> None:
+    """Remove an alias (admin-only)."""
+    from app.models.user_email_alias import UserEmailAlias
+
+    target = await get_user_by_id(db, user_id)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    require_same_tenant(target.tenant_id, current_user)
+
+    result = await db.execute(
+        select(UserEmailAlias).where(
+            (UserEmailAlias.id == alias_id) & (UserEmailAlias.user_id == user_id)
+        )
+    )
+    alias = result.scalar_one_or_none()
+    if not alias:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alias not found")
+    await db.delete(alias)
+    await db.commit()
+
+
+@router.post("/import/preview", response_model=dict)
+async def import_users_preview(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+    db: AsyncSession = Depends(get_tenant_db),
+) -> dict:
+    """Parse an uploaded CSV/XLSX file and return headers + preview rows.
+
+    No DB writes. The frontend uses this to render the column-mapping step.
+    """
+    from app.services.user_import import parse_file
+
+    content = await file.read()
+    try:
+        headers, rows = parse_file(file.filename or "upload.csv", content)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    preview_rows = [
+        {headers[i]: (row[i] if i < len(row) else "") for i in range(len(headers))}
+        for row in rows[:5]
+    ]
+
+    return {
+        "headers": headers,
+        "preview_rows": preview_rows,
+        "total_rows": len(rows),
+    }
+
+
+class ImportCommitBody(PydanticBaseModel):
+    mapping: dict[str, str]
+    rows: list[list[str]]
+    headers: list[str]
+    user_type: str = "external"          # "external" | "internal"
+    default_client_id: int | None = None
+    default_project_id: int | None = None
+    default_manager_id: int | None = None
+
+
+@router.post("/import/commit", response_model=dict)
+async def import_users_commit(
+    body: ImportCommitBody,
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+    db: AsyncSession = Depends(get_tenant_db),
+) -> dict:
+    """Commit a mapped + validated import batch.
+
+    Each row is created independently; per-row errors are collected and
+    returned without aborting the remaining rows.
+
+    Batch-level defaults (user_type, default_client_id, default_project_id,
+    default_manager_id) apply to every row unless that row's mapped columns
+    provide a value. Per-row values always win.
+    """
+    from app.services.user_import import (
+        apply_mapping, validate_row,
+        resolve_client_id, resolve_project_id, resolve_manager_id,
+    )
+    from app.schemas import UserCreate
+    from app.crud.user import create_user as crud_create_user, get_user_by_email
+    from app.models.user_email_alias import UserEmailAlias
+    from app.models.user import UserRole as _UserRole
+
+    tenant_id = current_user.tenant_id
+    is_external_default = body.user_type != "internal"
+
+    existing_emails_result = await db.execute(
+        select(User.email).where(User.tenant_id == tenant_id)
+    )
+    existing_emails: set[str] = {r.lower() for r in existing_emails_result.scalars().all() if r}
+
+    records = apply_mapping(body.headers, body.rows, body.mapping)
+
+    created: list[dict] = []
+    skipped: list[dict] = []
+    seen_emails: set[str] = set()
+
+    for idx, record in enumerate(records):
+        validated = validate_row(record, idx + 1, existing_emails, seen_emails)
+        if validated["errors"]:
+            skipped.append({"row": idx + 1, "reason": "; ".join(validated["errors"])})
+            continue
+
+        full_name = validated["full_name"]
+        if not full_name:
+            skipped.append({"row": idx + 1, "reason": "Full name is required"})
+            continue
+
+        row_client = await resolve_client_id(db, validated["client"], tenant_id) if (tenant_id and validated["client"]) else None
+        row_project = await resolve_project_id(db, validated["project"], tenant_id) if (tenant_id and validated["project"]) else None
+        row_manager = await resolve_manager_id(db, validated["manager"], tenant_id) if (tenant_id and validated["manager"]) else None
+
+        client_id = row_client if row_client is not None else body.default_client_id
+        project_id = row_project if row_project is not None else body.default_project_id
+        manager_id = row_manager if row_manager is not None else body.default_manager_id
+
+        try:
+            user_create = UserCreate(
+                full_name=full_name,
+                is_external=is_external_default,
+                email=validated["email"] or None,
+                title=validated["title"] or None,
+                department=validated["department"] or None,
+                role=_UserRole(validated["role"]),
+                is_active=validated["is_active"],
+                manager_id=manager_id,
+                project_ids=[project_id] if project_id else [],
+                default_client_id=client_id,
+                phones=validated["phones"],
+                tenant_id=tenant_id,
+            )
+            user, _ = await crud_create_user(db, user_create)
+        except Exception as exc:
+            skipped.append({"row": idx + 1, "reason": str(exc)})
+            continue
+
+        for alias_email in validated["extra_emails"]:
+            existing_owner = await get_user_by_email(db, alias_email)
+            if existing_owner is None:
+                db.add(UserEmailAlias(user_id=user.id, email=alias_email))
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
+
+        if validated["email"]:
+            existing_emails.add(validated["email"])
+
+        created.append({
+            "row": idx + 1,
+            "user_id": user.id,
+            "full_name": user.full_name,
+            "warnings": validated["warnings"],
+        })
+
+    return {
+        "created": len(created),
+        "skipped": len(skipped),
+        "details": {"created": created, "skipped": skipped},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Export endpoints (ADMIN only)
+# ---------------------------------------------------------------------------
+
+def _export_response(
+    content: bytes,
+    mime: str,
+    filename: str,
+) -> Response:
+    return Response(
+        content=content,
+        media_type=mime,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/export/users")
+async def export_users_endpoint(
+    fmt: str = Query("csv", regex="^(csv|xlsx)$"),
+    user_type: str = Query("all", regex="^(all|internal|external)$"),
+    role: str | None = Query(None),
+    status_filter: str = Query("all", regex="^(all|active|inactive)$"),
+    client_id: int | None = Query(None),
+    department: str | None = Query(None),
+    current_user: User = Depends(require_role("ADMIN")),
+    db: AsyncSession = Depends(get_tenant_db),
+) -> Response:
+    from app.services.admin_export import export_users, serialize
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="Tenant scope required")
+
+    headers, rows = await export_users(
+        db,
+        current_user.tenant_id,
+        user_type=user_type,
+        role=role,
+        status_filter=status_filter,
+        client_id=client_id,
+        department=department,
+    )
+    content, mime, ext = serialize(headers, rows, fmt, sheet_name="Users")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+    filename = f"users-{stamp}.{ext}"
+    return _export_response(content, mime, filename)
+
+
+@router.get("/export/clients")
+async def export_clients_endpoint(
+    fmt: str = Query("csv", regex="^(csv|xlsx)$"),
+    current_user: User = Depends(require_role("ADMIN")),
+    db: AsyncSession = Depends(get_tenant_db),
+) -> Response:
+    from app.services.admin_export import export_clients, serialize
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="Tenant scope required")
+
+    headers, rows = await export_clients(db, current_user.tenant_id)
+    content, mime, ext = serialize(headers, rows, fmt, sheet_name="Clients")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+    filename = f"clients-{stamp}.{ext}"
+    return _export_response(content, mime, filename)
+
+
+@router.get("/export/timesheets")
+async def export_timesheets_endpoint(
+    period_start: date = Query(...),
+    period_end: date = Query(...),
+    fmt: str = Query("csv", regex="^(csv|xlsx)$"),
+    user_type: str = Query("all", regex="^(all|internal|external)$"),
+    user_id: int | None = Query(None),
+    client_id: int | None = Query(None),
+    project_id: int | None = Query(None),
+    current_user: User = Depends(require_role("ADMIN")),
+    db: AsyncSession = Depends(get_tenant_db),
+) -> Response:
+    from app.services.admin_export import export_approved_timesheets, serialize
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="Tenant scope required")
+    if period_end < period_start:
+        raise HTTPException(status_code=400, detail="period_end must be on or after period_start")
+
+    headers, rows = await export_approved_timesheets(
+        db,
+        current_user.tenant_id,
+        period_start=period_start,
+        period_end=period_end,
+        user_type=user_type,
+        user_id=user_id,
+        client_id=client_id,
+        project_id=project_id,
+    )
+    content, mime, ext = serialize(headers, rows, fmt, sheet_name="Timesheets")
+    filename = f"approved-timesheets-{period_start.isoformat()}-to-{period_end.isoformat()}.{ext}"
+    return _export_response(content, mime, filename)
 
 
 @router.post("/users/{user_id}/unlock-timesheet", response_model=dict)

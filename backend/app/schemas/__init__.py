@@ -74,6 +74,7 @@ class UserCreate(BaseModel):
     default_client_id: Optional[int] = None
     password: Optional[str] = Field(None, min_length=8)
     can_review: bool = False
+    phones: List[str] = Field(default_factory=list)
     # Only honored when PLATFORM_ADMIN creates a user in a specific tenant.
     tenant_id: Optional[int] = None
 
@@ -103,6 +104,7 @@ class UserUpdate(BaseModel):
     manager_id: Optional[int] = None
     project_ids: Optional[List[int]] = None
     default_client_id: Optional[int] = None
+    phones: Optional[List[str]] = None
 
 
 class UserResponse(UserBase):
@@ -114,6 +116,7 @@ class UserResponse(UserBase):
     is_external: bool = False
     # Roles the user can act as; portal-picker shows when len(roles) > 1.
     roles: List[UserRole] = Field(default_factory=list)
+    phones: List[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -526,6 +529,7 @@ class DashboardRecentActivityItem(BaseModel):
     activity_type: str
     entity_type: str
     entity_id: Optional[int] = None
+    actor_id: Optional[int] = None
     actor_name: Optional[str] = None
     summary: str
     route: str
@@ -665,6 +669,9 @@ class TokenResponse(BaseModel):
     refresh_token: Optional[str] = None
     token_type: str = "bearer"
     user: UserResponse
+    # ISO timestamp of the user's previous login; the dashboard uses this
+    # for the "N new since last login" chip on Recent Org Activity.
+    previous_last_login_at: Optional[str] = None
 
 
 class ChangePasswordRequest(BaseModel):

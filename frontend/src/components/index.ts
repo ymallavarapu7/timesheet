@@ -8,6 +8,8 @@ export { ChangePasswordModal } from './ChangePasswordModal';
 export { DateRangePickerCalendar } from './DateRangePickerCalendar';
 export { SearchInput } from './SearchInput';
 export { AdminActionQueue } from './AdminActionQueue';
+export { ImportUsersModal } from './ImportUsersModal';
+export { ExportModal } from './ExportModal';
 export { DashboardGreeting } from './DashboardGreeting';
 export { PortalPickerModal } from './PortalPickerModal';
 export { SystemHealthCard } from './SystemHealthCard';

@@ -1,4 +1,4 @@
-from sqlalchemy import delete, update
+from sqlalchemy import delete, update, func as sa_func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.exc import IntegrityError
@@ -29,7 +29,9 @@ async def get_user_by_id(db: AsyncSession, user_id: int) -> Optional[User]:
 
 
 async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
-    """Get user by email."""
+    """Get user by primary email or by any of their alias addresses."""
+    from app.models.user_email_alias import UserEmailAlias
+
     normalized_email = email.strip().lower()
     result = await db.execute(
         select(User)
@@ -39,7 +41,18 @@ async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
             selectinload(User.project_access),
         )
     )
-    return result.scalars().first()
+    user = result.scalars().first()
+    if user is not None:
+        return user
+
+    alias_row = (await db.execute(
+        select(UserEmailAlias.user_id).where(
+            sa_func.lower(UserEmailAlias.email) == normalized_email
+        )
+    )).scalar_one_or_none()
+    if alias_row is None:
+        return None
+    return await get_user_by_id(db, alias_row)
 
 
 async def get_user_by_username(db: AsyncSession, username: str) -> Optional[User]:
@@ -206,6 +219,8 @@ async def create_user(db: AsyncSession, user_create: UserCreate) -> tuple["User"
         # uniqueness; collisions would still hit IntegrityError below.
         raw_username = f"user-{secrets.token_hex(6)}"
 
+    cleaned_phones = [p.strip() for p in (user_create.phones or []) if p.strip()][:3]
+
     db_user = User(
         tenant_id=user_create.tenant_id,
         email=raw_email,
@@ -223,6 +238,7 @@ async def create_user(db: AsyncSession, user_create: UserCreate) -> tuple["User"
         can_review=user_create.can_review,
         is_external=user_create.is_external,
         default_client_id=user_create.default_client_id,
+        phones=cleaned_phones,
     )
     db.add(db_user)
     try:
@@ -265,6 +281,9 @@ async def update_user(db: AsyncSession, user: User, user_update: UserUpdate) -> 
 
     if "title" in update_data:
         update_data["title"] = _normalize_profile_text(update_data["title"])
+
+    if "phones" in update_data and update_data["phones"] is not None:
+        update_data["phones"] = [p.strip() for p in update_data["phones"] if p.strip()][:3]
 
     if "department" in update_data:
         update_data["department"] = _normalize_profile_text(

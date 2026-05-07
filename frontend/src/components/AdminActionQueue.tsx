@@ -1,7 +1,8 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertCircle, AlertTriangle, ArrowRight, Bell, CheckCircle2, FileWarning, MailQuestion, UserPlus } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ArrowRight, Bell, CheckCircle2, Clock, FileWarning, MailQuestion, UserPlus, X } from 'lucide-react';
 
+import { useDismissAttentionSignal, useDismissedAttentionSignals } from '@/hooks';
 import type { DashboardRecentActivityItem, NotificationItem, User } from '@/types';
 
 type Urgency = 'urgent' | 'warn' | 'info';
@@ -17,13 +18,11 @@ interface ActionItem {
 }
 
 interface AdminActionQueueProps {
-  /** Tenant users. Used to surface users-without-manager and stale
-      unverified invitations. The dashboard already loads this list for
-      its glance tiles, so this is a free re-use. */
   users: User[];
   notifications: NotificationItem[];
   recentActivity: DashboardRecentActivityItem[];
   recentActivityLoading: boolean;
+  currentUserId: number | null;
   onOpenNotifications: () => void;
 }
 
@@ -59,23 +58,77 @@ const buildRouteWithParams = (
   return query ? `${route}?${query}` : route;
 };
 
+const SNOOZE_OPTIONS: Array<{ label: string; ms: number | null }> = [
+  { label: 'Dismiss', ms: null },
+  { label: 'Remind me in 1 hour', ms: 60 * 60 * 1000 },
+  { label: 'Remind me tomorrow', ms: 24 * 60 * 60 * 1000 },
+  { label: 'Remind me next week', ms: 7 * 24 * 60 * 60 * 1000 },
+];
+
+const DismissMenu: React.FC<{
+  onPick: (snoozedUntil: string | null) => void;
+  onClose: () => void;
+}> = ({ onPick, onClose }) => {
+  const ref = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    const onDocClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [onClose]);
+  return (
+    <div
+      ref={ref}
+      className="absolute right-0 top-7 z-20 w-48 rounded-md border border-border bg-popover shadow-lg p-1"
+      role="menu"
+    >
+      {SNOOZE_OPTIONS.map(({ label, ms }) => (
+        <button
+          key={label}
+          type="button"
+          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
+          onClick={(e) => {
+            e.stopPropagation();
+            const snoozedUntil = ms === null ? null : new Date(Date.now() + ms).toISOString();
+            onPick(snoozedUntil);
+            onClose();
+          }}
+        >
+          {ms === null ? <X className="h-3.5 w-3.5" /> : <Clock className="h-3.5 w-3.5" />}
+          <span>{label}</span>
+        </button>
+      ))}
+    </div>
+  );
+};
+
 export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
   users,
   notifications,
   recentActivity,
   recentActivityLoading,
+  currentUserId,
   onOpenNotifications,
 }) => {
   const navigate = useNavigate();
+  const { data: dismissed = [] } = useDismissedAttentionSignals();
+  const dismissMutation = useDismissAttentionSignal();
+  const [openMenuFor, setOpenMenuFor] = React.useState<string | null>(null);
+
+  const dismissedKeys = React.useMemo(
+    () => new Set(dismissed.map((d) => d.signal_key)),
+    [dismissed],
+  );
+
   const items: ActionItem[] = [];
 
-  // Active employees and managers without a direct manager assigned.
-  // ADMIN, PLATFORM_ADMIN, and CEO legitimately may not have one;
-  // anyone else lacking a manager_id is an org-chart gap that breaks
-  // the approval chain.
+  // Internal users only — external users (ingestion-only records) never
+  // log in or get approved, so the "approval chain is broken" framing
+  // doesn't apply.
   const orphanRoles = new Set(['EMPLOYEE', 'MANAGER', 'SENIOR_MANAGER']);
   const usersWithoutManager = users.filter(
-    (u) => u.is_active && orphanRoles.has(u.role) && (u.manager_id == null),
+    (u) => u.is_active && !u.is_external && orphanRoles.has(u.role) && (u.manager_id == null),
   );
   if (usersWithoutManager.length > 0) {
     const sample = usersWithoutManager.slice(0, 3).map((u) => u.full_name).join(', ');
@@ -92,12 +145,11 @@ export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
     });
   }
 
-  // Stale invitations: active accounts whose email is still unverified
-  // after a week. These are people who got invited but never confirmed.
   const staleCutoff = Date.now() - STALE_INVITATION_DAYS * 24 * 60 * 60 * 1000;
   const staleInvites = users.filter((u) => {
     if (!u.is_active) return false;
     if (u.email_verified) return false;
+    if (u.is_external) return false;
     const created = u.created_at ? Date.parse(u.created_at) : NaN;
     return Number.isFinite(created) && created < staleCutoff;
   });
@@ -113,10 +165,10 @@ export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
     });
   }
 
-  // Error-severity activity from the last 24 hours.
   const recentErrorCutoff = Date.now() - RECENT_ERROR_LOOKBACK_HOURS * 60 * 60 * 1000;
   const recentErrors = recentActivity.filter((item) => {
     if (item.severity !== 'error') return false;
+    if (currentUserId != null && item.actor_id === currentUserId) return false;
     const ts = Date.parse(item.created_at);
     return Number.isFinite(ts) && ts >= recentErrorCutoff;
   });
@@ -132,9 +184,9 @@ export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
     });
   });
 
-  // Warning-severity activity (also last 24h).
   const recentWarnings = recentActivity.filter((item) => {
     if (item.severity !== 'warning') return false;
+    if (currentUserId != null && item.actor_id === currentUserId) return false;
     const ts = Date.parse(item.created_at);
     return Number.isFinite(ts) && ts >= recentErrorCutoff;
   });
@@ -150,7 +202,6 @@ export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
     });
   });
 
-  // Unread notifications. Severity bumps urgency.
   const unreadNotifications = notifications.filter((n) => !n.is_read && n.count > 0);
   if (unreadNotifications.length > 0) {
     const total = unreadNotifications.reduce((sum, n) => sum + n.count, 0);
@@ -167,20 +218,25 @@ export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
     });
   }
 
-  items.sort((a, b) => urgencyOrder[a.urgency] - urgencyOrder[b.urgency]);
+  const filtered = items.filter((it) => !dismissedKeys.has(it.id));
+  filtered.sort((a, b) => urgencyOrder[a.urgency] - urgencyOrder[b.urgency]);
 
-  const visible = items.slice(0, MAX_VISIBLE);
-  const hidden = items.length - visible.length;
+  const visible = filtered.slice(0, MAX_VISIBLE);
+  const hidden = filtered.length - visible.length;
 
-  if (recentActivityLoading && items.length === 0) {
+  const handleDismiss = (signalKey: string, snoozedUntil: string | null) => {
+    dismissMutation.mutate({ signal_key: signalKey, snoozed_until: snoozedUntil });
+  };
+
+  if (recentActivityLoading && filtered.length === 0) {
     return (
       <div className="rounded-lg border bg-card p-4 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
-        <p className="text-sm text-muted-foreground">Loading action queue...</p>
+        <p className="text-sm text-muted-foreground">Loading attention queue...</p>
       </div>
     );
   }
 
-  if (items.length === 0) {
+  if (filtered.length === 0) {
     return (
       <div className="rounded-lg border bg-card p-4 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
         <div className="flex items-center gap-3">
@@ -199,22 +255,22 @@ export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
   }
 
   return (
-    <div className="rounded-lg border bg-card p-5 mb-4 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+    <div className="surface-card p-5 mb-4">
       <div className="mb-2 flex items-center justify-between">
-        <h2 className="text-base font-semibold text-foreground">Admin priorities</h2>
+        <h2 className="text-base font-semibold text-foreground">Needs your attention</h2>
         <span className="text-xs text-muted-foreground">
-          {items.length} {items.length === 1 ? 'item' : 'items'}
+          {filtered.length} {filtered.length === 1 ? 'item' : 'items'}
         </span>
       </div>
       <ul className="space-y-2">
         {visible.map((item) => {
           const Icon = item.icon;
           return (
-            <li key={item.id}>
+            <li key={item.id} className="relative">
               <button
                 type="button"
                 onClick={item.onClick}
-                className="group flex w-full items-center gap-3 rounded-md border border-border/60 bg-background/40 px-3 py-2.5 text-left transition hover:border-primary/40 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+                className="group flex w-full items-center gap-3 rounded-lg border border-border/60 bg-background/40 px-3 py-2.5 pr-8 text-left transition hover:border-primary/40 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
               >
                 <span
                   aria-hidden
@@ -232,6 +288,24 @@ export const AdminActionQueue: React.FC<AdminActionQueueProps> = ({
                   <ArrowRight className="h-3.5 w-3.5" />
                 </span>
               </button>
+              <button
+                type="button"
+                aria-label="Dismiss or snooze"
+                title="Dismiss or snooze"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setOpenMenuFor((prev) => (prev === item.id ? null : item.id));
+                }}
+                className="absolute -top-1.5 -right-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm hover:bg-muted hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+              {openMenuFor === item.id && (
+                <DismissMenu
+                  onPick={(snoozedUntil) => handleDismiss(item.id, snoozedUntil)}
+                  onClose={() => setOpenMenuFor(null)}
+                />
+              )}
             </li>
           );
         })}

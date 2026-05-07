@@ -3,6 +3,8 @@ import { Outlet, useNavigate } from 'react-router-dom';
 
 import { PortalPickerModal } from '@/components/PortalPickerModal';
 import { TopNavBar } from '@/components/layout/TopNavBar';
+import { FloatingTimer } from '@/components/timer/FloatingTimer';
+import { LogEntryModal } from '@/components/timer/LogEntryModal';
 import { useAuth } from '@/hooks';
 import type { UserRole } from '@/types';
 
@@ -61,6 +63,8 @@ export const AppLayout: React.FC = () => {
           {pickError}
         </div>
       )}
+      <FloatingTimer />
+      <LogEntryModal />
     </div>
   );
 };

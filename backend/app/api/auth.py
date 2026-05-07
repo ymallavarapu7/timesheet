@@ -315,6 +315,9 @@ async def login(
     access_token = create_access_token(token_payload)
     refresh_token, jti, expires_at = create_refresh_token(token_payload)
 
+    now = datetime.now(timezone.utc)
+    previous_last_login_at = user.last_login_at
+
     if use_tenant_db:
         from app.db_tenant import tenant_session
         async with tenant_session(tenant_slug) as tenant_db:
@@ -323,6 +326,7 @@ async def login(
             )).scalar_one()
             target.failed_login_attempts = 0
             target.locked_until = None
+            target.last_login_at = now
             tenant_db.add(target)
             tenant_db.add(RefreshToken(user_id=user.id, jti=jti, expires_at=expires_at))
             await tenant_db.commit()
@@ -339,6 +343,7 @@ async def login(
     else:
         user.failed_login_attempts = 0
         user.locked_until = None
+        user.last_login_at = now
         db.add(user)
         db.add(RefreshToken(user_id=user.id, jti=jti, expires_at=expires_at))
         await db.commit()
@@ -374,6 +379,9 @@ async def login(
         "refresh_token": refresh_token,
         "token_type": "bearer",
         "user": user,
+        "previous_last_login_at": (
+            previous_last_login_at.isoformat() if previous_last_login_at else None
+        ),
     }
 
 

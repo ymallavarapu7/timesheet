@@ -397,10 +397,14 @@ without daily dates, do not invent a repeated work_date for each category row; \
 infer the month/period from tokens like 2/26 and return an empty line_items array.
 If a field is uncertain, include it in uncertain_fields.
 Respond only in valid JSON with a top-level field timesheets, where timesheets \
-is an array of objects with fields: employee_name, client_name (company or client \
-the timesheet is for), supervisor_name (the manager, supervisor, or approver name \
-if mentioned in the document), contact_emails (array of any email addresses found \
-in the document body such as signatures, approver contacts, or client reps — use an \
+is an array of objects with fields: employee_name, employee_email (the email \
+address of the employee who owns this timesheet, if explicitly printed in the \
+document next to their name or in a field labeled Employee Email, Email, or \
+similar — return null if not present or uncertain), client_name (company or \
+client the timesheet is for), supervisor_name (the manager, supervisor, or \
+approver name if mentioned in the document), contact_emails (array of any \
+other email addresses found in the document body such as signatures, approver \
+contacts, or client reps — exclude the employee_email from this list, use an \
 empty array if none), period_start, period_end, total_hours, line_items (array \
 of {{work_date, hours, description, project_code}}), extraction_confidence (0-1), \
 uncertain_fields (array of strings).

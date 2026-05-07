@@ -45,6 +45,10 @@ class User(Base, TimestampMixin):
     roles: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
     )
+    # Phone numbers: index 0 is primary, remaining are extras (max 3 total).
+    phones: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True)
     can_review: Mapped[bool] = mapped_column(
@@ -79,6 +83,10 @@ class User(Base, TimestampMixin):
         String(128), nullable=True, unique=True, index=True
     )
     email_verification_token_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
@@ -120,6 +128,11 @@ class User(Base, TimestampMixin):
     )
     project_access: Mapped[List["UserProjectAccess"]] = relationship(
         "UserProjectAccess",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    email_aliases: Mapped[List["UserEmailAlias"]] = relationship(
+        "UserEmailAlias",
         back_populates="user",
         cascade="all, delete-orphan",
     )

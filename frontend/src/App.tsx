@@ -4,6 +4,7 @@ import { QueryClientProvider } from '@tanstack/react-query';
 
 import { AuthProvider } from '@/contexts/AuthContext';
 import { ThemeProvider } from '@/contexts/ThemeContext';
+import { TimerProvider } from '@/contexts/TimerContext';
 import { AppLayout, Loading } from '@/components';
 import { useAuth, useCanReview, useIngestionEnabled } from '@/hooks';
 import {
@@ -154,7 +155,9 @@ export function App() {
       <QueryClientProvider client={queryClient}>
         <Router basename={import.meta.env.BASE_URL}>
           <AuthProvider>
-            <AppRoutes />
+            <TimerProvider>
+              <AppRoutes />
+            </TimerProvider>
           </AuthProvider>
         </Router>
       </QueryClientProvider>

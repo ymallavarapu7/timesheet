@@ -1,13 +1,13 @@
 import React, { useState } from 'react';
 import { format, startOfMonth, endOfMonth } from 'date-fns';
-import { PlusCircle, Pencil, Trash2, ShieldCheck, UserCircle, X, Clock, Paperclip, Building2, MoreVertical, MailCheck } from 'lucide-react';
+import { PlusCircle, Pencil, Trash2, ShieldCheck, UserCircle, X, Clock, Paperclip, Building2, MoreVertical, MailCheck, Upload, Download, CheckCircle2 } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
-import { Loading, Error, OrganizationalChart, SearchInput } from '@/components';
+import { Loading, Error, OrganizationalChart, SearchInput, ImportUsersModal, ExportModal } from '@/components';
 import { BulkSelectBar } from '@/components/ui/BulkSelectBar';
 import { cn } from '@/lib/utils';
-import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useResetUserPassword, useResendVerification, useBulkDeleteUsers, useAuth, useIsPlatformAdmin, useProjects, useNotifications, useUnlockUserTimesheet, useDepartments, useCreateDepartment, useDeleteDepartment, useLeaveTypes, useCreateLeaveType, useUpdateLeaveType, useDeleteLeaveType, useClients } from '@/hooks';
+import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useResetUserPassword, useResendVerification, useBulkDeleteUsers, useAuth, useIsPlatformAdmin, useProjects, useNotifications, useUnlockUserTimesheet, useDepartments, useCreateDepartment, useDeleteDepartment, useLeaveTypes, useCreateLeaveType, useUpdateLeaveType, useDeleteLeaveType, useClients, useCreateClient, useUserEmailAliases, useAddUserEmailAlias, useDeleteUserEmailAlias } from '@/hooks';
 import { KeyRound } from 'lucide-react';
 import { timeentriesAPI, ingestionAPI } from '@/api';
 import { IngestionTimesheetSummary, Project, TimeEntry, User, UserRole } from '@/types';
@@ -43,6 +43,7 @@ type UserMutationPayload = {
   manager_id?: number | null;
   project_ids?: number[];
   default_client_id?: number | null;
+  phones?: string[];
 };
 
 const TENANT_ROLES: UserRole[] = ['EMPLOYEE', 'MANAGER', 'SENIOR_MANAGER', 'CEO', 'ADMIN'];
@@ -132,7 +133,7 @@ const getAllowedSupervisorRoles = (role: UserRole): UserRole[] => {
   if (role === 'EMPLOYEE') return ['MANAGER', 'SENIOR_MANAGER', 'CEO', 'ADMIN'];
   if (role === 'MANAGER') return ['SENIOR_MANAGER', 'CEO'];
   if (role === 'SENIOR_MANAGER') return ['CEO'];
-  if (role === 'ADMIN') return ['MANAGER', 'SENIOR_MANAGER', 'CEO', 'ADMIN'];
+  if (role === 'ADMIN') return ['MANAGER', 'SENIOR_MANAGER', 'ADMIN'];
   return [];
 };
 
@@ -181,9 +182,17 @@ const roleBadge = (role: UserRole, allRoles?: UserRole[] | null) => {
 
 type Audience = 'internal' | 'external' | null;
 
+const MAX_PHONES = 3;
+
 type FormState = {
   full_name: string;
   email: string;
+  // Additional email addresses (up to MAX_EMAIL_ALIASES). The first
+  // entry in this list is always the primary/login email (form.email).
+  // extraEmails holds the non-primary addresses shown as extra rows.
+  extraEmails: string[];
+  // Phone numbers: index 0 is primary, remaining are extras (max MAX_PHONES total).
+  phones: string[];
   username: string;
   title: string;
   department: string;
@@ -212,6 +221,8 @@ const ADDITIONAL_ROLE_OPTIONS: UserRole[] = ['MANAGER', 'SENIOR_MANAGER', 'CEO',
 const emptyForm = (): FormState => ({
   full_name: '',
   email: '',
+  extraEmails: [],
+  phones: [],
   username: '',
   title: '',
   department: '',
@@ -227,6 +238,8 @@ const emptyForm = (): FormState => ({
   default_client_id: null,
 });
 
+const MAX_EMAIL_ALIASES = 2;
+
 export const AdminPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const { user: currentUser, refreshUser } = useAuth();
@@ -241,6 +254,9 @@ export const AdminPage: React.FC = () => {
   const bulkDeleteUsers = useBulkDeleteUsers();
   const { data: departments = [] } = useDepartments();
   const { data: clientsList = [] } = useClients();
+  const createClient = useCreateClient();
+  const [newClientName, setNewClientName] = useState('');
+  const [showNewClientInput, setShowNewClientInput] = useState(false);
   const createDepartment = useCreateDepartment();
   const [selectedUserIds, setSelectedUserIds] = useState<Set<number>>(new Set());
   const [resetPasswordUserId, setResetPasswordUserId] = useState<number | null>(null);
@@ -288,6 +304,8 @@ export const AdminPage: React.FC = () => {
   }, [refreshUser]);
 
   const [showModal, setShowModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [selectedUserDetails, setSelectedUserDetails] = useState<User | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm());
@@ -323,12 +341,14 @@ export const AdminPage: React.FC = () => {
   // the right copy: synthetic placeholder addresses must never be
   // shown to the admin, and the line about "verification email sent"
   // only fires when the backend actually sent one.
-  const [createdUserSummary, setCreatedUserSummary] = useState<{
+  const [userActionSummary, setUserActionSummary] = useState<{
+    action: 'created' | 'updated';
     fullName: string;
     email: string;
     isExternal: boolean;
     verificationEmailSent: boolean;
   } | null>(null);
+  const createdUserSummary = userActionSummary; // keep compat reference
   const userListSectionRef = React.useRef<HTMLDivElement | null>(null);
 
   // Team Timesheets tab state
@@ -382,6 +402,17 @@ export const AdminPage: React.FC = () => {
   });
 
   const unlockUser = useUnlockUserTimesheet();
+  const addAlias = useAddUserEmailAlias();
+  const deleteAlias = useDeleteUserEmailAlias();
+  const { data: editingUserAliases = [] } = useUserEmailAliases(
+    editingUser?.id ?? null,
+    Boolean(editingUser?.id),
+  );
+
+  React.useEffect(() => {
+    if (!editingUser) return;
+    setForm((f) => ({ ...f, extraEmails: editingUserAliases.map((a) => a.email) }));
+  }, [editingUser?.id, editingUserAliases]);
 
   React.useEffect(() => {
     const nextSearch = searchParams.get('search') ?? '';
@@ -442,6 +473,13 @@ export const AdminPage: React.FC = () => {
     return () => document.removeEventListener('mousedown', close);
   }, [actionMenuUserId]);
 
+  React.useEffect(() => {
+    if (!showModal) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') closeModal(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [showModal]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (isLoading || projectsLoading) return <Loading />;
   if (error || projectsError) return <Error message="Failed to load user management data" />;
 
@@ -482,10 +520,10 @@ export const AdminPage: React.FC = () => {
   const ORPHAN_ROLES = new Set<UserRole>(['EMPLOYEE', 'MANAGER', 'SENIOR_MANAGER']);
   const matchesAttention = (u: User): boolean => {
     if (attentionFilter === 'NO_MANAGER') {
-      return Boolean(u.is_active) && ORPHAN_ROLES.has(u.role) && u.manager_id == null;
+      return Boolean(u.is_active) && !u.is_external && ORPHAN_ROLES.has(u.role) && u.manager_id == null;
     }
     if (attentionFilter === 'UNVERIFIED') {
-      if (!u.is_active || u.email_verified) return false;
+      if (!u.is_active || u.email_verified || u.is_external) return false;
       const created = u.created_at ? Date.parse(u.created_at) : NaN;
       return Number.isFinite(created) && created < STALE_INVITE_CUTOFF_MS;
     }
@@ -565,6 +603,8 @@ export const AdminPage: React.FC = () => {
     setForm({
       full_name: u.full_name,
       email: u.email,
+      extraEmails: [],
+      phones: u.phones ?? [],
       username: u.username ?? '',
       title: u.title ?? '',
       department: u.department ?? '',
@@ -585,6 +625,8 @@ export const AdminPage: React.FC = () => {
     setShowModal(false);
     setEditingUser(null);
     setFormError('');
+    setShowNewClientInput(false);
+    setNewClientName('');
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -621,7 +663,7 @@ export const AdminPage: React.FC = () => {
       return;
     }
     if (form.audience === null) {
-      setFormError('Pick Internal or External before saving');
+      setFormError('Pick user type before saving');
       return;
     }
 
@@ -670,12 +712,20 @@ export const AdminPage: React.FC = () => {
           manager_id: isExternal ? null : form.manager_id,
           project_ids: isExternal || form.role !== 'EMPLOYEE' ? [] : form.project_ids,
           default_client_id: form.default_client_id,
+          phones: form.phones.filter(Boolean),
         };
         await updateUser.mutateAsync({ id: editingUser.id, data: payload });
 
-        // After a successful save, ask the admin if they want to fire
-        // the verification email now. They can always trigger it later
-        // from the user-management table's resend action.
+        // Sync extra emails: add new ones, remove deleted ones.
+        const existingAliasEmails = editingUserAliases.map((a) => a.email);
+        const desiredEmails = form.extraEmails.map((e) => e.trim().toLowerCase()).filter(Boolean);
+        const toAdd = desiredEmails.filter((e) => !existingAliasEmails.includes(e));
+        const toDelete = editingUserAliases.filter((a) => !desiredEmails.includes(a.email));
+        await Promise.all([
+          ...toAdd.map((e) => addAlias.mutateAsync({ userId: editingUser.id, email: e })),
+          ...toDelete.map((a) => deleteAlias.mutateAsync({ userId: editingUser.id, aliasId: a.id })),
+        ]);
+
         if (emailJustAdded) {
           // window.confirm is intentional: the admin's flow is "save
           // then react to a single decision," and a heavier modal here
@@ -695,6 +745,13 @@ export const AdminPage: React.FC = () => {
             }
           }
         }
+        setUserActionSummary({
+          action: 'updated',
+          fullName: form.full_name,
+          email: form.email,
+          isExternal: form.audience === 'external',
+          verificationEmailSent: false,
+        });
       } else {
         if (!isAdminUser) {
           setFormError('Only admins can create users');
@@ -714,6 +771,7 @@ export const AdminPage: React.FC = () => {
           manager_id: isExternal ? null : form.manager_id,
           project_ids: isExternal || form.role !== 'EMPLOYEE' ? [] : form.project_ids,
           default_client_id: form.default_client_id,
+          phones: form.phones.filter(Boolean),
         });
         // If the admin checked any additional portals, patch the new
         // user with the combined roles list. Backend UserCreate doesn't
@@ -724,13 +782,18 @@ export const AdminPage: React.FC = () => {
             data: { roles: combinedRoles },
           });
         }
-        setCreatedUserSummary({
+        // POST extra emails as aliases now that we have a user ID.
+        const newUserId = result?.user?.id;
+        if (newUserId) {
+          const desiredEmails = form.extraEmails.map((e) => e.trim().toLowerCase()).filter(Boolean);
+          await Promise.all(desiredEmails.map((e) => addAlias.mutateAsync({ userId: newUserId, email: e })));
+        }
+
+        setUserActionSummary({
+          action: 'created',
           fullName: result?.user?.full_name || normalizedFullName,
           email: result?.user?.email || normalizedEmail || '',
           isExternal: Boolean(result?.user?.is_external),
-          // Backend sets verification_email_sent=true only when it
-          // actually queued an email (internal + active + real
-          // address). Use it directly so the modal copy matches.
           verificationEmailSent: Boolean(result?.verification_email_sent),
         });
       }
@@ -808,6 +871,7 @@ export const AdminPage: React.FC = () => {
   };
 
   return (
+    <>
     <div className="space-y-6">
       <div>
         <div className="flex items-center justify-between mb-6">
@@ -816,13 +880,29 @@ export const AdminPage: React.FC = () => {
             <p className="text-sm text-muted-foreground mt-1">{(users ?? []).length} total users</p>
           </div>
           {isAdminUser && activeTab === 'users' && (
-            <button
-              onClick={openCreate}
-              className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 shadow"
-            >
-              <PlusCircle className="w-4 h-4" />
-              New User
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowExportModal(true)}
+                className="flex items-center gap-2 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition"
+              >
+                <Upload className="w-4 h-4" />
+                Export
+              </button>
+              <button
+                onClick={() => setShowImportModal(true)}
+                className="flex items-center gap-2 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition"
+              >
+                <Download className="w-4 h-4" />
+                Import
+              </button>
+              <button
+                onClick={openCreate}
+                className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 shadow"
+              >
+                <PlusCircle className="w-4 h-4" />
+                New User
+              </button>
+            </div>
           )}
         </div>
 
@@ -1512,7 +1592,9 @@ export const AdminPage: React.FC = () => {
                       </button>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-muted-foreground">{u.email}</td>
+                  <td className="px-4 py-3 text-muted-foreground">
+                    {u.email?.endsWith('@local.invalid') ? '—' : u.email}
+                  </td>
                   <td className="px-4 py-3">{roleBadge(u.role, u.roles)}</td>
                   <td className="px-4 py-3 text-muted-foreground">{u.title || '—'}</td>
                   <td className="px-4 py-3 text-muted-foreground">{u.department || '—'}</td>
@@ -1567,14 +1649,14 @@ export const AdminPage: React.FC = () => {
               <h2 id="edit-user-modal-title" className="text-lg font-bold">
                 {editingUser ? `Edit User · ${editingUser.full_name}` : 'New User'}
               </h2>
-              <button onClick={closeModal} className="p-1.5 rounded hover:bg-muted">
+              <button onClick={closeModal} className="p-1.5 rounded-lg hover:bg-muted">
                 <X className="w-5 h-5" />
               </button>
             </div>
             <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
               <div className="min-h-0 space-y-4 overflow-y-auto px-6 py-6">
                 {isProjectOnlyEdit ? (
-                  <div className="rounded bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                  <div className="rounded-lg bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
                     Managers can only update project access for employees. Updating access for <span className="font-medium text-foreground">{editingUser?.full_name}</span>.
                   </div>
                 ) : (
@@ -1617,27 +1699,167 @@ export const AdminPage: React.FC = () => {
                         required
                         value={form.full_name}
                         onChange={(e) => setForm((f) => ({ ...f, full_name: e.target.value }))}
-                        className="w-full px-3 py-2 border rounded"
+                        className="w-full px-3 py-2 border rounded-lg"
                         placeholder="Jane Smith"
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium mb-1">Email</label>
-                      <input
-                        type="email"
-                        value={form.email}
-                        onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-                        className="w-full px-3 py-2 border rounded"
-                        placeholder="jane@example.com"
-                      />
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-sm font-medium">Email</label>
+                        <button
+                          type="button"
+                          disabled={form.extraEmails.length >= MAX_EMAIL_ALIASES}
+                          onClick={() => setForm((f) => ({ ...f, extraEmails: [...f.extraEmails, ''] }))}
+                          className="text-xs text-primary hover:underline disabled:opacity-40 disabled:cursor-not-allowed disabled:no-underline"
+                        >
+                          + Add Email
+                        </button>
+                      </div>
+                      {/* Primary email row */}
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <input
+                          type="email"
+                          value={form.email}
+                          onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                          className="flex-1 px-3 py-2 border rounded-lg text-sm"
+                          placeholder="jane@example.com"
+                        />
+                        <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                          Primary
+                        </span>
+                      </div>
+                      {/* Extra email rows */}
+                      {form.extraEmails.map((extra, idx) => (
+                        <div key={idx} className="flex items-center gap-2 mb-1.5">
+                          <input
+                            type="email"
+                            value={extra}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((f) => {
+                                const next = [...f.extraEmails];
+                                next[idx] = val;
+                                return { ...f, extraEmails: next };
+                              });
+                            }}
+                            className="flex-1 px-3 py-2 border rounded-lg text-sm"
+                            placeholder="other@example.com"
+                          />
+                          <button
+                            type="button"
+                            title="Set as primary"
+                            disabled={!extra.trim() || !extra.includes('@')}
+                            onClick={() => {
+                              const trimmed = extra.trim().toLowerCase();
+                              setForm((f) => {
+                                const oldPrimary = f.email;
+                                const nextExtras = f.extraEmails
+                                  .map((e, i) => (i === idx ? oldPrimary : e))
+                                  .filter((e) => e !== trimmed);
+                                return { ...f, email: trimmed, extraEmails: nextExtras };
+                              });
+                            }}
+                            className="shrink-0 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground hover:border-primary hover:text-primary disabled:opacity-40 disabled:cursor-not-allowed transition"
+                          >
+                            Set primary
+                          </button>
+                          <button
+                            type="button"
+                            aria-label="Remove email"
+                            onClick={() =>
+                              setForm((f) => ({
+                                ...f,
+                                extraEmails: f.extraEmails.filter((_, i) => i !== idx),
+                              }))
+                            }
+                            className="shrink-0 rounded-lg p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ))}
                     </div>
+                    {/* Phone numbers: primary + up to 2 extras */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-sm font-medium">Phone</label>
+                        <button
+                          type="button"
+                          disabled={form.phones.length >= MAX_PHONES}
+                          onClick={() => setForm((f) => ({ ...f, phones: [...f.phones, ''] }))}
+                          className="text-xs text-primary hover:underline disabled:opacity-40 disabled:cursor-not-allowed disabled:no-underline"
+                        >
+                          + Add Phone
+                        </button>
+                      </div>
+                      {form.phones.length === 0 && (
+                        <input
+                          type="tel"
+                          placeholder="+1 555 000 0000"
+                          className="w-full px-3 py-2 border rounded-lg text-sm"
+                          onFocus={() => setForm((f) => ({ ...f, phones: [''] }))}
+                          readOnly
+                        />
+                      )}
+                      {form.phones.map((phone, idx) => (
+                        <div key={idx} className="flex items-center gap-2 mb-1.5">
+                          <input
+                            type="tel"
+                            value={phone}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setForm((f) => {
+                                const next = [...f.phones];
+                                next[idx] = val;
+                                return { ...f, phones: next };
+                              });
+                            }}
+                            className="flex-1 px-3 py-2 border rounded-lg text-sm"
+                            placeholder="+1 555 000 0000"
+                          />
+                          {idx === 0 && form.phones.length > 0 && (
+                            <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                              Primary
+                            </span>
+                          )}
+                          {idx > 0 && (
+                            <button
+                              type="button"
+                              title="Set as primary"
+                              onClick={() => {
+                                setForm((f) => {
+                                  const next = [...f.phones];
+                                  const [primary] = next.splice(idx, 1);
+                                  next.unshift(primary);
+                                  return { ...f, phones: next };
+                                });
+                              }}
+                              className="shrink-0 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground hover:border-primary hover:text-primary transition"
+                            >
+                              Set primary
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            aria-label="Remove phone"
+                            onClick={() =>
+                              setForm((f) => ({ ...f, phones: f.phones.filter((_, i) => i !== idx) }))
+                            }
+                            className="shrink-0 rounded-lg p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
                     <div>
                       <label className="block text-sm font-medium mb-1">Username</label>
                       <input
                         type="text"
                         value={form.username}
                         onChange={(e) => setForm((f) => ({ ...f, username: e.target.value.toLowerCase() }))}
-                        className="w-full px-3 py-2 border rounded"
+                        className="w-full px-3 py-2 border rounded-lg"
                         placeholder="jane.smith"
                         minLength={3}
                       />
@@ -1675,7 +1897,7 @@ export const AdminPage: React.FC = () => {
                             };
                           });
                         }}
-                        className="w-full px-3 py-2 border rounded"
+                        className="w-full px-3 py-2 border rounded-lg"
                       >
                         {roles.map((r) => (
                           <option key={r} value={r}>{r}</option>
@@ -1726,7 +1948,7 @@ export const AdminPage: React.FC = () => {
                           required
                           value={form.title}
                           onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
-                          className="w-full px-3 py-2 border rounded"
+                          className="w-full px-3 py-2 border rounded-lg"
                           placeholder={form.role === 'MANAGER' ? 'Manager' : 'Senior Software Engineer'}
                         />
                       </div>
@@ -1751,7 +1973,7 @@ export const AdminPage: React.FC = () => {
                               }
                               setForm((f) => ({ ...f, department: v }));
                             }}
-                            className="flex-1 px-3 py-2 border rounded"
+                            className="flex-1 px-3 py-2 border rounded-lg"
                           >
                             <option value="">{form.role === 'MANAGER' ? 'Select a department' : '— No department —'}</option>
                             {departments.map((d) => (
@@ -1770,7 +1992,7 @@ export const AdminPage: React.FC = () => {
                       <select
                         value={form.manager_id ?? ''}
                         onChange={(e) => setForm((f) => ({ ...f, manager_id: e.target.value ? Number(e.target.value) : null }))}
-                        className="w-full px-3 py-2 border rounded"
+                        className="w-full px-3 py-2 border rounded-lg"
                       >
                         <option value="">Unassigned</option>
                         {supervisors
@@ -1780,22 +2002,72 @@ export const AdminPage: React.FC = () => {
                           ))}
                       </select>
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium mb-1">Default Client</label>
+                    </>)}
+                  </>
+                )}
+                {!isProjectOnlyEdit && form.audience === 'external' && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-sm font-medium">Client</label>
+                      <button
+                        type="button"
+                        onClick={() => { setShowNewClientInput((v) => !v); setNewClientName(''); }}
+                        className="text-xs text-primary hover:underline"
+                      >
+                        {showNewClientInput ? 'Cancel' : '+ New client'}
+                      </button>
+                    </div>
+                    {showNewClientInput ? (
+                      <div className="flex items-center gap-2">
+                        <input
+                          autoFocus
+                          type="text"
+                          value={newClientName}
+                          onChange={(e) => setNewClientName(e.target.value)}
+                          placeholder="Client name"
+                          className="flex-1 px-3 py-2 border rounded-lg text-sm"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              if (!newClientName.trim()) return;
+                              createClient.mutateAsync({ name: newClientName.trim() }).then((c) => {
+                                setForm((f) => ({ ...f, default_client_id: c.id }));
+                                setShowNewClientInput(false);
+                                setNewClientName('');
+                              });
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          disabled={!newClientName.trim() || createClient.isPending}
+                          onClick={() => {
+                            if (!newClientName.trim()) return;
+                            createClient.mutateAsync({ name: newClientName.trim() }).then((c) => {
+                              setForm((f) => ({ ...f, default_client_id: c.id }));
+                              setShowNewClientInput(false);
+                              setNewClientName('');
+                            });
+                          }}
+                          className="px-3 py-2 rounded bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50 hover:bg-primary/90 transition"
+                        >
+                          {createClient.isPending ? '…' : 'Add'}
+                        </button>
+                      </div>
+                    ) : (
                       <select
                         value={form.default_client_id ?? ''}
                         onChange={(e) => setForm((f) => ({ ...f, default_client_id: e.target.value ? Number(e.target.value) : null }))}
-                        className="w-full px-3 py-2 border rounded"
+                        className="w-full px-3 py-2 border rounded-lg"
                       >
                         <option value="">— No default —</option>
                         {clientsList.map((client: { id: number; name: string }) => (
                           <option key={client.id} value={client.id}>{client.name}</option>
                         ))}
                       </select>
-                      <p className="mt-1 text-xs text-muted-foreground">Optional. When set, incoming timesheets resolved to this user auto-route to this client.</p>
-                    </div>
-                    </>)}
-                  </>
+                    )}
+                    <p className="mt-1 text-xs text-muted-foreground">Optional. Incoming timesheets from this user auto-route to this client.</p>
+                  </div>
                 )}
                 {!isProjectOnlyEdit && form.audience === 'internal' && (form.role === 'EMPLOYEE' || isProjectOnlyEdit) && (
                   <div>
@@ -1872,7 +2144,7 @@ export const AdminPage: React.FC = () => {
 
               <div className="shrink-0 border-t px-6 py-4">
                 {formError && (
-                  <p className="mb-3 rounded bg-red-50 px-3 py-2 text-sm text-red-600">{formError}</p>
+                  <p className="mb-3 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">{formError}</p>
                 )}
 
                 <div className="flex gap-3">
@@ -1907,7 +2179,7 @@ export const AdminPage: React.FC = () => {
               Are you sure you want to permanently delete:
             </p>
             <p className="font-semibold text-foreground mb-1">{userToDelete?.full_name}</p>
-            <p className="text-xs text-muted-foreground mb-5">{userToDelete?.email}</p>
+            <p className="text-xs text-muted-foreground mb-5">{userToDelete?.email?.endsWith('@local.invalid') ? 'No email set' : userToDelete?.email}</p>
             <p className="text-xs text-red-600 mb-5">This action cannot be undone.</p>
             <div className="flex gap-3">
               <button
@@ -1940,7 +2212,7 @@ export const AdminPage: React.FC = () => {
                 Set a new password for:
               </p>
               <p className="font-semibold text-foreground mb-1">{targetUser?.full_name}</p>
-              <p className="text-xs text-muted-foreground mb-4">{targetUser?.email}</p>
+              <p className="text-xs text-muted-foreground mb-4">{targetUser?.email?.endsWith('@local.invalid') ? 'No email set' : targetUser?.email}</p>
               <input
                 type="password"
                 value={resetPasswordValue}
@@ -1977,26 +2249,44 @@ export const AdminPage: React.FC = () => {
       {/* Post-create confirmation. Copy depends on whether the user
           is external, whether they have a real email on file, and
           whether the backend queued a verification message. */}
-      {createdUserSummary && (() => {
-        const { fullName, email, isExternal, verificationEmailSent } = createdUserSummary;
+      {userActionSummary && (() => {
+        const { action, fullName, email, isExternal, verificationEmailSent } = userActionSummary;
         const isPlaceholderEmail = !email || email.toLowerCase().endsWith('@local.invalid');
-        let body: string;
-        if (isExternal) {
-          body = `${fullName} created as external. Record-only, no login.`;
+        let detail: string;
+        if (action === 'updated') {
+          detail = isExternal
+            ? 'External user record updated.'
+            : 'User profile saved successfully.';
+        } else if (isExternal) {
+          detail = 'Created as an external user. Record-only, no login access.';
         } else if (verificationEmailSent && !isPlaceholderEmail) {
-          body = `Verification email sent to ${email}.`;
+          detail = `A verification email was sent to ${email}.`;
         } else {
-          body = `${fullName} created. Add an email later to send a verification link.`;
+          detail = 'Add an email address later to send a verification link.';
         }
         return (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
-            <div className="bg-card rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4">
-              <h2 className="text-lg font-semibold text-foreground">User created</h2>
-              <p className="text-sm text-muted-foreground">{body}</p>
-              <div className="flex justify-end">
+          <div
+            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4"
+            onKeyDown={(e) => { if (e.key === 'Escape') setUserActionSummary(null); }}
+          >
+            <div className="bg-card rounded-xl border border-border shadow-2xl w-full max-w-sm p-6">
+              <div className="flex flex-col items-center text-center gap-3">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
+                  <CheckCircle2 className="h-6 w-6 text-primary" />
+                </div>
+                <div>
+                  <h2 className="text-base font-semibold text-foreground">
+                    {action === 'created' ? 'User created' : 'Changes saved'}
+                  </h2>
+                  <p className="text-sm font-medium text-foreground mt-0.5">{fullName}</p>
+                  <p className="text-sm text-muted-foreground mt-1">{detail}</p>
+                </div>
+              </div>
+              <div className="flex justify-center mt-5">
                 <button
-                  className="action-button"
-                  onClick={() => setCreatedUserSummary(null)}
+                  autoFocus
+                  className="px-6 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition"
+                  onClick={() => setUserActionSummary(null)}
                 >
                   Done
                 </button>
@@ -2035,7 +2325,7 @@ export const AdminPage: React.FC = () => {
                     {employeesWithoutProjects.map((u) => (
                       <tr key={u.id} className="hover:bg-muted/10">
                         <td className="px-4 py-3 font-medium">{u.full_name}</td>
-                        <td className="px-4 py-3 text-muted-foreground">{u.email}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{u.email?.endsWith('@local.invalid') ? '—' : u.email}</td>
                         <td className="px-4 py-3 text-muted-foreground">{u.department || '—'}</td>
                         <td className="px-4 py-3 text-right">
                           <button
@@ -2077,7 +2367,7 @@ export const AdminPage: React.FC = () => {
                 </div>
                 <div>
                   <p className="text-muted-foreground">Email</p>
-                  <p className="font-medium">{selectedUserDetails.email}</p>
+                  <p className="font-medium">{selectedUserDetails.email?.endsWith('@local.invalid') ? '—' : selectedUserDetails.email}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Role</p>
@@ -2141,5 +2431,12 @@ export const AdminPage: React.FC = () => {
         </div>
       )}
     </div>
+    {showImportModal && (
+      <ImportUsersModal onClose={() => setShowImportModal(false)} />
+    )}
+    {showExportModal && (
+      <ExportModal onClose={() => setShowExportModal(false)} />
+    )}
+    </>
   );
 };

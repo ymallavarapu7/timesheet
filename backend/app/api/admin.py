@@ -100,7 +100,7 @@ async def _check_redis() -> SystemHealthCheck:
     except Exception:  # pragma: no cover - redis is in requirements.txt
         return SystemHealthCheck(
             key="redis",
-            label="Redis",
+            label="Background jobs",
             status="attention",
             subtitle="Client library unavailable",
         )
@@ -112,7 +112,7 @@ async def _check_redis() -> SystemHealthCheck:
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         return SystemHealthCheck(
             key="redis",
-            label="Redis",
+            label="Background jobs",
             status="healthy",
             subtitle=f"Last ping {elapsed_ms}ms",
         )
@@ -120,7 +120,7 @@ async def _check_redis() -> SystemHealthCheck:
         logger.warning("system-health redis check failed: %s", exc)
         return SystemHealthCheck(
             key="redis",
-            label="Redis",
+            label="Background jobs",
             status="attention",
             subtitle="Ping failed",
         )
@@ -152,7 +152,7 @@ async def _check_email_ingestion(db: AsyncSession) -> SystemHealthCheck:
         has_active = active_count_result.first() is not None
         return SystemHealthCheck(
             key="email_ingestion",
-            label="Email Ingestion",
+            label="Inbox processing",
             status="attention" if has_active else "healthy",
             subtitle=(
                 "No mailbox has fetched yet"
@@ -181,7 +181,7 @@ async def _check_email_ingestion(db: AsyncSession) -> SystemHealthCheck:
     )
     return SystemHealthCheck(
         key="email_ingestion",
-        label="Email Ingestion",
+        label="Inbox processing",
         status=status,
         subtitle=subtitle,
     )

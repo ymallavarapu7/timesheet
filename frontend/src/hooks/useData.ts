@@ -19,6 +19,7 @@ import {
   departmentsAPI,
   leaveTypesAPI,
   adminAPI,
+  attentionSignalsAPI,
 } from '@/api/endpoints';
 
 type TimeEntriesListParams = Parameters<typeof timeentriesAPI.list>[0];
@@ -457,6 +458,57 @@ export const useAdminSystemHealth = (enabled: boolean = true) => {
   });
 };
 
+export const useUserEmailAliases = (userId: number | null, enabled: boolean = true) => {
+  return useQuery({
+    queryKey: ['users', userId, 'email-aliases'],
+    queryFn: () => usersAPI.listEmailAliases(userId as number).then((res) => res.data),
+    enabled: enabled && userId != null,
+    staleTime: 30_000,
+  });
+};
+
+export const useAddUserEmailAlias = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, email }: { userId: number; email: string }) =>
+      usersAPI.addEmailAlias(userId, email).then((res) => res.data),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['users', vars.userId, 'email-aliases'] });
+    },
+  });
+};
+
+export const useDeleteUserEmailAlias = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, aliasId }: { userId: number; aliasId: number }) =>
+      usersAPI.deleteEmailAlias(userId, aliasId),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['users', vars.userId, 'email-aliases'] });
+    },
+  });
+};
+
+export const useDismissedAttentionSignals = (enabled: boolean = true) => {
+  return useQuery({
+    queryKey: ['attention-signals', 'dismissed'],
+    queryFn: () => attentionSignalsAPI.listDismissed().then((res) => res.data),
+    enabled,
+    staleTime: 30_000,
+  });
+};
+
+export const useDismissAttentionSignal = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ signal_key, snoozed_until }: { signal_key: string; snoozed_until: string | null }) =>
+      attentionSignalsAPI.dismiss(signal_key, snoozed_until),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['attention-signals', 'dismissed'] });
+    },
+  });
+};
+
 export const useDashboardRecentActivity = (params?: { limit?: number }, enabled: boolean = true) => {
   return useQuery({
     queryKey: ['dashboard', 'recent-activity', params],
@@ -587,6 +639,14 @@ export const useUsers = (enabled: boolean = true) => {
   return useQuery({
     queryKey: ['users'],
     queryFn: () => usersAPI.list().then((res) => res.data),
+    enabled,
+  });
+};
+
+export const useAssignableUsers = (enabled: boolean = true) => {
+  return useQuery({
+    queryKey: ['users', 'assignable'],
+    queryFn: () => usersAPI.listAssignable().then((res) => res.data),
     enabled,
   });
 };
@@ -1182,3 +1242,76 @@ export const useDeleteLeaveType = () => {
     },
   });
 };
+
+import type { ImportCommitRequest, ExportUsersParams, ExportClientsParams, ExportTimesheetsParams } from '@/api/endpoints';
+
+export const useImportUsersPreview = () =>
+  useMutation({
+    mutationFn: (file: File) => usersAPI.importPreview(file).then((r) => r.data),
+  });
+
+export const useImportUsersCommit = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: ImportCommitRequest) => usersAPI.importCommit(data).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+    },
+  });
+};
+
+function _downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function _filenameFromHeaders(headers: Record<string, string> | undefined, fallback: string): string {
+  const dispo = headers?.['content-disposition'] || headers?.['Content-Disposition'];
+  if (dispo) {
+    const match = /filename="?([^";]+)"?/.exec(dispo);
+    if (match) return match[1];
+  }
+  return fallback;
+}
+
+export const useExportUsers = () =>
+  useMutation({
+    mutationFn: async (params: ExportUsersParams) => {
+      const resp = await usersAPI.exportUsers(params);
+      const filename = _filenameFromHeaders(
+        resp.headers as Record<string, string>,
+        `users.${params.fmt}`,
+      );
+      _downloadBlob(resp.data, filename);
+    },
+  });
+
+export const useExportClients = () =>
+  useMutation({
+    mutationFn: async (params: ExportClientsParams) => {
+      const resp = await usersAPI.exportClients(params);
+      const filename = _filenameFromHeaders(
+        resp.headers as Record<string, string>,
+        `clients.${params.fmt}`,
+      );
+      _downloadBlob(resp.data, filename);
+    },
+  });
+
+export const useExportTimesheets = () =>
+  useMutation({
+    mutationFn: async (params: ExportTimesheetsParams) => {
+      const resp = await usersAPI.exportTimesheets(params);
+      const filename = _filenameFromHeaders(
+        resp.headers as Record<string, string>,
+        `approved-timesheets.${params.fmt}`,
+      );
+      _downloadBlob(resp.data, filename);
+    },
+  });

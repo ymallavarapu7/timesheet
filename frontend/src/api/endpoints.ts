@@ -110,6 +110,8 @@ export const authAPI = {
 export const usersAPI = {
   list: () =>
     apiClient.get<User[]>('/users'),
+  listAssignable: () =>
+    apiClient.get<User[]>('/users/assignable'),
   
   get: (id: number) =>
     apiClient.get<User>(`/users/${id}`),
@@ -157,7 +159,102 @@ export const usersAPI = {
     apiClient.post<{ message: string }>(`/users/${id}/reset-password`, { new_password: newPassword }),
   resendVerification: (id: number) =>
     apiClient.post<{ message: string }>(`/users/${id}/resend-verification`, {}),
+
+  listEmailAliases: (id: number) =>
+    apiClient.get<EmailAlias[]>(`/users/${id}/email-aliases`),
+  addEmailAlias: (id: number, email: string) =>
+    apiClient.post<EmailAlias>(`/users/${id}/email-aliases`, { email }),
+  deleteEmailAlias: (id: number, alias_id: number) =>
+    apiClient.delete<void>(`/users/${id}/email-aliases/${alias_id}`),
+
+  importPreview: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return apiClient.post<ImportPreviewResponse>('/users/import/preview', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+  importCommit: (data: ImportCommitRequest) =>
+    apiClient.post<ImportCommitResponse>('/users/import/commit', data),
+
+  exportUsers: (params: ExportUsersParams) =>
+    apiClient.get<Blob>('/users/export/users', { params, responseType: 'blob' }),
+  exportClients: (params: ExportClientsParams) =>
+    apiClient.get<Blob>('/users/export/clients', { params, responseType: 'blob' }),
+  exportTimesheets: (params: ExportTimesheetsParams) =>
+    apiClient.get<Blob>('/users/export/timesheets', { params, responseType: 'blob' }),
 };
+
+export interface ExportUsersParams {
+  fmt: 'csv' | 'xlsx';
+  user_type?: 'all' | 'internal' | 'external';
+  role?: string;
+  status_filter?: 'all' | 'active' | 'inactive';
+  client_id?: number;
+  department?: string;
+}
+
+export interface ExportClientsParams {
+  fmt: 'csv' | 'xlsx';
+}
+
+export interface ExportTimesheetsParams {
+  fmt: 'csv' | 'xlsx';
+  period_start: string; // YYYY-MM-DD
+  period_end: string;   // YYYY-MM-DD
+  user_type?: 'all' | 'internal' | 'external';
+  user_id?: number;
+  client_id?: number;
+  project_id?: number;
+}
+
+export interface EmailAlias {
+  id: number;
+  email: string;
+  created_at: string;
+}
+
+export interface ImportPreviewResponse {
+  headers: string[];
+  preview_rows: Record<string, string>[];
+  total_rows: number;
+}
+
+export interface ImportPreviewRow {
+  row: number;
+  full_name: string;
+  email: string;
+  extra_emails: string[];
+  phones: string[];
+  role: string;
+  title: string;
+  department: string;
+  client: string;
+  project: string;
+  manager: string;
+  is_active: boolean;
+  warnings: string[];
+  errors: string[];
+}
+
+export interface ImportCommitRequest {
+  headers: string[];
+  rows: string[][];
+  mapping: Record<string, string>;
+  user_type?: 'internal' | 'external';
+  default_client_id?: number;
+  default_project_id?: number;
+  default_manager_id?: number;
+}
+
+export interface ImportCommitResponse {
+  created: number;
+  skipped: number;
+  details: {
+    created: Array<{ row: number; user_id: number; full_name: string; warnings: string[] }>;
+    skipped: Array<{ row: number; reason: string }>;
+  };
+}
 
 // Clients endpoints
 export const clientsAPI = {
@@ -453,6 +550,20 @@ export const adminAPI = {
    *  PLATFORM_ADMIN only; other roles get 403. Each entry is independent
    *  — one degraded service does not mask the others. */
   systemHealth: () => apiClient.get<SystemHealthCheckResponse[]>('/admin/system-health'),
+};
+
+export interface DismissedSignal {
+  signal_key: string;
+  snoozed_until: string | null;
+}
+
+export const attentionSignalsAPI = {
+  listDismissed: () =>
+    apiClient.get<DismissedSignal[]>('/attention-signals/dismissed'),
+  dismiss: (signal_key: string, snoozed_until: string | null) =>
+    apiClient.post<void>('/attention-signals', { signal_key, snoozed_until }),
+  undismiss: (signal_key: string) =>
+    apiClient.delete<void>(`/attention-signals/${encodeURIComponent(signal_key)}`),
 };
 
 export const notificationsAPI = {

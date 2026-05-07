@@ -26,10 +26,13 @@ from .setting_definition import SettingDefinition
 from .permission import Permission
 from .role import Role, RolePermission
 from .role_assignment import RoleAssignment
+from .dismissed_attention_signal import DismissedAttentionSignal
+from .user_email_alias import UserEmailAlias
 
 __all__ = ["Tenant", "User", "Client", "ClientEmailDomain", "Project", "Task", "TimeEntry",
            "TimeOffRequest", "EmployeeManagerAssignment", "UserProjectAccess", "UserNotificationState", "UserNotificationDismissal", "TimeEntryEditHistory",
            "SyncLog", "SyncDirection", "SyncEntityType", "SyncStatus", "ServiceToken", "ActivityLog",
            "Mailbox", "IngestedEmail", "EmailAttachment", "IngestionTimesheet",
            "IngestionTimesheetLineItem", "IngestionAuditLog", "RefreshToken", "Department", "LeaveType",
-           "SettingDefinition", "Permission", "Role", "RolePermission", "RoleAssignment"]
+           "SettingDefinition", "Permission", "Role", "RolePermission", "RoleAssignment",
+           "DismissedAttentionSignal", "UserEmailAlias"]

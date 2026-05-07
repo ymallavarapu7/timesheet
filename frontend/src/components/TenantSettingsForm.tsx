@@ -28,7 +28,15 @@ const SKIP_KEYS = new Set<string>(['smtp_password']);
 
 type Errors = Record<string, string | undefined>;
 
-export const TenantSettingsForm: React.FC = () => {
+interface TenantSettingsFormProps {
+  filterCategories?: string[];
+  showHeader?: boolean;
+}
+
+export const TenantSettingsForm: React.FC<TenantSettingsFormProps> = ({
+  filterCategories,
+  showHeader = true,
+}) => {
   const catalogQuery = useTenantSettingsCatalog();
   const valuesQuery = useTenantSettings();
   const updateMutation = useUpdateTenantSettings();
@@ -52,6 +60,7 @@ export const TenantSettingsForm: React.FC = () => {
     const byCategory = new Map<string, SettingDefinition[]>();
     for (const defn of catalog) {
       if (SKIP_KEYS.has(defn.key)) continue;
+      if (filterCategories && !filterCategories.includes(defn.category)) continue;
       const list = byCategory.get(defn.category) ?? [];
       list.push(defn);
       byCategory.set(defn.category, list);
@@ -62,7 +71,7 @@ export const TenantSettingsForm: React.FC = () => {
     const ordered = CATEGORY_ORDER
       .filter((c) => byCategory.has(c.key))
       .map((c) => ({ label: c.label, defs: byCategory.get(c.key)! }));
-    // Trailing "unknown" categories — shouldn't happen in practice but keep
+    // Trailing "unknown" categories -- shouldn't happen in practice but keep
     // the UI graceful if a new category is added server-side before the
     // frontend is updated.
     const knownKeys = new Set(CATEGORY_ORDER.map((c) => c.key));
@@ -70,7 +79,7 @@ export const TenantSettingsForm: React.FC = () => {
       if (!knownKeys.has(key)) ordered.push({ label: key, defs });
     }
     return ordered;
-  }, [catalogQuery.data]);
+  }, [catalogQuery.data, filterCategories]);
 
   if (catalogQuery.isLoading || valuesQuery.isLoading) {
     return (
@@ -127,30 +136,49 @@ export const TenantSettingsForm: React.FC = () => {
 
   return (
     <div className="rounded-lg border bg-card">
-      <div className="border-b px-4 py-3 flex items-center justify-between">
-        <div>
-          <h2 className="text-sm font-semibold text-muted-foreground">
-            All settings (catalog-driven)
-          </h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Every tenant setting, rendered from the server catalog. Fields are
-            validated server-side when you save.
-          </p>
+      {showHeader && (
+        <div className="border-b px-4 py-3 flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-semibold text-muted-foreground">
+              All settings (catalog-driven)
+            </h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Every tenant setting, rendered from the server catalog. Fields are
+              validated server-side when you save.
+            </p>
+          </div>
+          <button
+            className="action-button text-sm disabled:opacity-50"
+            onClick={handleSave}
+            disabled={updateMutation.isPending}
+          >
+            {saveFlash === 'saved'
+              ? 'Saved!'
+              : saveFlash === 'error'
+              ? 'Error'
+              : updateMutation.isPending
+              ? 'Saving…'
+              : 'Save changes'}
+          </button>
         </div>
-        <button
-          className="action-button text-sm disabled:opacity-50"
-          onClick={handleSave}
-          disabled={updateMutation.isPending}
-        >
-          {saveFlash === 'saved'
-            ? 'Saved!'
-            : saveFlash === 'error'
-            ? 'Error'
-            : updateMutation.isPending
-            ? 'Saving…'
-            : 'Save changes'}
-        </button>
-      </div>
+      )}
+      {!showHeader && (
+        <div className="border-b px-4 py-3 flex justify-end">
+          <button
+            className="action-button text-sm disabled:opacity-50"
+            onClick={handleSave}
+            disabled={updateMutation.isPending}
+          >
+            {saveFlash === 'saved'
+              ? 'Saved!'
+              : saveFlash === 'error'
+              ? 'Error'
+              : updateMutation.isPending
+              ? 'Saving…'
+              : 'Save changes'}
+          </button>
+        </div>
+      )}
 
       {errors.__form && (
         <div className="border-b border-destructive/40 bg-destructive/5 px-4 py-2 text-sm text-destructive">

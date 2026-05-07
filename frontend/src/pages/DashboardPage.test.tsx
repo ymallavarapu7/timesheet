@@ -31,12 +31,28 @@ vi.mock('@/hooks', () => ({
   useTeamEmployees: mocks.useTeamEmployees,
   useTenants: mocks.useTenants,
   useUsers: mocks.useUsers,
+  useWeekStartsOn: () => 1,
+  useAdminSystemHealth: () => ({ data: undefined, isLoading: false }),
+  useCanReview: () => false,
+  useIngestionEnabled: () => false,
+  useIngestionTimesheets: () => ({ data: { items: [] }, isLoading: false }),
+  useManagerProjectHealth: () => ({ data: undefined, isLoading: false }),
+  useManagerTeamOverview: () => ({ data: undefined, isLoading: false }),
+  useTimeEntries: () => ({ data: [], isLoading: false }),
 }));
 
 vi.mock('@/components', () => ({
   Header: () => <div>Header</div>,
   Loading: () => <div>Loading</div>,
   ChangePasswordModal: () => null,
+  AdminActionQueue: () => null,
+  DashboardGreeting: () => null,
+  SystemHealthCard: () => null,
+  WeeklyRoster: () => null,
+  ManagerConversation: () => null,
+  ManagerGlanceTiles: () => null,
+  ProjectHealthTable: () => null,
+  QuickLogButton: () => null,
 }));
 
 const employeeUser: User = {

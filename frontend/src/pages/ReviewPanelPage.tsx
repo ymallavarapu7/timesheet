@@ -29,7 +29,7 @@ import {
   useUnrejectIngestionLineItem,
   useUpdateIngestionLineItem,
   useUpdateIngestionTimesheetData,
-  useUsers,
+  useAssignableUsers,
 } from '@/hooks';
 import type { ChainCandidate, EmailAttachmentSummary, IngestionLineItem, IngestionLineItemPayload, SpreadsheetPreview } from '@/types';
 
@@ -469,7 +469,7 @@ export const ReviewPanelPage: React.FC = () => {
     isLoading: isEmailLoading,
     isError: isEmailError,
   } = useIngestionEmail(normalizedEmailId, isEmailMode);
-  const { data: users = [] } = useUsers();
+  const { data: users = [] } = useAssignableUsers();
   const { data: clients = [] } = useClients();
   const createClient = useCreateClient();
   // Cascade-create reuses the inbox endpoint: creates the client AND maps
@@ -521,18 +521,20 @@ export const ReviewPanelPage: React.FC = () => {
   }, [reprocessJobId, reprocessStatus?.status, queryClient, isTimesheetMode, emailContext?.id, normalizedEmailId, navigate]);
   const emailId_forSiblings = emailContext?.id ?? null;
   const extractedName = ((timesheet?.extracted_employee_name ?? timesheet?.employee_name) ?? '').toLowerCase().trim();
-  const attachmentId_forSiblings = timesheet?.attachment_id ?? null;
+  const resolvedEmployeeId = timesheet?.employee_id ?? null;
   const { data: siblingData } = useIngestionTimesheets(
     emailId_forSiblings ? { email_id: emailId_forSiblings } : undefined,
     !!emailId_forSiblings,
   );
-  // Filter siblings to same employee: prefer attachment_id match (most reliable),
-  // fall back to extracted employee name if attachment_id is null.
+  // Group siblings by employee: all weeks from the same person in the same
+  // email become tabs. Match by resolved employee_id first (most reliable),
+  // then fall back to extracted name. Attachment-id matching is intentionally
+  // skipped -- each week can come from a different attachment file.
   const siblings = React.useMemo(() => {
     if (!Array.isArray(siblingData)) return [];
     const filtered = [...siblingData].filter((s) => {
-      if (attachmentId_forSiblings != null && s.attachment_id != null) {
-        return s.attachment_id === attachmentId_forSiblings;
+      if (resolvedEmployeeId != null && s.employee_id != null) {
+        return s.employee_id === resolvedEmployeeId;
       }
       const sName = ((s.extracted_employee_name ?? s.employee_name) ?? '').toLowerCase().trim();
       return !extractedName || sName === extractedName;
@@ -552,7 +554,7 @@ export const ReviewPanelPage: React.FC = () => {
       const bv = b.period_start ? new Date(b.period_start).getTime() : 0;
       return av - bv;
     });
-  }, [siblingData, attachmentId_forSiblings, extractedName, timesheet?.id]);
+  }, [siblingData, resolvedEmployeeId, extractedName, timesheet?.id]);
 
   // In email mode, if exactly one timesheet exists for this email, jump
   // directly to its timesheet view. This happens after a reprocess redirect
