@@ -80,15 +80,10 @@ describe('buildNavigation', () => {
     });
   });
 
-  describe('senior_manager and ceo', () => {
-    it('treats SENIOR_MANAGER as a manager for Approvals', () => {
-      const sm = makeUser({ role: 'SENIOR_MANAGER' });
-      expect(flatten(buildNavigation(sm, true))).toContain('Approvals');
-    });
-
-    it('treats CEO as a manager for Approvals', () => {
-      const ceo = makeUser({ role: 'CEO' });
-      expect(flatten(buildNavigation(ceo, true))).toContain('Approvals');
+  describe('manager', () => {
+    it('shows Approvals for MANAGER', () => {
+      const mgr = makeUser({ role: 'MANAGER' });
+      expect(flatten(buildNavigation(mgr, true))).toContain('Approvals');
     });
   });
 

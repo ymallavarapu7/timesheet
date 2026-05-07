@@ -94,9 +94,9 @@ describe('AdminActionQueue', () => {
         userRow({ id: 2, full_name: 'Alice Manager', role: 'MANAGER', manager_id: null }),
         // Inactive: skipped.
         userRow({ id: 3, full_name: 'Inactive Bob', role: 'EMPLOYEE', manager_id: null, is_active: false }),
-        // ADMIN/CEO/PLATFORM_ADMIN can legitimately have no manager.
+        // ADMIN/VIEWER/PLATFORM_ADMIN can legitimately have no manager.
         userRow({ id: 4, full_name: 'Admin Person', role: 'ADMIN', manager_id: null }),
-        userRow({ id: 5, full_name: 'CEO Person', role: 'CEO', manager_id: null }),
+        userRow({ id: 5, full_name: 'Viewer Person', role: 'VIEWER', manager_id: null }),
         userRow({ id: 6, full_name: 'Platform Admin', role: 'PLATFORM_ADMIN', manager_id: null }),
       ],
     });

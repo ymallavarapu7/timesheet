@@ -95,7 +95,7 @@ describe('AdminPage', () => {
         full_name: 'Senior Manager User',
         title: 'Senior Manager',
         department: 'Engineering',
-        role: 'SENIOR_MANAGER',
+        role: 'MANAGER',
         is_active: true,
         has_changed_password: true, email_verified: true, tenant_id: 1,
         manager_id: null,
@@ -164,7 +164,7 @@ describe('AdminPage', () => {
     expect(screen.getByText('OrgChart')).toBeInTheDocument();
   });
 
-  it('shows only senior manager or CEO options for manager reports-to selection', () => {
+  it('shows only manager options for manager reports-to selection, excluding viewer', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={queryClient}>
@@ -228,10 +228,10 @@ describe('AdminPage', () => {
         id: 3,
         email: 'ceo@example.com',
         username: 'ceo',
-        full_name: 'Casey CEO',
-        title: 'Chief Executive Officer',
+        full_name: 'Casey Viewer',
+        title: 'Observer',
         department: 'Executive',
-        role: 'CEO',
+        role: 'VIEWER',
         is_active: true,
         has_changed_password: true, email_verified: true, tenant_id: 1,
         manager_id: null,
@@ -281,7 +281,7 @@ describe('AdminPage', () => {
 
     expect(optionLabels).toContain('Unassigned');
     expect(optionLabels).toContain('Olivia Ops Manager');
-    expect(optionLabels).not.toContain('Casey CEO');
+    expect(optionLabels).not.toContain('Casey Viewer');
     expect(reportsToSelect.value).toBe('1');
   });
 });
