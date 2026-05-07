@@ -22,7 +22,6 @@ export default defineConfig(function (_a) {
                 '/api': {
                     target: "http://".concat(backendHost, ":").concat(backendPort),
                     changeOrigin: true,
-                    rewrite: function (path) { return path.replace(/^\/api/, ''); },
                 },
             },
         },
