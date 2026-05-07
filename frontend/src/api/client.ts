@@ -1,8 +1,14 @@
 import axios, { AxiosInstance, InternalAxiosRequestConfig } from 'axios';
 
 // Create axios instance
+const _rawBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+// Strip a trailing /api so the env var works whether set to
+// "https://acufy.ai" or "https://acufy.ai/api" — endpoint paths
+// already include /api/ where needed.
+const _apiBase = _rawBase.replace(/\/api\/?$/, '');
+
 export const apiClient: AxiosInstance = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000',
+  baseURL: _apiBase,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -74,7 +80,7 @@ apiClient.interceptors.response.use(
 
     try {
       const response = await axios.post(
-        `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/auth/refresh`,
+        `${_apiBase}/auth/refresh`,
         { refresh_token: refreshToken },
       );
 

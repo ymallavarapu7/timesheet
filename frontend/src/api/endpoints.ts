@@ -631,67 +631,67 @@ export const tenantSettingsAPI = {
 };
 
 export const mailboxesAPI = {
-  list: () => apiClient.get<Mailbox[]>('/mailboxes'),
-  get: (id: number) => apiClient.get<Mailbox>(`/mailboxes/${id}`),
-  create: (data: MailboxPayload) => apiClient.post<Mailbox>('/mailboxes', data),
-  update: (id: number, data: Partial<MailboxPayload>) => apiClient.patch<Mailbox>(`/mailboxes/${id}`, data),
-  delete: (id: number) => apiClient.delete(`/mailboxes/${id}`),
-  test: (id: number) => apiClient.post<{ success: boolean; error: string | null; latency_ms: number; message_count: number }>(`/mailboxes/${id}/test`, {}),
-  resetCursor: (id: number) => apiClient.post(`/mailboxes/${id}/reset-cursor`, {}),
-  oauthConnect: (provider: 'google' | 'microsoft') => apiClient.get<{ auth_url: string }>(`/mailboxes/oauth/connect/${provider}`),
+  list: () => apiClient.get<Mailbox[]>('/api/mailboxes'),
+  get: (id: number) => apiClient.get<Mailbox>(`/api/mailboxes/${id}`),
+  create: (data: MailboxPayload) => apiClient.post<Mailbox>('/api/mailboxes', data),
+  update: (id: number, data: Partial<MailboxPayload>) => apiClient.patch<Mailbox>(`/api/mailboxes/${id}`, data),
+  delete: (id: number) => apiClient.delete(`/api/mailboxes/${id}`),
+  test: (id: number) => apiClient.post<{ success: boolean; error: string | null; latency_ms: number; message_count: number }>(`/api/mailboxes/${id}/test`, {}),
+  resetCursor: (id: number) => apiClient.post(`/api/mailboxes/${id}/reset-cursor`, {}),
+  oauthConnect: (provider: 'google' | 'microsoft') => apiClient.get<{ auth_url: string }>(`/api/mailboxes/oauth/connect/${provider}`),
 };
 
 export const ingestionAPI = {
-  triggerFetch: () => apiClient.post<FetchJobResponse>('/ingestion/fetch-emails', {}),
-  getFetchStatus: (jobId: string) => apiClient.get<FetchJobStatus>(`/ingestion/fetch-emails/status/${jobId}`),
-  getSkippedEmails: (params?: { limit?: number }) => apiClient.get<SkippedEmailOverview>('/ingestion/skipped-emails', { params }),
-  reprocessSkipped: () => apiClient.post<ReprocessSkippedResult>('/ingestion/fetch-emails/reprocess-skipped', {}),
+  triggerFetch: () => apiClient.post<FetchJobResponse>('/api/ingestion/fetch-emails', {}),
+  getFetchStatus: (jobId: string) => apiClient.get<FetchJobStatus>(`/api/ingestion/fetch-emails/status/${jobId}`),
+  getSkippedEmails: (params?: { limit?: number }) => apiClient.get<SkippedEmailOverview>('/api/ingestion/skipped-emails', { params }),
+  reprocessSkipped: () => apiClient.post<ReprocessSkippedResult>('/api/ingestion/fetch-emails/reprocess-skipped', {}),
   reprocessEmail: (emailId: number, attachmentIds?: number[]) =>
-    apiClient.post<ReprocessStoredEmailResult>('/ingestion/fetch-emails/reprocess', { email_id: emailId, attachment_ids: attachmentIds }),
-  getEmail: (emailId: number) => apiClient.get<StoredEmailDetail>(`/ingestion/emails/${emailId}`),
+    apiClient.post<ReprocessStoredEmailResult>('/api/ingestion/fetch-emails/reprocess', { email_id: emailId, attachment_ids: attachmentIds }),
+  getEmail: (emailId: number) => apiClient.get<StoredEmailDetail>(`/api/ingestion/emails/${emailId}`),
   deleteEmail: (emailId: number, refetch: boolean = false) =>
-    apiClient.delete(`/ingestion/emails/${emailId}`, { params: refetch ? { refetch: true } : undefined }),
+    apiClient.delete(`/api/ingestion/emails/${emailId}`, { params: refetch ? { refetch: true } : undefined }),
   bulkDeleteEmails: (emailIds: number[]) =>
-    apiClient.post<{ deleted: number }>('/ingestion/emails/bulk-delete', { email_ids: emailIds }),
+    apiClient.post<{ deleted: number }>('/api/ingestion/emails/bulk-delete', { email_ids: emailIds }),
   bulkReprocess: (emailIds: number[]) =>
-    apiClient.post<{ queued: number; message: string }>('/ingestion/fetch-emails/bulk-reprocess', { email_ids: emailIds }),
-  reapplyMappings: () => apiClient.post<MappingReapplyResult>('/ingestion/timesheets/reapply-mappings', {}),
+    apiClient.post<{ queued: number; message: string }>('/api/ingestion/fetch-emails/bulk-reprocess', { email_ids: emailIds }),
+  reapplyMappings: () => apiClient.post<MappingReapplyResult>('/api/ingestion/timesheets/reapply-mappings', {}),
   getAttachmentFile: async (attachmentId: number) => {
-    const response = await apiClient.get<Blob>(`/ingestion/attachments/${attachmentId}/file`, {
+    const response = await apiClient.get<Blob>(`/api/ingestion/attachments/${attachmentId}/file`, {
       responseType: 'blob',
       headers: { Accept: '*/*' },
     });
     return URL.createObjectURL(response.data);
   },
   getAttachmentFullHtml: (attachmentId: number) =>
-    apiClient.get<{ html: string }>(`/ingestion/attachments/${attachmentId}/full-html`),
+    apiClient.get<{ html: string }>(`/api/ingestion/attachments/${attachmentId}/full-html`),
   listTimesheets: (params?: { status_filter?: string; client_id?: number; employee_id?: number; email_id?: number; search?: string; limit?: number; offset?: number }) =>
-    apiClient.get<IngestionTimesheetSummary[]>('/ingestion/timesheets', { params }),
-  getTimesheet: (id: number) => apiClient.get<IngestionTimesheetDetail>(`/ingestion/timesheets/${id}`),
-  updateTimesheetData: (id: number, data: IngestionDataUpdate) => apiClient.patch<{ status: string }>(`/ingestion/timesheets/${id}/data`, data),
+    apiClient.get<IngestionTimesheetSummary[]>('/api/ingestion/timesheets', { params }),
+  getTimesheet: (id: number) => apiClient.get<IngestionTimesheetDetail>(`/api/ingestion/timesheets/${id}`),
+  updateTimesheetData: (id: number, data: IngestionDataUpdate) => apiClient.patch<{ status: string }>(`/api/ingestion/timesheets/${id}/data`, data),
   addLineItem: (id: number, data: Required<Pick<IngestionLineItemPayload, 'work_date' | 'hours'>> & IngestionLineItemPayload) =>
-    apiClient.post<IngestionLineItem>(`/ingestion/timesheets/${id}/line-items`, data),
+    apiClient.post<IngestionLineItem>(`/api/ingestion/timesheets/${id}/line-items`, data),
   updateLineItem: (timesheetId: number, itemId: number, data: IngestionLineItemPayload) =>
-    apiClient.patch<IngestionLineItem>(`/ingestion/timesheets/${timesheetId}/line-items/${itemId}`, data),
+    apiClient.patch<IngestionLineItem>(`/api/ingestion/timesheets/${timesheetId}/line-items/${itemId}`, data),
   deleteLineItem: (timesheetId: number, itemId: number) =>
-    apiClient.delete(`/ingestion/timesheets/${timesheetId}/line-items/${itemId}`),
+    apiClient.delete(`/api/ingestion/timesheets/${timesheetId}/line-items/${itemId}`),
   approveTimesheet: (id: number, comment?: string) =>
-    apiClient.post<IngestionApprovalResult>(`/ingestion/timesheets/${id}/approve`, { comment }),
+    apiClient.post<IngestionApprovalResult>(`/api/ingestion/timesheets/${id}/approve`, { comment }),
   rejectTimesheet: (id: number, reason: string, comment?: string) =>
-    apiClient.post<{ status: string; reason: string }>(`/ingestion/timesheets/${id}/reject`, { reason, comment }),
+    apiClient.post<{ status: string; reason: string }>(`/api/ingestion/timesheets/${id}/reject`, { reason, comment }),
   holdTimesheet: (id: number, comment?: string) =>
-    apiClient.post<{ status: string }>(`/ingestion/timesheets/${id}/hold`, { comment }),
+    apiClient.post<{ status: string }>(`/api/ingestion/timesheets/${id}/hold`, { comment }),
   rejectLineItem: (timesheetId: number, itemId: number, reason: string) =>
-    apiClient.post<{ status: string; line_item_id: number }>(`/ingestion/timesheets/${timesheetId}/line-items/${itemId}/reject`, { reason }),
+    apiClient.post<{ status: string; line_item_id: number }>(`/api/ingestion/timesheets/${timesheetId}/line-items/${itemId}/reject`, { reason }),
   unrejectLineItem: (timesheetId: number, itemId: number) =>
-    apiClient.post<{ status: string; line_item_id: number }>(`/ingestion/timesheets/${timesheetId}/line-items/${itemId}/unreject`, {}),
+    apiClient.post<{ status: string; line_item_id: number }>(`/api/ingestion/timesheets/${timesheetId}/line-items/${itemId}/unreject`, {}),
   revertTimesheetRejection: (id: number) =>
-    apiClient.post<{ status: string }>(`/ingestion/timesheets/${id}/revert-rejection`, {}),
+    apiClient.post<{ status: string }>(`/api/ingestion/timesheets/${id}/revert-rejection`, {}),
   draftComment: (id: number, seed_text: string) =>
-    apiClient.post<{ draft: string }>(`/ingestion/timesheets/${id}/draft-comment`, { seed_text }),
+    apiClient.post<{ draft: string }>(`/api/ingestion/timesheets/${id}/draft-comment`, { seed_text }),
   assignChainCandidate: (id: number, data: { name?: string | null; email?: string | null }) =>
     apiClient.post<{ timesheet_id: number; employee_id: number; created_new_user: boolean }>(
-      `/ingestion/timesheets/${id}/assign-chain-candidate`,
+      `/api/ingestion/timesheets/${id}/assign-chain-candidate`,
       data,
     ),
 };
