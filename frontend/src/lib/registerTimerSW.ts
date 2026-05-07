@@ -5,8 +5,8 @@ export async function registerTimerSW() {
   }
 
   try {
-    const registration = await navigator.serviceWorker.register('/timer-sw.js', {
-      scope: '/'
+    const registration = await navigator.serviceWorker.register(`${import.meta.env.BASE_URL}timer-sw.js`, {
+      scope: import.meta.env.BASE_URL
     });
     console.log('Timer Service Worker registered with scope:', registration.scope);
   } catch (error) {
