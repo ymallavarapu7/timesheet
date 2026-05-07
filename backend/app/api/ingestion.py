@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.deps import get_tenant_db, get_tenant_slug, require_can_review, require_ingestion_enabled
+from app.core.deps import get_tenant_db, get_tenant_slug, require_can_review, require_ingestion_enabled, require_role
 from app.crud.ingestion_timesheet import (
     get_ingestion_timesheet,
     list_ingestion_timesheets,
@@ -714,7 +714,7 @@ class BulkReprocessRequest(BaseModel):
 @router.post("/fetch-emails/bulk-reprocess")
 async def bulk_reprocess_emails(
     body: BulkReprocessRequest,
-    current_user=Depends(require_can_review),
+    current_user=Depends(require_role("ADMIN", "PLATFORM_ADMIN", "MANAGER", "VIEWER")),
     _: object = Depends(require_ingestion_enabled),
     session: AsyncSession = Depends(get_tenant_db),
     tenant_slug: str = Depends(get_tenant_slug),
