@@ -601,6 +601,7 @@ export const OrganizationalChart: React.FC<OrgChartProps> = ({
                     searchQuery={q}
                     depth={0}
                     expandAll={expandAll}
+                    expandVersion={expandVersion}
                     hasParentLine={false}
                     reportsToName={
                       u.manager_id && !internalVisibleIds.has(u.manager_id)
