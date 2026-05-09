@@ -147,12 +147,8 @@ def _validate_role_profile(
 
 
 def _allowed_manager_roles_for_role(role: UserRole) -> set[UserRole]:
-    if role == UserRole.EMPLOYEE:
-        return {UserRole.MANAGER, UserRole.ADMIN}
-    if role == UserRole.MANAGER:
-        return {UserRole.MANAGER, UserRole.ADMIN}
-    if role == UserRole.ADMIN:
-        return {UserRole.MANAGER, UserRole.ADMIN}
+    if role in {UserRole.EMPLOYEE, UserRole.MANAGER, UserRole.ADMIN, UserRole.VIEWER}:
+        return {UserRole.MANAGER, UserRole.ADMIN, UserRole.VIEWER}
     return set()
 
 

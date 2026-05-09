@@ -109,7 +109,7 @@ export const authAPI = {
 // Users endpoints
 export const usersAPI = {
   list: () =>
-    apiClient.get<User[]>('/users'),
+    apiClient.get<User[]>('/users', { params: { limit: 1000 } }),
   listAssignable: () =>
     apiClient.get<User[]>('/users/assignable'),
   
@@ -174,6 +174,8 @@ export const usersAPI = {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
+  importValidate: (data: { headers: string[]; rows: string[][]; mapping: Record<string, string> }) =>
+    apiClient.post<{ rows: ImportPreviewRow[]; counts: Record<string, number> }>('/users/import/validate', data),
   importCommit: (data: ImportCommitRequest) =>
     apiClient.post<ImportCommitResponse>('/users/import/commit', data),
 
@@ -218,12 +220,15 @@ export interface ImportPreviewResponse {
   headers: string[];
   preview_rows: Record<string, string>[];
   total_rows: number;
+  all_rows: string[][];
 }
 
 export interface ImportPreviewRow {
   row: number;
+  status: 'new' | 'exact_match' | 'conflict' | 'duplicate_in_file' | 'error';
   full_name: string;
   email: string;
+  existing_name: string | null;
   extra_emails: string[];
   phones: string[];
   role: string;
@@ -245,13 +250,16 @@ export interface ImportCommitRequest {
   default_client_id?: number;
   default_project_id?: number;
   default_manager_id?: number;
+  conflict_resolutions?: Record<string, 'overwrite' | 'skip'>;
 }
 
 export interface ImportCommitResponse {
   created: number;
+  updated: number;
   skipped: number;
   details: {
     created: Array<{ row: number; user_id: number; full_name: string; warnings: string[] }>;
+    updated: Array<{ row: number; user_id: number; full_name: string; warnings: string[] }>;
     skipped: Array<{ row: number; reason: string }>;
   };
 }

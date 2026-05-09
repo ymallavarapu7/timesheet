@@ -129,11 +129,8 @@ const UserActionMenu: React.FC<UserActionMenuProps> = ({
   );
 };
 
-const getAllowedSupervisorRoles = (role: UserRole): UserRole[] => {
-  if (role === 'EMPLOYEE') return ['MANAGER', 'ADMIN'];
-  if (role === 'MANAGER') return ['MANAGER', 'ADMIN'];
-  if (role === 'ADMIN') return ['MANAGER', 'ADMIN'];
-  return [];
+const getAllowedSupervisorRoles = (_role: UserRole): UserRole[] => {
+  return ['MANAGER', 'ADMIN', 'VIEWER'];
 };
 
 const normalizeDepartment = (value?: string | null): string => (value ?? '').trim().toLowerCase();
@@ -1429,7 +1426,7 @@ export const AdminPage: React.FC = () => {
           </div>
         )}
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="flex flex-wrap gap-2 mb-6">
           {roles.map((role) => {
             const count = (users ?? []).filter((u) => u.role === role).length;
             const isSelected = roleFilter === role && statusFilter === 'ALL';
@@ -1438,20 +1435,20 @@ export const AdminPage: React.FC = () => {
                 key={role}
                 type="button"
                 onClick={() => applyUserListFilter(role, 'ALL')}
-                className={`bg-card border rounded-xl p-4 text-left hover:bg-muted/30 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 ${isSelected ? 'ring-2 ring-primary' : ''}`}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${isSelected ? 'border-primary bg-primary/10 text-primary' : 'border-border bg-card text-muted-foreground'}`}
               >
-                <p className="text-sm text-muted-foreground">{role}</p>
-                <p className="text-2xl font-bold mt-1">{count}</p>
+                {role}
+                <span className={`font-bold ${isSelected ? 'text-primary' : 'text-foreground'}`}>{count}</span>
               </button>
             );
           })}
           <button
             type="button"
             onClick={() => applyUserListFilter('ALL', 'INACTIVE')}
-            className={`bg-card border rounded-xl p-4 text-left hover:bg-muted/30 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 ${roleFilter === 'ALL' && statusFilter === 'INACTIVE' ? 'ring-2 ring-primary' : ''}`}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${roleFilter === 'ALL' && statusFilter === 'INACTIVE' ? 'border-primary bg-primary/10 text-primary' : 'border-border bg-card text-muted-foreground'}`}
           >
-            <p className="text-sm text-muted-foreground">Inactive</p>
-            <p className="text-2xl font-bold mt-1">{(users ?? []).filter((u) => !u.is_active).length}</p>
+            Inactive
+            <span className={`font-bold ${roleFilter === 'ALL' && statusFilter === 'INACTIVE' ? 'text-primary' : 'text-foreground'}`}>{(users ?? []).filter((u) => !u.is_active).length}</span>
           </button>
         </div>
 

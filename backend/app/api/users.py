@@ -2,7 +2,7 @@ import logging
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, status, Query, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel as PydanticBaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -121,7 +121,7 @@ async def list_all_users(
     limit: int = Query(100, ge=1, le=1000),
     db: AsyncSession = Depends(get_tenant_db),
     current_user: User = Depends(get_current_user),
-) -> list[User]:
+) -> list[UserResponse]:
     """List users; scope depends on role (platform/tenant/manager-chain)."""
     old_decision = current_user.role in {
         UserRole.PLATFORM_ADMIN,
@@ -148,19 +148,25 @@ async def list_all_users(
             .offset(skip)
             .limit(limit)
         )
-        return list(result.scalars().all())
+        orm_users = list(result.scalars().all())
+    elif current_user.role == UserRole.ADMIN:
+        orm_users = await list_users(db, tenant_id=current_user.tenant_id, skip=skip, limit=limit)
+    elif current_user.role in MANAGER_CHAIN_ROLES:
+        managed = await _get_managed_users(db, current_user.id, current_user.tenant_id)
+        orm_users = managed[skip: skip + limit]
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied",
+        )
 
-    if current_user.role == UserRole.ADMIN:
-        return await list_users(db, tenant_id=current_user.tenant_id, skip=skip, limit=limit)
-
-    if current_user.role in MANAGER_CHAIN_ROLES:
-        managed_users = await _get_managed_users(db, current_user.id, current_user.tenant_id)
-        return managed_users[skip: skip + limit]
-
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Access denied",
-    )
+    # Serialize while the session is still open so @property accessors
+    # (manager_id, project_ids) can read their eagerly-loaded relationships
+    # before SQLAlchemy expires the ORM objects on session close.
+    # Return JSONResponse directly to bypass FastAPI's response_model re-validation
+    # which runs after the session closes and would lose the loaded relationship data.
+    data = [UserResponse.model_validate(u).model_dump(mode='json') for u in orm_users]
+    return JSONResponse(content=data)
 
 
 @router.get("/me/permissions")
@@ -1126,7 +1132,54 @@ async def import_users_preview(
         "headers": headers,
         "preview_rows": preview_rows,
         "total_rows": len(rows),
+        "all_rows": rows,
     }
+
+
+class ImportValidateBody(PydanticBaseModel):
+    mapping: dict[str, str]
+    rows: list[list[str]]
+    headers: list[str]
+
+
+@router.post("/import/validate", response_model=dict)
+async def import_users_validate(
+    body: ImportValidateBody,
+    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+    db: AsyncSession = Depends(get_tenant_db),
+) -> dict:
+    """Classify all rows as new / exact_match / conflict / error.
+
+    No DB writes. Called after column mapping so the frontend can show a
+    conflict-resolution step before the final commit.
+    """
+    from app.services.user_import import apply_mapping, validate_row
+
+    tenant_id = current_user.tenant_id
+    existing_users_result = await db.execute(
+        select(User.email, User.full_name, User.id).where(User.tenant_id == tenant_id)
+    )
+    existing_rows = existing_users_result.all()
+    existing_emails: set[str] = {r.email.lower() for r in existing_rows if r.email}
+    existing_email_to_name: dict[str, str] = {
+        r.email.lower(): r.full_name for r in existing_rows if r.email and r.full_name
+    }
+    existing_name_to_id: dict[str, int] = {
+        r.full_name.strip().lower(): r.id for r in existing_rows if r.full_name
+    }
+
+    records = apply_mapping(body.headers, body.rows, body.mapping)
+    seen_emails: set[str] = set()
+    validated_rows = []
+    for idx, record in enumerate(records):
+        v = validate_row(record, idx + 1, existing_emails, seen_emails, existing_email_to_name, existing_name_to_id)
+        validated_rows.append(v)
+
+    counts = {"new": 0, "exact_match": 0, "conflict": 0, "error": 0, "duplicate_in_file": 0}
+    for v in validated_rows:
+        counts[v["status"]] = counts.get(v["status"], 0) + 1
+
+    return {"rows": validated_rows, "counts": counts}
 
 
 class ImportCommitBody(PydanticBaseModel):
@@ -1137,6 +1190,9 @@ class ImportCommitBody(PydanticBaseModel):
     default_client_id: int | None = None
     default_project_id: int | None = None
     default_manager_id: int | None = None
+    # Per-row conflict resolutions decided by the reviewer in the frontend.
+    # Key = 1-based row index (str), value = "overwrite" | "skip".
+    conflict_resolutions: dict[str, str] = {}
 
 
 @router.post("/import/commit", response_model=dict)
@@ -1166,26 +1222,49 @@ async def import_users_commit(
     tenant_id = current_user.tenant_id
     is_external_default = body.user_type != "internal"
 
-    existing_emails_result = await db.execute(
-        select(User.email).where(User.tenant_id == tenant_id)
+    existing_users_result = await db.execute(
+        select(User.email, User.full_name, User.id).where(User.tenant_id == tenant_id)
     )
-    existing_emails: set[str] = {r.lower() for r in existing_emails_result.scalars().all() if r}
+    existing_rows = existing_users_result.all()
+    existing_emails: set[str] = {r.email.lower() for r in existing_rows if r.email}
+    existing_email_to_name: dict[str, str] = {
+        r.email.lower(): r.full_name for r in existing_rows if r.email and r.full_name
+    }
+    existing_email_to_id: dict[str, int] = {
+        r.email.lower(): r.id for r in existing_rows if r.email
+    }
+    existing_name_to_id: dict[str, int] = {
+        r.full_name.strip().lower(): r.id for r in existing_rows if r.full_name
+    }
 
     records = apply_mapping(body.headers, body.rows, body.mapping)
 
     created: list[dict] = []
+    updated: list[dict] = []
     skipped: list[dict] = []
     seen_emails: set[str] = set()
 
     for idx, record in enumerate(records):
-        validated = validate_row(record, idx + 1, existing_emails, seen_emails)
-        if validated["errors"]:
-            skipped.append({"row": idx + 1, "reason": "; ".join(validated["errors"])})
+        row_num = idx + 1
+        validated = validate_row(record, row_num, existing_emails, seen_emails, existing_email_to_name, existing_name_to_id)
+        row_status = validated["status"]
+
+        if row_status == "error":
+            skipped.append({"row": row_num, "reason": "; ".join(validated["errors"])})
+            continue
+
+        if row_status == "duplicate_in_file":
+            skipped.append({"row": row_num, "reason": "; ".join(validated["errors"])})
+            continue
+
+        if row_status == "exact_match":
+            # Name and email already match exactly — silently skip, nothing to do.
+            skipped.append({"row": row_num, "reason": f"Already exists (exact match): {validated['email']}"})
             continue
 
         full_name = validated["full_name"]
         if not full_name:
-            skipped.append({"row": idx + 1, "reason": "Full name is required"})
+            skipped.append({"row": row_num, "reason": "Full name is required"})
             continue
 
         row_client = await resolve_client_id(db, validated["client"], tenant_id) if (tenant_id and validated["client"]) else None
@@ -1196,6 +1275,39 @@ async def import_users_commit(
         project_id = row_project if row_project is not None else body.default_project_id
         manager_id = row_manager if row_manager is not None else body.default_manager_id
 
+        if row_status == "conflict":
+            resolution = body.conflict_resolutions.get(str(row_num), "skip")
+            if resolution != "overwrite":
+                skipped.append({"row": row_num, "reason": f"Conflict kept (not overwritten): {validated['email']}"})
+                continue
+            # Overwrite: update the existing user's name and other fields.
+            existing_user_id = (
+                existing_email_to_id.get(validated["email"])
+                or validated.get("existing_user_id")
+            )
+            if existing_user_id is None:
+                skipped.append({"row": row_num, "reason": f"Could not locate existing user for overwrite: {validated['email']}"})
+                continue
+            try:
+                existing_user = await db.get(User, existing_user_id)
+                if existing_user is None:
+                    skipped.append({"row": row_num, "reason": f"Could not load existing user for overwrite: {validated['email']}"})
+                    continue
+                existing_user.full_name = full_name
+                existing_user.title = validated["title"] or None
+                existing_user.department = validated["department"] or None
+                existing_user.role = _UserRole(validated["role"])
+                existing_user.is_active = validated["is_active"]
+                existing_user.default_client_id = client_id
+                await db.commit()
+            except Exception as exc:
+                await db.rollback()
+                skipped.append({"row": row_num, "reason": f"Update failed: {exc}"})
+                continue
+            updated.append({"row": row_num, "user_id": existing_user_id, "full_name": full_name, "warnings": validated["warnings"]})
+            continue
+
+        # row_status == "new": create
         try:
             user_create = UserCreate(
                 full_name=full_name,
@@ -1213,7 +1325,7 @@ async def import_users_commit(
             )
             user, _ = await crud_create_user(db, user_create)
         except Exception as exc:
-            skipped.append({"row": idx + 1, "reason": str(exc)})
+            skipped.append({"row": row_num, "reason": str(exc)})
             continue
 
         for alias_email in validated["extra_emails"]:
@@ -1229,7 +1341,7 @@ async def import_users_commit(
             existing_emails.add(validated["email"])
 
         created.append({
-            "row": idx + 1,
+            "row": row_num,
             "user_id": user.id,
             "full_name": user.full_name,
             "warnings": validated["warnings"],
@@ -1237,8 +1349,9 @@ async def import_users_commit(
 
     return {
         "created": len(created),
+        "updated": len(updated),
         "skipped": len(skipped),
-        "details": {"created": created, "skipped": skipped},
+        "details": {"created": created, "updated": updated, "skipped": skipped},
     }
 
 
