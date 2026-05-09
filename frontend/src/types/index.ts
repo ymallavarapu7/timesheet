@@ -639,6 +639,7 @@ export interface IngestionTimesheetSummary {
   extracted_supervisor_name: string | null;
   client_id: number | null;
   client_name: string | null;
+  extracted_client_name: string | null;
   period_start: string | null;
   period_end: string | null;
   total_hours: string | number | null;

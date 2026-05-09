@@ -1250,6 +1250,12 @@ export const useImportUsersPreview = () =>
     mutationFn: (file: File) => usersAPI.importPreview(file).then((r) => r.data),
   });
 
+export const useImportUsersValidate = () =>
+  useMutation({
+    mutationFn: (data: { headers: string[]; rows: string[][]; mapping: Record<string, string> }) =>
+      usersAPI.importValidate(data).then((r) => r.data),
+  });
+
 export const useImportUsersCommit = () => {
   const queryClient = useQueryClient();
   return useMutation({

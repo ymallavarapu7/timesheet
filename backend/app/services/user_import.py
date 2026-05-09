@@ -179,45 +179,70 @@ def validate_row(
     row_index: int,
     existing_emails: set[str],
     seen_emails: set[str],
+    existing_email_to_name: dict[str, str] | None = None,
+    existing_name_to_id: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Validate a single mapped row and return a preview record.
 
     Returns:
         {
           "row": int,
+          "status": "new" | "exact_match" | "conflict" | "duplicate_in_file" | "error",
           "full_name": str,
-          "email": str,              # primary (may be blank)
+          "email": str,
+          "existing_name": str | None,  # set when status is conflict/exact_match
+          "existing_user_id": int | None,  # set when matched by name (no email match)
           "extra_emails": [str],
           "phones": [str],
-          "role": str,               # enum value
+          "role": str,
           "title": str,
           "department": str,
-          "client": str,             # raw name, resolved at commit
-          "project": str,            # raw name, resolved at commit
-          "manager": str,            # raw name/email, resolved at commit
+          "client": str,
+          "project": str,
+          "manager": str,
           "is_active": bool,
-          "warnings": [str],         # non-fatal; row imports with defaults
-          "errors": [str],           # fatal; row is skipped on commit
+          "warnings": [str],
+          "errors": [str],              # only set when status == "error"
         }
     """
     warnings: list[str] = []
     errors: list[str] = []
+    row_status = "new"
+    existing_name: str | None = None
+    existing_user_id: int | None = None
 
     full_name = _normalize_str(record.get("full_name", ""))
     if not full_name:
         errors.append("Full name is required")
+        row_status = "error"
 
     primary_email = _normalize_str(record.get("email", "")).lower()
     if primary_email and "@" not in primary_email:
         errors.append(f"Invalid email: {primary_email}")
         primary_email = ""
-    if primary_email:
-        if primary_email in existing_emails:
-            errors.append(f"Email already exists: {primary_email}")
-        elif primary_email in seen_emails:
+        row_status = "error"
+    if primary_email and row_status != "error":
+        if primary_email in seen_emails:
             errors.append(f"Duplicate email in file: {primary_email}")
+            row_status = "duplicate_in_file"
+        elif primary_email in existing_emails:
+            existing_name = (existing_email_to_name or {}).get(primary_email)
+            if existing_name and existing_name.strip().lower() == full_name.strip().lower():
+                row_status = "exact_match"
+            else:
+                row_status = "conflict"
         else:
             seen_emails.add(primary_email)
+
+    # No email match: check if a user with the same name already exists (catches
+    # ingestion-created users with @ingestion.internal synthetic addresses).
+    if row_status == "new" and full_name and existing_name_to_id:
+        name_key = full_name.strip().lower()
+        matched_id = existing_name_to_id.get(name_key)
+        if matched_id is not None:
+            row_status = "exact_match"
+            existing_name = full_name
+            existing_user_id = matched_id
 
     extra_emails: list[str] = []
     for key in ("extra_email_1", "extra_email_2"):
@@ -248,8 +273,11 @@ def validate_row(
 
     return {
         "row": row_index,
+        "status": row_status,
         "full_name": full_name,
         "email": primary_email,
+        "existing_name": existing_name,
+        "existing_user_id": existing_user_id,
         "extra_emails": extra_emails,
         "phones": phones,
         "role": role.value,
