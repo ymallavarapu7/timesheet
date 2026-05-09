@@ -14,6 +14,7 @@ import {
   useBulkReprocessEmails,
   useBulkDeleteIngestedEmails,
   useClients,
+  useCreateClient,
   useCreateClientFromDomain,
   useDeleteIngestedEmail,
   useFetchJobStatus,
@@ -23,6 +24,8 @@ import {
   useReprocessSkippedEmails,
   useSkippedEmails,
   useTriggerFetchEmails,
+  useUpdateIngestionTimesheetData,
+  useUsers,
 } from '@/hooks';
 import type { ChainCandidate, FetchMessageDiagnostic, IngestionTimesheetSummary, SkippedEmail } from '@/types';
 
@@ -408,6 +411,11 @@ export const InboxPage: React.FC = () => {
   const createClientFromDomain = useCreateClientFromDomain();
 
   const assignChainCandidate = useAssignChainCandidate();
+  const updateTimesheet = useUpdateIngestionTimesheetData();
+  const createClient = useCreateClient();
+  const { data: users = [] } = useUsers();
+  // Which row has an inline picker open: { id, kind: 'client'|'employee' }
+  const [inlinePicker, setInlinePicker] = React.useState<{ id: number; kind: 'client' | 'employee' } | null>(null);
   const queryClient = useQueryClient();
   const triggerFetch = useTriggerFetchEmails();
   const { data: mailboxes = [] } = useMailboxes();
@@ -1249,17 +1257,52 @@ export const InboxPage: React.FC = () => {
                           ) : (() => {
                             const senderDomain = domainOf(rowTarget.sender_email);
                             if (!senderDomain || isPersonalDomain(senderDomain)) {
-                              return (
-                                <span
-                                  className="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300"
-                                  title={
-                                    senderDomain
-                                      ? `${senderDomain} is a personal email provider. Open this row to assign a client manually.`
-                                      : 'No sender domain. Open this row to assign a client manually.'
-                                  }
+                              const pickerId = rowTarget.id;
+                              const isOpen = inlinePicker?.id === pickerId && inlinePicker.kind === 'client';
+                              return isOpen ? (
+                                <div className="flex flex-col gap-1 min-w-[160px]" onClick={(e) => e.stopPropagation()}>
+                                  <select
+                                    autoFocus
+                                    className="h-7 rounded border border-border bg-background px-2 text-xs"
+                                    defaultValue=""
+                                    onChange={async (e) => {
+                                      const val = e.target.value;
+                                      if (!val) return;
+                                      await updateTimesheet.mutateAsync({ id: pickerId, data: { client_id: Number(val) } });
+                                      setInlinePicker(null);
+                                    }}
+                                    onBlur={() => setInlinePicker(null)}
+                                  >
+                                    <option value="">Pick client…</option>
+                                    {clients.map((c: { id: number; name: string }) => (
+                                      <option key={c.id} value={c.id}>{c.name}</option>
+                                    ))}
+                                  </select>
+                                  {rowTarget.extracted_client_name && (
+                                    <button
+                                      type="button"
+                                      className="text-left text-xs text-primary hover:underline disabled:opacity-60"
+                                      disabled={createClient.isPending}
+                                      onMouseDown={async (e) => {
+                                        e.preventDefault();
+                                        const created = await createClient.mutateAsync({ name: rowTarget.extracted_client_name! });
+                                        await updateTimesheet.mutateAsync({ id: pickerId, data: { client_id: created.id } });
+                                        setInlinePicker(null);
+                                      }}
+                                    >
+                                      {createClient.isPending ? 'Creating…' : `+ Create "${rowTarget.extracted_client_name}"`}
+                                    </button>
+                                  )}
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); setInlinePicker({ id: pickerId, kind: 'client' }); }}
+                                  className="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-700 transition hover:bg-amber-500/20 dark:text-amber-300"
+                                  title="Click to assign client"
                                 >
                                   Needs client
-                                </span>
+                                </button>
                               );
                             }
                             const count = cascadePendingCount(senderDomain);
@@ -1311,13 +1354,37 @@ export const InboxPage: React.FC = () => {
                                 </div>
                               );
                             }
-                            return (
-                              <span
-                                className="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300"
-                                title="Employee not yet assigned"
+                            const pickerId = rowTarget.id;
+                            const isOpen = inlinePicker?.id === pickerId && inlinePicker.kind === 'employee';
+                            return isOpen ? (
+                              <div onClick={(e) => e.stopPropagation()}>
+                                <select
+                                  autoFocus
+                                  className="h-7 rounded border border-border bg-background px-2 text-xs min-w-[160px]"
+                                  defaultValue=""
+                                  onChange={async (e) => {
+                                    const val = e.target.value;
+                                    if (!val) return;
+                                    await updateTimesheet.mutateAsync({ id: pickerId, data: { employee_id: Number(val) } });
+                                    setInlinePicker(null);
+                                  }}
+                                  onBlur={() => setInlinePicker(null)}
+                                >
+                                  <option value="">Pick employee…</option>
+                                  {users.map((u: { id: number; full_name: string }) => (
+                                    <option key={u.id} value={u.id}>{u.full_name}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); setInlinePicker({ id: pickerId, kind: 'employee' }); }}
+                                className="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-700 transition hover:bg-amber-500/20 dark:text-amber-300"
+                                title="Click to assign employee"
                               >
                                 Needs employee
-                              </span>
+                              </button>
                             );
                           })()}
                         </td>

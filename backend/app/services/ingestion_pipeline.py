@@ -306,6 +306,10 @@ async def process_email(
     failed_attachment_count = 0
     for attachment, attachment_record in attachment_records:
         if not attachment.is_processable:
+            logger.info(
+                "Skipping non-processable attachment: filename=%r mime=%r",
+                attachment.filename, getattr(attachment, "mime_type", None),
+            )
             continue
 
         candidate_attachment_count += 1
@@ -518,6 +522,10 @@ async def reprocess_stored_email(
 
     for attachment, attachment_record in parsed_attachments:
         if not attachment.is_processable:
+            logger.info(
+                "Skipping non-processable attachment: filename=%r mime=%r",
+                attachment.filename, getattr(attachment, "mime_type", None),
+            )
             continue
         candidate_attachment_count += 1
         try:
@@ -602,19 +610,30 @@ def _normalize_line_items(
         work_date_str = item.get("work_date")
 
         if not hours:
+            logger.debug(
+                "Dropped line item with null/zero hours: date=%s desc=%r",
+                work_date_str, item.get("description"),
+            )
             continue
         try:
             hours_float = float(hours)
             if hours_float <= 0:
+                logger.debug(
+                    "Dropped line item with non-positive hours (%s): date=%s desc=%r",
+                    hours_float, work_date_str, item.get("description"),
+                )
                 continue
         except (ValueError, TypeError):
+            logger.debug("Dropped line item with unparseable hours %r: date=%s", hours, work_date_str)
             continue
 
         if not work_date_str:
+            logger.debug("Dropped line item with missing work_date: hours=%s desc=%r", hours, item.get("description"))
             continue
         try:
             work_date = _dt.date.fromisoformat(str(work_date_str))
         except (ValueError, TypeError):
+            logger.debug("Dropped line item with unparseable work_date %r: hours=%s", work_date_str, hours)
             continue
 
         if start_date and work_date < start_date - _dt.timedelta(days=7):
@@ -966,20 +985,24 @@ async def _process_timesheet_attachment(
                     email_record.forwarded_from_name,
                 )
 
-        # Phase 2-C: fuzzy match on chain sender display names (email headers).
+        # Phase 2-C: fuzzy match on chain sender display names.
+        # Iterate deepest-first (original submitter is the deepest hop); take
+        # the first confident match rather than requiring exactly one unique
+        # match across all senders.  This avoids the case where a forwarder's
+        # display name also fuzzy-matches a different employee and makes the
+        # set ambiguous.
         if employee_id is None and chain_from_email:
-            for entry in chain_from_email:
+            for entry in reversed(chain_from_email):
                 entry_name = entry.get("name") or ""
                 if entry_name:
                     matched = _fuzzy_match_employee(entry_name, employees)
                     if matched is not None:
-                        chain_match_ids.add(matched)
-            if len(chain_match_ids) == 1:
-                employee_id = next(iter(chain_match_ids))
-                logger.info(
-                    "Resolved employee via chain display name (unique match): user_id=%s",
-                    employee_id,
-                )
+                        employee_id = matched
+                        logger.info(
+                            "Resolved employee via chain display name (deepest match): user_id=%s name=%r",
+                            employee_id, entry_name,
+                        )
+                        break
 
         # Client resolution: consultant email domain wins; LLM client_name
         # is last-resort. See _resolve_client_id for the full precedence.
@@ -1178,6 +1201,50 @@ async def _process_timesheet_attachment(
         )
         session.add(timesheet)
         await session.flush()
+
+        # Duplicate-period guard: if this employee already has an approved
+        # IngestionTimesheet that overlaps this period, auto-reject the new
+        # one so it never surfaces in the reviewer queue.  The next-month
+        # email chain typically re-embeds all prior weeks; without this check
+        # each reprocess would re-stage every historical period.
+        if employee_id is not None and timesheet.period_start and timesheet.period_end:
+            overlap_result = await session.execute(
+                select(IngestionTimesheet.id, IngestionTimesheet.period_start, IngestionTimesheet.period_end)
+                .where(
+                    (IngestionTimesheet.tenant_id == tenant_id)
+                    & (IngestionTimesheet.employee_id == employee_id)
+                    & (IngestionTimesheet.status == IngestionTimesheetStatus.approved)
+                    & (IngestionTimesheet.time_entries_created.is_(True))
+                    & (IngestionTimesheet.id != timesheet.id)
+                    & (IngestionTimesheet.period_start <= timesheet.period_end)
+                    & (IngestionTimesheet.period_end >= timesheet.period_start)
+                )
+            )
+            prior_approved = overlap_result.first()
+            if prior_approved is not None:
+                timesheet.status = IngestionTimesheetStatus.rejected
+                timesheet.updated_at = now
+                logger.info(
+                    "Auto-rejected duplicate period: employee_id=%s period=%s to %s "
+                    "conflicts with approved timesheet_id=%s",
+                    employee_id, timesheet.period_start, timesheet.period_end, prior_approved[0],
+                )
+                audit = IngestionAuditLog(
+                    ingestion_timesheet_id=timesheet.id,
+                    user_id=None,
+                    action="auto_rejected",
+                    actor_type=IngestionAuditActorType.system,
+                    new_value={
+                        "reason": "duplicate_period",
+                        "conflicts_with": prior_approved[0],
+                        "period": f"{timesheet.period_start} to {timesheet.period_end}",
+                    },
+                    created_at=now,
+                )
+                session.add(audit)
+                # No line items needed for a rejected duplicate
+                created_count += 1
+                continue
 
         # Create line items
         for item in line_items_data:
@@ -1415,7 +1482,16 @@ def _find_existing_client_id(
     clients: list[dict],
 ) -> int | None:
     """Exact/fuzzy match the extracted client name against existing clients.
-    Returns id if a strong match, else None. Does NOT create anything."""
+    Returns id if a strong match, else None. Does NOT create anything.
+
+    Matching strategy (highest to lowest priority):
+    1. Exact lowercase match.
+    2. SequenceMatcher ratio >= 0.85.
+    3. Token-overlap fallback: if one name is an abbreviation of the other
+       (e.g. 'TCS' inside 'Tata Consultancy Services'), accept when all tokens
+       from the shorter name appear in the longer name's token set and the
+       longer name has at least 2 of the shorter name's tokens.
+    """
     import difflib
 
     if not extracted_client_name:
@@ -1426,6 +1502,10 @@ def _find_existing_client_id(
 
     best_id: int | None = None
     best_ratio = 0.0
+    token_match_id: int | None = None
+
+    extracted_tokens = set(normalized.split())
+
     for client in clients:
         existing = (client.get("name") or "").strip().lower()
         if not existing:
@@ -1436,7 +1516,27 @@ def _find_existing_client_id(
         if ratio > best_ratio:
             best_ratio = ratio
             best_id = client["id"]
-    return best_id if best_ratio >= 0.85 else None
+
+        # Token-overlap: check if the shorter string's tokens are a subset of
+        # the longer string's tokens (handles acronym / abbreviation cases).
+        if token_match_id is None:
+            existing_tokens = set(existing.split())
+            if len(extracted_tokens) <= len(existing_tokens):
+                shorter, longer = extracted_tokens, existing_tokens
+            else:
+                shorter, longer = existing_tokens, extracted_tokens
+            if len(shorter) >= 1 and shorter.issubset(longer) and len(shorter & longer) >= 2:
+                token_match_id = client["id"]
+                logger.info(
+                    "Client token-overlap match: %r -> %r (client_id=%s)",
+                    normalized, existing, client["id"],
+                )
+
+    if best_ratio >= 0.85:
+        return best_id
+    if token_match_id is not None:
+        return token_match_id
+    return None
 
 
 def _fuzzy_match_employee(
@@ -1445,8 +1545,15 @@ def _fuzzy_match_employee(
 ) -> int | None:
     """
     Deterministic fuzzy match of extracted employee name against known employees.
-    Returns employee ID if a strong match is found (ratio >= 0.85), else None.
-    This runs before the LLM to avoid hallucinated matches.
+
+    Requires BOTH:
+      - SequenceMatcher ratio >= 0.82 (string similarity), AND
+      - At least 2 non-trivial tokens must overlap between the extracted name
+        and the candidate's full name.
+
+    The dual-gate prevents false positives where a single common surname token
+    (e.g. "Reddy", "Singh", "Kumar") pushes the ratio above threshold while the
+    first name and middle name are completely different people.
     """
     import difflib
 
@@ -1457,6 +1564,8 @@ def _fuzzy_match_employee(
     if not normalized:
         return None
 
+    extracted_tokens = _name_tokens(normalized)
+
     best_id = None
     best_ratio = 0.0
 
@@ -1465,18 +1574,25 @@ def _fuzzy_match_employee(
         if not emp_normalized:
             continue
 
-        # Exact match
+        # Exact match always wins
         if normalized == emp_normalized:
             return emp["id"]
 
-        # Fuzzy ratio
         ratio = difflib.SequenceMatcher(None, normalized, emp_normalized).ratio()
-        if ratio > best_ratio:
-            best_ratio = ratio
-            best_id = emp["id"]
+        if ratio <= best_ratio:
+            continue
 
-    # Only accept high-confidence fuzzy matches
-    if best_ratio >= 0.85:
+        # Require at least 2 overlapping name tokens to avoid surname-only
+        # false positives (e.g. "Banuchander Reddy" matching "Vardhan Reddy").
+        emp_tokens = _name_tokens(emp_normalized)
+        overlap = extracted_tokens & emp_tokens
+        if len(overlap) < 2:
+            continue
+
+        best_ratio = ratio
+        best_id = emp["id"]
+
+    if best_ratio >= 0.82:
         return best_id
 
     return None

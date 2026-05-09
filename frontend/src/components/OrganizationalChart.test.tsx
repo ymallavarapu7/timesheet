@@ -12,6 +12,7 @@ const baseUser = (overrides: Partial<User>): User => ({
   full_name: 'User',
   role: 'EMPLOYEE',
   is_active: true,
+  is_external: false,
   email_verified: true,
   has_changed_password: true,
   created_at: '2026-01-01T00:00:00Z',
@@ -20,30 +21,7 @@ const baseUser = (overrides: Partial<User>): User => ({
 });
 
 describe('OrganizationalChart', () => {
-  it('renders a single user as the root node', () => {
-    const alice = baseUser({
-      id: 1,
-      full_name: 'Alice Admin',
-      email: 'alice@example.com',
-      username: 'alice',
-      role: 'ADMIN',
-      manager_id: null,
-    });
-
-    render(
-      <OrganizationalChart
-        users={[alice]}
-        usersByManager={{}}
-        topLevelUsers={[alice]}
-      />,
-    );
-
-    expect(screen.getByText('Alice Admin')).toBeInTheDocument();
-    // No empty-state message should render when there is at least one user.
-    expect(screen.queryByTestId('org-chart-empty')).not.toBeInTheDocument();
-  });
-
-  it('renders an empty-state message when there are zero users', () => {
+  it('renders empty state when there are no users', () => {
     render(
       <OrganizationalChart
         users={[]}
@@ -51,29 +29,26 @@ describe('OrganizationalChart', () => {
         topLevelUsers={[]}
       />,
     );
-
     expect(screen.getByTestId('org-chart-empty')).toBeInTheDocument();
     expect(screen.getByText(/no team members yet/i)).toBeInTheDocument();
   });
 
-  it('renders a manager and their direct report unchanged (regression)', () => {
-    const manager = baseUser({
-      id: 1,
-      full_name: 'Morgan Manager',
-      email: 'morgan@example.com',
-      username: 'morgan',
-      role: 'MANAGER',
-      manager_id: null,
-    });
-    const report = baseUser({
-      id: 2,
-      full_name: 'Riley Report',
-      email: 'riley@example.com',
-      username: 'riley',
-      role: 'EMPLOYEE',
-      manager_id: 1,
-    });
+  it('renders a single internal user as root', () => {
+    const alice = baseUser({ id: 1, full_name: 'Alice Admin', role: 'ADMIN', manager_id: null });
+    render(
+      <OrganizationalChart
+        users={[alice]}
+        usersByManager={{}}
+        topLevelUsers={[alice]}
+      />,
+    );
+    expect(screen.getByText('Alice Admin')).toBeInTheDocument();
+    expect(screen.queryByTestId('org-chart-empty')).not.toBeInTheDocument();
+  });
 
+  it('renders a manager and their direct report', () => {
+    const manager = baseUser({ id: 1, full_name: 'Morgan Manager', role: 'MANAGER', manager_id: null });
+    const report  = baseUser({ id: 2, full_name: 'Riley Report',   role: 'EMPLOYEE', manager_id: 1 });
     render(
       <OrganizationalChart
         users={[manager, report]}
@@ -81,9 +56,21 @@ describe('OrganizationalChart', () => {
         topLevelUsers={[manager]}
       />,
     );
-
     expect(screen.getByText('Morgan Manager')).toBeInTheDocument();
     expect(screen.getByText('Riley Report')).toBeInTheDocument();
-    expect(screen.queryByTestId('org-chart-empty')).not.toBeInTheDocument();
+  });
+
+  it('does not include external users in the internal tree', () => {
+    const internal = baseUser({ id: 1, full_name: 'Internal User', role: 'EMPLOYEE', is_external: false, manager_id: null });
+    const external = baseUser({ id: 2, full_name: 'External User', role: 'EMPLOYEE', is_external: true,  manager_id: null });
+    render(
+      <OrganizationalChart
+        users={[internal, external]}
+        usersByManager={{}}
+        topLevelUsers={[internal, external]}
+      />,
+    );
+    expect(screen.getByText('Internal User')).toBeInTheDocument();
+    expect(screen.queryByText('External User')).not.toBeInTheDocument();
   });
 });

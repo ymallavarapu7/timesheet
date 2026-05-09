@@ -90,6 +90,11 @@ def _timesheet_to_summary(timesheet: IngestionTimesheet, rejected_sender_set: se
         "extracted_supervisor_name": timesheet.extracted_supervisor_name,
         "client_id": timesheet.client_id,
         "client_name": timesheet.client.name if timesheet.client else None,
+        "extracted_client_name": (
+            (timesheet.extracted_data or {}).get("client_name")
+            or (timesheet.extracted_data or {}).get("client")
+            or None
+        ),
         "period_start": timesheet.period_start,
         "period_end": timesheet.period_end,
         "total_hours": timesheet.total_hours,
@@ -1496,8 +1501,12 @@ async def approve_timesheet(
     project_ids_used: set[int] = set()
     skipped_line_items: list[dict[str, str]] = []
 
-    # Check for existing time entries on the same dates for this employee
+    # Check for existing ingestion-sourced time entries on the same dates.
+    # These are entries that were already created by a prior approval of the
+    # same employee's timesheet — re-approving a chain email that re-embeds
+    # historical weeks must not create duplicate entries.
     line_item_dates = [item.work_date for item in timesheet.line_items if item.work_date]
+    ingestion_covered_dates: set[str] = set()
     overlapping_dates: list[str] = []
     if line_item_dates:
         from sqlalchemy import func as sa_func
@@ -1508,7 +1517,20 @@ async def approve_timesheet(
                 & (TimeEntry.entry_date.in_(line_item_dates))
             ).group_by(TimeEntry.entry_date)
         )
-        overlapping_dates = [row[0].isoformat() for row in overlap_result.all()]
+        rows = overlap_result.all()
+        overlapping_dates = [row[0].isoformat() for row in rows]
+
+        # Narrow to entries that came from the ingestion pipeline (not manual
+        # entries) so we only skip dates that were previously ingestion-approved.
+        ingestion_overlap_result = await session.execute(
+            select(TimeEntry.entry_date).where(
+                (TimeEntry.user_id == timesheet.employee_id)
+                & (TimeEntry.tenant_id == current_user.tenant_id)
+                & (TimeEntry.entry_date.in_(line_item_dates))
+                & (TimeEntry.ingestion_timesheet_id.isnot(None))
+            ).distinct()
+        )
+        ingestion_covered_dates = {row[0].isoformat() for row in ingestion_overlap_result.all()}
 
     for item in timesheet.line_items:
         if getattr(item, "is_rejected", False):
@@ -1517,6 +1539,18 @@ async def approve_timesheet(
                 "work_date": str(item.work_date),
                 "reason": "line_item_rejected",
             })
+            continue
+        work_date_str = item.work_date.isoformat() if item.work_date else None
+        if work_date_str and work_date_str in ingestion_covered_dates:
+            skipped_line_items.append({
+                "line_item_id": str(item.id),
+                "work_date": work_date_str,
+                "reason": "duplicate_ingestion_date",
+            })
+            logger.info(
+                "Skipped duplicate ingestion line item: employee_id=%s date=%s timesheet_id=%s",
+                timesheet.employee_id, work_date_str, timesheet_id,
+            )
             continue
         project_id = await _resolve_project_for_line_item(session, current_user, item)
         if project_id is None:

@@ -6,7 +6,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas import ClientResponse, ClientCreate, ClientUpdate
 from app.crud.client import get_client_by_id, create_client, update_client, delete_client, list_clients
-from app.core.deps import get_current_user, get_tenant_db, require_role
+from app.core.deps import get_current_user, get_tenant_db, require_role, require_can_review
 from app.models.client import Client
 from app.models.client_email_domain import ClientEmailDomain
 from app.models.ingested_email import IngestedEmail
@@ -27,6 +27,22 @@ from app.services.activity import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/clients", tags=["clients"])
+
+
+async def _require_admin_or_reviewer(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """Allow ADMIN/PLATFORM_ADMIN (full client management) or any user with
+    can_review=True (ingestion reviewers who need to create clients inline)."""
+    from app.models.user import UserRole
+    if current_user.role in (UserRole.ADMIN, UserRole.PLATFORM_ADMIN):
+        return current_user
+    if current_user.can_review:
+        return current_user
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Admin or reviewer role required to create clients.",
+    )
 
 
 async def _try_outbound_webhook(**kwargs) -> None:
@@ -85,10 +101,10 @@ async def get_client(
 async def create_new_client(
     client_create: ClientCreate,
     db: AsyncSession = Depends(get_tenant_db),
-    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+    current_user: User = Depends(_require_admin_or_reviewer),
 ) -> dict:
     """
-    Create a new client (Admin only).
+    Create a new client (Admin or ingestion reviewer).
     """
     new_client = await create_client(db, client_create, tenant_id=current_user.tenant_id)
     if new_client.tenant_id is not None:
@@ -164,7 +180,7 @@ def _email_domains_for_ingestion_timesheet(ts: IngestionTimesheet, email: Ingest
 async def create_client_from_domain(
     body: CreateClientFromDomainRequest,
     db: AsyncSession = Depends(get_tenant_db),
-    current_user: User = Depends(require_role("ADMIN", "PLATFORM_ADMIN")),
+    current_user: User = Depends(_require_admin_or_reviewer),
 ) -> dict:
     """
     Create a client whose email domain is registered, then cascade the
